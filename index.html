@@ -166,6 +166,11 @@ body {
   font-family: var(--mono);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+#header .header-title.labeled { color: var(--orange); }
+#header .header-buf {
+  font-size: 11px; color: var(--fg-mute); font-family: var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
 #header .header-sub {
   display: flex; align-items: center; gap: 8px; margin-top: 2px;
 }
@@ -728,6 +733,7 @@ body {
     <div class="header-title" id="header-title">ACP</div>
     <div class="header-sub">
       <span class="header-status" id="status-text">Connecting...</span>
+      <span class="header-buf" id="header-buf"></span>
       <button class="mode-btn" id="mode-btn" style="display:none">Ask</button>
     </div>
   </div>
@@ -760,7 +766,7 @@ body {
 <div id="input-area">
   <button id="attach-btn" aria-label="Attach image">+</button>
   <input type="file" id="attach-input" accept="image/jpeg,image/png,image/webp,image/gif" multiple>
-  <textarea id="prompt" rows="1" placeholder="Message the agent..." enterkeyhint="send"></textarea>
+  <textarea id="prompt" rows="1" placeholder="Message the agent..."></textarea>
   <button id="send" disabled aria-label="Send"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></button>
   <button id="stop-btn">Stop</button>
 </div>
@@ -796,6 +802,16 @@ body {
 const messagesEl = document.getElementById('messages');
 const statusText = document.getElementById('status-text');
 const headerTitle = document.getElementById('header-title');
+const headerBuf = document.getElementById('header-buf');
+// Chat header: user label (orange) as the title with the Emacs buffer
+// name demoted to the sub row; unlabeled convos title with the buffer name.
+function updateChatHeader() {
+  const s = lastSessions.find(x => x.bufferName === currentBufferName) || {};
+  const label = (s.label || '').trim();
+  headerTitle.textContent = label || currentBufferName || headerTitle.textContent;
+  headerTitle.classList.toggle('labeled', !!label);
+  headerBuf.textContent = label ? (currentBufferName || '') : '';
+}
 const modeBtn = document.getElementById('mode-btn');
 const promptEl = document.getElementById('prompt');
 const sendBtn = document.getElementById('send');
@@ -1723,7 +1739,8 @@ function flushReplay() {
       }
       if (msg.result && msg.result.agentInfo) {
         const info = msg.result.agentInfo;
-        headerTitle.textContent = info.title || info.name || 'ACP';
+        // Fallback only — once we know the buffer name, label/buffer wins.
+        if (!currentBufferName) headerTitle.textContent = info.title || info.name || 'ACP';
       }
       if (msg.result && msg.result.sessionId) {
         sessionId = msg.result.sessionId;
@@ -1751,8 +1768,8 @@ function flushReplay() {
 
     // Notifications
     if (msg.method === 'acp-multiplex/meta' && msg.params && msg.params.name) {
-      headerTitle.textContent = msg.params.name;
       currentBufferName = msg.params.name;
+      updateChatHeader();
       document.getElementById('kill-btn').style.display = '';
       continue;
     }
@@ -1914,7 +1931,8 @@ function handleMessage(msg) {
 
     if (msg.result && msg.result.agentInfo) {
       const info = msg.result.agentInfo;
-      headerTitle.textContent = info.title || info.name || 'ACP';
+      // Fallback only — once we know the buffer name, label/buffer wins.
+      if (!currentBufferName) headerTitle.textContent = info.title || info.name || 'ACP';
     }
 
     if (msg.result && msg.result.sessionId) {
@@ -1946,8 +1964,8 @@ function handleMessage(msg) {
 
   // Buffer name from acp-multiplex
   if (msg.method === 'acp-multiplex/meta' && msg.params && msg.params.name) {
-    headerTitle.textContent = msg.params.name;
     currentBufferName = msg.params.name;
+    updateChatHeader();
     document.getElementById('kill-btn').style.display = '';
     return;
   }
@@ -2216,8 +2234,12 @@ function cancelPrompt() {
   addSystemMsg('Cancelled');
 }
 
+// Phones (coarse pointer): Return types a newline, only the send button
+// sends — Shift+Enter doesn't exist on a touch keyboard. Desktop keeps
+// Enter-to-send with Shift+Enter for newlines.
+const touchKeyboard = matchMedia('(pointer: coarse)').matches;
 promptEl.onkeydown = (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
+  if (e.key === 'Enter' && !e.shiftKey && !touchKeyboard) {
     e.preventDefault();
     sendPrompt();
   }
@@ -2565,6 +2587,7 @@ function selectSession(session) {
   sessionId = null;
   projectCwd = session.cwd || null;
   currentBufferName = session.bufferName || null;
+  updateChatHeader();
   document.getElementById('kill-btn').style.display = currentBufferName ? '' : 'none';
   availableModes = [];
   allReplayTurns = [];
@@ -2921,7 +2944,9 @@ headerTitle.addEventListener('click', async () => {
     });
     const data = await resp.json();
     if (data.error) { alert('Label failed: ' + data.error); return; }
-    headerTitle.textContent = label.trim() || currentBufferName;
+    const entry = lastSessions.find(s => s.bufferName === currentBufferName);
+    if (entry) entry.label = label.trim();
+    updateChatHeader();
   } catch (err) { alert('Label failed: ' + err.message); }
 });
 document.getElementById('kill-btn').addEventListener('click', killSession);
