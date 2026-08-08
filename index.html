@@ -560,6 +560,61 @@ body {
 .pv-msg.agent { color: var(--fg); }
 .session-card { touch-action: pan-y; }
 
+/* Spawn sheet: new convo from the phone */
+#spawn-scrim {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+  display: none; z-index: 119;
+}
+#spawn-scrim.visible { display: block; }
+#spawn-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 120;
+  background: var(--bg0); border-top: 1px solid var(--bg2);
+  border-radius: 16px 16px 0 0; max-height: 80dvh;
+  display: none; flex-direction: column;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+#spawn-sheet.visible { display: flex; }
+#sp-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 16px; border-bottom: 1px solid var(--bg1);
+}
+#sp-title { flex: 1; font-size: 14px; font-weight: 700; color: var(--fg); }
+#sp-close {
+  background: none; border: none; color: var(--fg-mute);
+  font-size: 20px; cursor: pointer; padding: 4px 8px;
+}
+#sp-body { overflow-y: auto; padding: 14px 16px; }
+.sp-label {
+  font-size: 11px; font-weight: 700; color: var(--yellow);
+  margin: 12px 0 6px; letter-spacing: 0.5px;
+}
+.sp-label:first-child { margin-top: 0; }
+.sp-hint { color: var(--fg-mute); font-weight: 400; letter-spacing: 0; }
+#sp-projects {
+  display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px;
+  -webkit-overflow-scrolling: touch;
+}
+.sp-chip {
+  background: var(--bg1); border: 1px solid var(--bg2); border-radius: 999px;
+  padding: 7px 13px; font-size: 13px; color: var(--fg-dim);
+  white-space: nowrap; cursor: pointer; flex-shrink: 0; font-family: var(--mono);
+}
+.sp-chip.sel { border-color: var(--orange); color: var(--orange); }
+#sp-dir, #sp-name, #sp-task {
+  width: 100%; background: var(--bg1); border: none; border-radius: 10px;
+  color: var(--fg); padding: 11px 14px; font-size: 16px;
+  font-family: var(--mono); resize: none; caret-color: var(--orange);
+}
+#sp-dir:focus, #sp-name:focus, #sp-task:focus { outline: 1px solid var(--bg2); }
+#sp-go {
+  width: 100%; margin-top: 16px; background: var(--green); border: none;
+  border-radius: 12px; color: var(--bg-hard); font-size: 15px; font-weight: 700;
+  padding: 13px; cursor: pointer; font-family: var(--mono);
+  transition: transform 0.12s ease;
+}
+#sp-go:active { transform: scale(0.97); }
+#sp-go:disabled { background: var(--bg1); color: var(--fg-mute); }
+
 /* Attachments: thumb chips above the composer, + button beside it */
 #attach-row {
   display: none; gap: 10px; padding: 10px 12px 0;
@@ -710,6 +765,23 @@ body {
   <button id="stop-btn">Stop</button>
 </div>
 </div><!-- /chat-view -->
+<div id="spawn-scrim"></div>
+<div id="spawn-sheet">
+  <div id="sp-head">
+    <span id="sp-title">new convo</span>
+    <button id="sp-close">&times;</button>
+  </div>
+  <div id="sp-body">
+    <div class="sp-label">PROJECT</div>
+    <div id="sp-projects"></div>
+    <input id="sp-dir" placeholder="/path/to/project" autocapitalize="off" autocorrect="off">
+    <div class="sp-label">LABEL <span class="sp-hint">(optional — names it here and on the rig)</span></div>
+    <input id="sp-name" placeholder="e.g. usenet, muzik" autocapitalize="off">
+    <div class="sp-label">FIRST PROMPT <span class="sp-hint">(optional — sent once it's ready)</span></div>
+    <textarea id="sp-task" rows="3" placeholder="what's the job?"></textarea>
+    <button id="sp-go">spawn</button>
+  </div>
+</div>
 <div id="preview-scrim"></div>
 <div id="preview-sheet">
   <div id="pv-head">
@@ -2472,48 +2544,85 @@ function navigateBack() {
   showNavigator();
 }
 
-async function spawnAgent() {
-  // Get a cwd to spawn into — use first session's cwd or prompt
-  let cwd = '';
-  if (lastSessions.length > 0) {
-    // Pick from existing project cwds
-    const cwds = [...new Set(lastSessions.map(s => s.cwd).filter(Boolean))];
-    if (cwds.length > 0) {
-      const choice = window.prompt(
-        'Project directory:\n' + cwds.map((c, i) => (i + 1) + '. ' + shortPath(c)).join('\n') +
-        '\n\nEnter number or full path:',
-        cwds.length === 1 ? '1' : '');
-      if (!choice) return;
-      const num = parseInt(choice);
-      cwd = (num >= 1 && num <= cwds.length) ? cwds[num - 1] : choice;
-    }
+// Spawn sheet: project chips from known cwds, optional label + first
+// prompt. On success, waits for the new session's socket and opens it.
+const spScrim = document.getElementById('spawn-scrim');
+const spSheet = document.getElementById('spawn-sheet');
+const spProjects = document.getElementById('sp-projects');
+const spDir = document.getElementById('sp-dir');
+const spName = document.getElementById('sp-name');
+const spTask = document.getElementById('sp-task');
+const spGo = document.getElementById('sp-go');
+
+function openSpawnSheet(cwd) {
+  const cwds = [...new Set(lastSessions.map(x => x.cwd).filter(Boolean))];
+  spProjects.innerHTML = '';
+  for (const c of cwds) {
+    const chip = document.createElement('button');
+    chip.className = 'sp-chip' + (c === cwd ? ' sel' : '');
+    chip.textContent = shortPath(c);
+    chip.onclick = () => {
+      spDir.value = c;
+      [...spProjects.children].forEach(el => el.classList.remove('sel'));
+      chip.classList.add('sel');
+    };
+    spProjects.appendChild(chip);
   }
-  if (!cwd) {
-    cwd = window.prompt('Project directory (full path):');
-    if (!cwd) return;
-  }
+  spDir.value = cwd || cwds[0] || '';
+  if (!cwd && cwds[0]) spProjects.firstChild && spProjects.firstChild.classList.add('sel');
+  spName.value = ''; spTask.value = '';
+  spGo.disabled = false; spGo.textContent = 'spawn';
+  spScrim.classList.add('visible');
+  spSheet.classList.add('visible');
+}
 
-  const name = window.prompt('Agent name:');
-  if (!name) return;
+function hideSpawnSheet() {
+  spScrim.classList.remove('visible');
+  spSheet.classList.remove('visible');
+}
 
-  const task = window.prompt('Initial task (optional):') || '';
+spScrim.addEventListener('click', hideSpawnSheet);
+document.getElementById('sp-close').addEventListener('click', hideSpawnSheet);
 
+spGo.addEventListener('click', async () => {
+  const cwd = spDir.value.trim();
+  if (!cwd) { spDir.focus(); return; }
+  spGo.disabled = true;
+  const frames = ['\u280b','\u2819','\u2839','\u2838','\u283c','\u2834','\u2826','\u2827','\u2807','\u280f'];
+  let fi = 0;
+  const spin = setInterval(() => { spGo.textContent = frames[fi = (fi + 1) % frames.length] + ' spawning'; }, 80);
   try {
+    const prevPids = new Set(lastSessions.map(x => x.pid));
     const resp = await fetch(basePath + '/api/spawn', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ cwd, name, task })
+      body: JSON.stringify({ cwd, name: spName.value.trim(), task: spTask.value.trim() })
     });
     const data = await resp.json();
-    if (data.error) {
-      alert('Spawn failed: ' + data.error);
-      return;
+    if (data.error) throw new Error(data.error);
+    // Wait for the new session's socket, then walk straight into it
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      await loadSessions();
+      const fresh = lastSessions.find(x => !prevPids.has(x.pid));
+      if (fresh) {
+        clearInterval(spin);
+        hideSpawnSheet();
+        selectSession(fresh);
+        return;
+      }
     }
-    pollForNewSession();
+    clearInterval(spin);
+    hideSpawnSheet(); // spawned but slow to appear; list will catch it
   } catch (err) {
+    clearInterval(spin);
+    spGo.disabled = false; spGo.textContent = 'spawn';
     alert('Spawn failed: ' + err.message);
   }
-}
+});
+
+function spawnAgent() { openSpawnSheet(null); }
+function spawnInProject(cwd) { openSpawnSheet(cwd); }
 
 async function killSession() {
   if (!currentBufferName) {
@@ -2537,22 +2646,6 @@ async function killSession() {
   } catch (err) {
     alert('Kill failed: ' + err.message);
   }
-}
-
-async function spawnInProject(cwd) {
-  const name = window.prompt('Agent name:');
-  if (!name) return;
-  const task = window.prompt('Initial task (optional):') || '';
-  try {
-    const resp = await fetch(basePath + '/api/spawn', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ cwd, name, task })
-    });
-    const data = await resp.json();
-    if (data.error) { alert('Spawn failed: ' + data.error); return; }
-    pollForNewSession();
-  } catch (err) { alert('Spawn failed: ' + err.message); }
 }
 
 function pollForNewSession() {

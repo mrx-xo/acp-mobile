@@ -661,8 +661,8 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Name == "" || req.Cwd == "" {
-		http.Error(w, "name and cwd are required", http.StatusBadRequest)
+	if req.Cwd == "" {
+		http.Error(w, "cwd is required", http.StatusBadRequest)
 		return
 	}
 
