@@ -177,6 +177,12 @@ func (rl *rateLimiter) record(ip string) {
 	rl.attempts[ip] = append(rl.attempts[ip], time.Now())
 }
 
+func (rl *rateLimiter) reset(ip string) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	delete(rl.attempts, ip)
+}
+
 var testMode bool
 
 func main() {
@@ -301,15 +307,16 @@ func main() {
 
 		// Auth: if authkey query param is present and valid, set cookie and redirect
 		if qk := r.URL.Query().Get("authkey"); qk != "" {
-			if authRL.check(clientIP) {
-				http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
-				return
-			}
 			if subtle.ConstantTimeCompare([]byte(qk), []byte(authKey)) != 1 {
+				if authRL.check(clientIP) {
+					http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
+					return
+				}
 				authRL.record(clientIP)
 				http.Error(w, "invalid authkey", http.StatusForbidden)
 				return
 			}
+			authRL.reset(clientIP)
 			http.SetCookie(w, &http.Cookie{
 				Name:     "authkey",
 				Value:    authKey,
@@ -333,7 +340,14 @@ func main() {
 
 		// Auth: check cookie
 		cookie, err := r.Cookie("authkey")
-		if err != nil || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(authKey)) != 1 {
+		if err != nil {
+			// No cookie at all: a stale bookmark/web clip, not an attack.
+			// Don't feed the rate limiter — that was locking users out of
+			// the GOOD link after a few opens of a key-less icon.
+			http.Error(w, "unauthorized — open the full link (with authkey) from ~/.acp-mobile/link or the Telegram message, then re-add to Home Screen", http.StatusUnauthorized)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(authKey)) != 1 {
 			if authRL.check(clientIP) {
 				http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
 				return
