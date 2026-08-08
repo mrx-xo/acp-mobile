@@ -306,12 +306,18 @@ func main() {
 				Path:     "/",
 				HttpOnly: true,
 				SameSite: http.SameSiteStrictMode,
+				// Persistent: iOS home-screen web clips keep their own
+				// cookie jar; a session cookie dies every time the clip
+				// closes, forcing re-auth the clip can't perform.
+				MaxAge: 365 * 24 * 60 * 60,
 			})
-			// Redirect to strip authkey from URL
-			q := r.URL.Query()
-			q.Del("authkey")
-			r.URL.RawQuery = q.Encode()
-			http.Redirect(w, r, r.URL.String(), http.StatusFound)
+			// Serve directly — do NOT redirect-strip the authkey from the
+			// URL. "Add to Home Screen" snapshots the post-redirect URL,
+			// so stripping produced key-less web clips that landed on
+			// "unauthorized" once the session cookie was gone. Keeping
+			// the key in the URL makes bookmarks/clips self-authenticating
+			// (tailnet-only service; the link file already holds the key).
+			mux.ServeHTTP(w, r)
 			return
 		}
 
