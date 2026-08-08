@@ -817,6 +817,16 @@ if (window.visualViewport) {
     const wasAtBottom = isAtBottom;
     document.body.style.height = vv.height + 'px';
     window.scrollTo(0, 0);
+    // Bottom sheets are fixed to the LAYOUT viewport, but the keyboard
+    // only shrinks the VISUAL one — lift them above it and cap their
+    // height so the focused input and the action button stay reachable.
+    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    for (const id of ['spawn-sheet', 'preview-sheet']) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.style.bottom = kb > 0 ? kb + 'px' : '';
+      el.style.maxHeight = kb > 0 ? Math.round(vv.height * 0.92) + 'px' : '';
+    }
     if (wasAtBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
   };
   vv.addEventListener('resize', syncViewport);
