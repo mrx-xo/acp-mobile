@@ -2147,7 +2147,9 @@ function makeSessionCard(s, name) {
   const d = document.createElement('div');
   d.className = 'session-card' + (unread ? ' unread' : '');
   const nameClass = 'sc-name' + (s.label ? ' labeled' : '');
-  const meta = [s.cwd ? shortPath(s.cwd) : null,
+  // Second line leads with the Emacs buffer name (e.g. "Claude Agent @
+  // .dotfiles<15>") so a card is matchable against the rig's buffers.
+  const meta = [s.bufferName || (s.cwd ? shortPath(s.cwd) : null),
                 s.lastActivity ? timeAgo(s.lastActivity) : null]
     .filter(Boolean).join('  ·  ');
   d.innerHTML =
