@@ -497,6 +497,34 @@ body {
 }
 #prompt:focus { outline: none; }
 #prompt::placeholder { color: var(--fg-mute); }
+/* Attachments: thumb chips above the composer, + button beside it */
+#attach-row {
+  display: none; gap: 10px; padding: 10px 12px 0;
+  background: var(--bg0); border-top: 1px solid var(--bg2);
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+}
+#attach-row.has-items { display: flex; }
+#attach-row.has-items + #input-area { border-top: none; }
+.attach-chip { position: relative; flex-shrink: 0; }
+.attach-chip img {
+  width: 56px; height: 56px; object-fit: cover; display: block;
+  border-radius: 8px; border: 1px solid var(--bg2);
+}
+.attach-chip .chip-x {
+  position: absolute; top: -6px; right: -6px; width: 20px; height: 20px;
+  border-radius: 10px; background: var(--red); color: var(--bg-hard);
+  border: none; font-size: 12px; font-weight: 700; line-height: 1;
+  cursor: pointer; padding: 0;
+}
+#attach-btn {
+  background: var(--bg1); border: none; border-radius: 12px;
+  color: var(--orange); font-size: 24px; font-weight: 400;
+  min-width: 44px; min-height: 44px; cursor: pointer; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+#attach-btn:active { opacity: 0.7; }
+#attach-input { display: none; }
+
 /* Send = gruvbox green ("go" in the rig's color language); icon, not glyph */
 #send {
   background: var(--green); border: none; border-radius: 12px;
@@ -598,7 +626,10 @@ body {
 <div id="swipe-indicator"></div>
 <div id="thinking"><span class="spinner" id="spinner-glyph">⠋</span><span class="label">thinking…</span></div>
 <button id="scroll-btn">&darr;</button>
+<div id="attach-row"></div>
 <div id="input-area">
+  <button id="attach-btn" aria-label="Attach image">+</button>
+  <input type="file" id="attach-input" accept="image/*" multiple>
   <textarea id="prompt" rows="1" placeholder="Message the agent..." enterkeyhint="send"></textarea>
   <button id="send" disabled aria-label="Send"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></button>
   <button id="stop-btn">Stop</button>
@@ -1842,17 +1873,85 @@ function handleMessage(msg) {
 let lastSentMsg = null;
 let messageQueue = [];
 
+// --- Image attachments: phone photos → ACP image content blocks.
+// Canvas re-encode caps dimensions and converts HEIC to JPEG, so the
+// base64 payload stays reasonable over the websocket.
+const attachBtn = document.getElementById('attach-btn');
+const attachInput = document.getElementById('attach-input');
+const attachRow = document.getElementById('attach-row');
+let pendingImages = []; // {data, mimeType, thumb}
+
+function renderAttachRow() {
+  attachRow.innerHTML = '';
+  attachRow.classList.toggle('has-items', pendingImages.length > 0);
+  pendingImages.forEach((img, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'attach-chip';
+    const im = document.createElement('img');
+    im.src = img.thumb;
+    const x = document.createElement('button');
+    x.className = 'chip-x';
+    x.textContent = '\u00d7';
+    x.onclick = () => { pendingImages.splice(i, 1); renderAttachRow(); };
+    chip.appendChild(im); chip.appendChild(x);
+    attachRow.appendChild(chip);
+  });
+}
+
+function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => resolve({ img, url });
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('unreadable image')); };
+    img.src = url;
+  });
+}
+
+async function addAttachment(file) {
+  try {
+    const { img, url } = await loadImageFromFile(file);
+    const MAX = 1568; // Claude vision sweet spot; bigger just burns tokens
+    const scale = Math.min(1, MAX / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(url);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    pendingImages.push({
+      data: dataUrl.slice(dataUrl.indexOf(',') + 1),
+      mimeType: 'image/jpeg',
+      thumb: dataUrl
+    });
+    renderAttachRow();
+  } catch (err) {
+    addSystemMsg('Could not read image: ' + err.message);
+  }
+}
+
+attachBtn.addEventListener('click', () => attachInput.click());
+attachInput.addEventListener('change', async (e) => {
+  for (const f of e.target.files) await addAttachment(f);
+  attachInput.value = '';
+});
+
 function sendPrompt() {
   const text = promptEl.value.trim();
-  if (!text || !sessionId) return;
+  if ((!text && pendingImages.length === 0) || !sessionId) return;
 
   promptEl.value = '';
   promptEl.style.height = 'auto';
 
   if (processing) {
-    // Queue message for when agent finishes
-    messageQueue.push(text);
-    addUserMsg(text, 'queued');
+    // Queue is text-only; images ride the next idle send
+    if (text) {
+      messageQueue.push(text);
+      addUserMsg(text, 'queued');
+    }
+    if (pendingImages.length) {
+      addSystemMsg('Agent is busy \u2014 attachments will send with your next message once it finishes.');
+    }
     return;
   }
 
@@ -1861,14 +1960,22 @@ function sendPrompt() {
 
 function sendPromptText(text) {
   currentAgentMsg = null;
-  lastSentMsg = addUserMsg(text, 'sending');
+  const imgs = pendingImages.splice(0);
+  renderAttachRow();
+  const shown = text + (imgs.length
+    ? (text ? '\n' : '') + '[' + imgs.length + ' image' + (imgs.length > 1 ? 's' : '') + ' attached]'
+    : '');
+  lastSentMsg = addUserMsg(shown, 'sending');
   setProcessing(true);
+
+  const blocks = imgs.map(i => ({ type: 'image', data: i.data, mimeType: i.mimeType }));
+  if (text) blocks.push({ type: 'text', text });
 
   ws.send(JSON.stringify({
     jsonrpc: '2.0',
     id: nextId++,
     method: 'session/prompt',
-    params: { sessionId, prompt: [{ type: 'text', text }] }
+    params: { sessionId, prompt: blocks }
   }));
 }
 
