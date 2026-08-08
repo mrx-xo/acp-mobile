@@ -550,12 +550,7 @@ body {
 .pv-msg.user { color: var(--orange); }
 .pv-msg.user::before { content: "𐆖 "; }
 .pv-msg.agent { color: var(--fg); }
-.session-card .sc-eye {
-  background: none; border: none; color: var(--fg-mute);
-  padding: 4px 6px; cursor: pointer; flex-shrink: 0; line-height: 1;
-  display: flex; align-items: center;
-}
-.session-card .sc-eye:active { color: var(--orange); }
+.session-card { touch-action: pan-y; }
 
 /* Attachments: thumb chips above the composer, + button beside it */
 #attach-row {
@@ -2391,12 +2386,7 @@ function makeSessionCard(s, name) {
       '<div class="' + nameClass + '">' + escHtml(name) + '</div>' +
       (metaParts.length ? '<div class="sc-path">' + metaParts.join('  &middot;  ') + '</div>' : '') +
     '</div>';
-  const eye = document.createElement('button');
-  eye.className = 'sc-eye';
-  eye.setAttribute('aria-label', 'Peek');
-  eye.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
-  eye.onclick = (e) => { e.stopPropagation(); showPreview(s, name); };
-  d.appendChild(eye);
+  attachPeekSwipe(d, s, name);
   if (s.bufferName) {
     const del = document.createElement('button');
     del.className = 'sc-delete';
@@ -2573,6 +2563,33 @@ const pvSheet = document.getElementById('preview-sheet');
 const pvTitle = document.getElementById('pv-title');
 const pvBody = document.getElementById('pv-body');
 let pvTarget = null;
+
+// Swipe a card right to peek: follows the finger (capped), snaps back,
+// fires the sheet past the threshold. Vertical scrolling wins the tie.
+function attachPeekSwipe(d, s, name) {
+  let sx = 0, sy = 0, dx = 0, dragging = false;
+  d.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    sx = t.clientX; sy = t.clientY; dx = 0; dragging = false;
+    d.style.transition = '';
+  }, { passive: true });
+  d.addEventListener('touchmove', (e) => {
+    const t = e.touches[0];
+    const mx = t.clientX - sx, my = t.clientY - sy;
+    if (!dragging) {
+      if (mx > 14 && Math.abs(mx) > Math.abs(my) * 1.5) dragging = true;
+      else return;
+    }
+    dx = Math.max(0, Math.min(mx, 90));
+    d.style.transform = 'translateX(' + dx + 'px)';
+  }, { passive: true });
+  d.addEventListener('touchend', () => {
+    d.style.transition = 'transform 0.18s ease';
+    d.style.transform = '';
+    if (dragging && dx > 60) showPreview(s, name);
+    dragging = false; dx = 0;
+  });
+}
 
 async function showPreview(s, name) {
   pvTarget = s;
