@@ -2857,6 +2857,21 @@ document.getElementById('spawn-btn').addEventListener('click', spawnAgent);
   });
 })();
 
+// Keep the scroll-to-bottom button floating just above the composer,
+// whatever height it currently has (safe-area, grown textarea,
+// attachment chips) instead of a hardcoded offset that overlaps.
+(function () {
+  const inputAreaEl = document.getElementById('input-area');
+  const place = () => {
+    const h = inputAreaEl.offsetHeight
+      + (attachRow.classList.contains('has-items') ? attachRow.offsetHeight : 0);
+    scrollBtn.style.bottom = (h + 14) + 'px';
+  };
+  new ResizeObserver(place).observe(inputAreaEl);
+  new ResizeObserver(place).observe(attachRow);
+  place();
+})();
+
 // Keep session statuses fresh while the list is on screen
 setInterval(() => {
   if (discoverMode && !navigatorEl.classList.contains('hidden')
