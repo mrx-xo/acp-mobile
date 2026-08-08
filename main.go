@@ -519,7 +519,26 @@ type sessionInfo struct {
 	BufferName   string `json:"bufferName,omitempty"`
 	Preview      string `json:"preview,omitempty"` // first user message, for card headlines
 	Label        string `json:"label,omitempty"`   // user-set label from labels.json sidecar
+	Status       string `json:"status,omitempty"`  // busy/permission/idle from status.json sidecar
 	LastActivity int64  `json:"lastActivity"`      // unix timestamp
+}
+
+// loadSidecar reads a sessionId→value JSON sidecar written by Emacs.
+// Missing/corrupt file is not an error — sidecars are optional.
+func loadSidecar(name string) map[string]string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".acp-mobile", name))
+	if err != nil {
+		return nil
+	}
+	var m map[string]string
+	if json.Unmarshal(data, &m) != nil {
+		return nil
+	}
+	return m
 }
 
 // loadLabels reads the sessionId→label sidecar written by Emacs (or by hand).
@@ -594,9 +613,13 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	labels := loadLabels()
+	statuses := loadSidecar("status.json")
 	for i := range sessions {
 		if l, ok := labels[sessions[i].SessionID]; ok {
 			sessions[i].Label = l
+		}
+		if st, ok := statuses[sessions[i].SessionID]; ok {
+			sessions[i].Status = st
 		}
 	}
 

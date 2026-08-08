@@ -111,6 +111,18 @@ body {
   margin-top: 6px; background: var(--bg2);
 }
 .session-card.unread .sc-dot { background: var(--green); }
+.session-card .sc-dot.busy {
+  background: var(--yellow);
+  animation: status-pulse 1.1s ease-in-out infinite;
+}
+.session-card .sc-dot.perm {
+  background: var(--red);
+  animation: status-pulse 0.6s ease-in-out infinite;
+}
+@keyframes status-pulse { 50% { opacity: 0.3; } }
+.sc-status { font-weight: 700; }
+.sc-status.busy { color: var(--yellow); }
+.sc-status.perm { color: var(--red); }
 .session-card .sc-time {
   font-size: 11px; color: var(--fg-mute); margin-top: 3px;
   font-family: var(--mono);
@@ -2297,16 +2309,23 @@ function makeSessionCard(s, name) {
   const d = document.createElement('div');
   d.className = 'session-card' + (unread ? ' unread' : '');
   const nameClass = 'sc-name' + (s.label ? ' labeled' : '');
+  const dotClass = 'sc-dot' + (s.status === 'busy' ? ' busy'
+    : s.status === 'permission' ? ' perm' : '');
+  const statusWord = s.status === 'busy'
+    ? '<span class="sc-status busy">generating</span>'
+    : s.status === 'permission'
+      ? '<span class="sc-status perm">needs OK</span>' : '';
   // Second line leads with the Emacs buffer name (e.g. "Claude Agent @
   // .dotfiles<15>") so a card is matchable against the rig's buffers.
-  const meta = [s.bufferName || (s.cwd ? shortPath(s.cwd) : null),
-                s.lastActivity ? timeAgo(s.lastActivity) : null]
-    .filter(Boolean).join('  ·  ');
+  const metaParts = [escHtml(s.bufferName || (s.cwd ? shortPath(s.cwd) : '') || ''),
+                     statusWord,
+                     s.lastActivity ? escHtml(timeAgo(s.lastActivity)) : '']
+    .filter(Boolean);
   d.innerHTML =
-    '<div class="sc-dot"></div>' +
+    '<div class="' + dotClass + '"></div>' +
     '<div class="sc-info">' +
       '<div class="' + nameClass + '">' + escHtml(name) + '</div>' +
-      (meta ? '<div class="sc-path">' + escHtml(meta) + '</div>' : '') +
+      (metaParts.length ? '<div class="sc-path">' + metaParts.join('  &middot;  ') + '</div>' : '') +
     '</div>';
   if (s.bufferName) {
     const del = document.createElement('button');
@@ -2479,6 +2498,14 @@ async function killSessionByName(bufferName) {
 // Wire up event listeners (no inline onclick for CSP compatibility)
 document.getElementById('sort-btn').addEventListener('click', toggleSort);
 document.getElementById('spawn-btn').addEventListener('click', spawnAgent);
+
+// Keep session statuses fresh while the list is on screen
+setInterval(() => {
+  if (discoverMode && !navigatorEl.classList.contains('hidden')
+      && document.visibilityState === 'visible') {
+    loadSessions();
+  }
+}, 12000);
 document.getElementById('refresh-btn').addEventListener('click', loadSessions);
 document.getElementById('back-btn').addEventListener('click', navigateBack);
 document.getElementById('mode-btn').addEventListener('click', cycleMode);
