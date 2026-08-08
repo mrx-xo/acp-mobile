@@ -671,7 +671,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		args = append(args, req.Task)
 	}
 
-	out, err := command("agent-shell-spawn", args...).CombinedOutput()
+	out, err := evalEmacs("agent-shell-spawn", args...)
 	if err != nil {
 		log.Printf("spawn: %v: %s", err, out)
 		w.Header().Set("Content-Type", "application/json")
@@ -817,7 +817,7 @@ func handleLabel(w http.ResponseWriter, r *http.Request) {
 	}
 	expr := fmt.Sprintf(`(mr-x/agent-label-set "%s" "%s")`, esc(req.BufferName), esc(req.Label))
 
-	out, err := command("emacsclient", "--eval", expr).CombinedOutput()
+	out, err := evalEmacs("emacsclient", "--eval", expr)
 	if err != nil {
 		log.Printf("label: %v: %s", err, out)
 		w.Header().Set("Content-Type", "application/json")
@@ -834,6 +834,23 @@ func handleLabel(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// evalEmacs runs an emacsclient-backed command, retrying when the eval
+// dies with "*ERROR*: Quit": a desk-side C-g/ESC aborts whatever elisp
+// is mid-flight — server evals from this bridge included — and a beat
+// later the daemon is fine again.
+func evalEmacs(name string, args ...string) ([]byte, error) {
+	var out []byte
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		out, err = command(name, args...).CombinedOutput()
+		if err == nil || !bytes.Contains(out, []byte("*ERROR*: Quit")) {
+			return out, err
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return out, err
 }
 
 func handleKill(w http.ResponseWriter, r *http.Request) {
@@ -866,7 +883,7 @@ func handleKill(w http.ResponseWriter, r *http.Request) {
 	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
 	expr := fmt.Sprintf(`(meta-agent-shell-close-session "%s")`, escaped)
 
-	out, err := command("emacsclient", "--eval", expr).CombinedOutput()
+	out, err := evalEmacs("emacsclient", "--eval", expr)
 	if err != nil {
 		log.Printf("kill: %v: %s", err, out)
 		w.Header().Set("Content-Type", "application/json")
