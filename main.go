@@ -5,7 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	_ "embed"
+	"embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -30,6 +30,11 @@ import (
 
 //go:embed index.html
 var indexHTML []byte
+
+// Iosevka Term Slab (subset woff2) — same face the Emacs rig runs, so
+// the phone UI and agent-shell read as one tool.
+//go:embed fonts
+var fontsFS embed.FS
 
 var validBufferName = regexp.MustCompile(`^[\w\s.\-@<>/()]+$`)
 
@@ -249,6 +254,11 @@ func main() {
 			return nil
 		},
 	})
+
+	mux.Handle("/fonts/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		http.FileServerFS(fontsFS).ServeHTTP(w, r)
+	}))
 
 	mux.HandleFunc("/api/sessions", handleSessions)
 	mux.HandleFunc("/api/spawn", handleSpawn)
