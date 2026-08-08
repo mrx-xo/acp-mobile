@@ -980,9 +980,11 @@ function addUserMsg(text, status) {
   const live = status === 'sending' || status === 'queued';
   if (live) d.classList.add('msg-in');
   messagesEl.appendChild(d);
-  // Sending always sweeps to the bottom (like every chat app);
-  // replayed messages only follow if already pinned there.
-  if (live) scrollToBottom(true);
+  // Live sends: snap the scroll INSTANTLY and let the bubble's spring
+  // animation supply all the visible motion — smooth-scrolling here
+  // pans the bubble in from below the fold while its entrance
+  // animation expires unseen (why sends felt flat).
+  if (live) scrollToBottom();
   else if (isAtBottom) scrollToBottom();
   return d;
 }
