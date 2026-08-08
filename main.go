@@ -33,6 +33,7 @@ var indexHTML []byte
 
 // Iosevka Term Slab (subset woff2) — same face the Emacs rig runs, so
 // the phone UI and agent-shell read as one tool.
+//
 //go:embed fonts
 var fontsFS embed.FS
 
@@ -269,6 +270,7 @@ func main() {
 	mux.HandleFunc("/api/sessions", handleSessions)
 	mux.HandleFunc("/api/spawn", handleSpawn)
 	mux.HandleFunc("/api/kill", handleKill)
+	mux.HandleFunc("/api/label", handleLabel)
 	mux.HandleFunc("/files/list", handleFileList)
 	mux.HandleFunc("/files/read", handleFileRead)
 
@@ -498,7 +500,7 @@ type sessionInfo struct {
 	BufferName   string `json:"bufferName,omitempty"`
 	Preview      string `json:"preview,omitempty"` // first user message, for card headlines
 	Label        string `json:"label,omitempty"`   // user-set label from labels.json sidecar
-	LastActivity int64  `json:"lastActivity"` // unix timestamp
+	LastActivity int64  `json:"lastActivity"`      // unix timestamp
 }
 
 // loadLabels reads the sessionId→label sidecar written by Emacs (or by hand).
@@ -614,6 +616,57 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("%v: %s", err, strings.TrimSpace(string(out)))})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// handleLabel sets/clears a convo label via the Emacs daemon — same
+// bridge as handleKill.  Emacs owns the label hash and mirrors it to
+// labels.json, so rig and phone always agree.
+func handleLabel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		BufferName string `json:"bufferName"`
+		Label      string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.BufferName == "" || !validBufferName.MatchString(req.BufferName) {
+		http.Error(w, "invalid buffer name", http.StatusBadRequest)
+		return
+	}
+	if len(req.Label) > 80 {
+		http.Error(w, "label too long", http.StatusBadRequest)
+		return
+	}
+
+	esc := func(v string) string {
+		v = strings.ReplaceAll(v, `\`, `\\`)
+		return strings.ReplaceAll(v, `"`, `\"`)
+	}
+	expr := fmt.Sprintf(`(mr-x/agent-label-set "%s" "%s")`, esc(req.BufferName), esc(req.Label))
+
+	out, err := command("emacsclient", "--eval", expr).CombinedOutput()
+	if err != nil {
+		log.Printf("label: %v: %s", err, out)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": strings.TrimSpace(string(out))})
+		return
+	}
+	if strings.TrimSpace(string(out)) == "nil" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "no such buffer"})
 		return
 	}
 

@@ -2482,6 +2482,25 @@ document.getElementById('refresh-btn').addEventListener('click', loadSessions);
 document.getElementById('back-btn').addEventListener('click', navigateBack);
 document.getElementById('mode-btn').addEventListener('click', cycleMode);
 document.getElementById('files-btn').addEventListener('click', openFileBrowser);
+
+// Tap the chat title → label this convo. Goes through Emacs (single
+// source of truth), which mirrors to labels.json for the cards.
+headerTitle.addEventListener('click', async () => {
+  if (!currentBufferName) { alert('No buffer name for this session yet (old session — reload it on the rig first).'); return; }
+  const current = (lastSessions.find(s => s.bufferName === currentBufferName) || {}).label || '';
+  const label = window.prompt('Label this convo (empty clears):', current);
+  if (label === null) return;
+  try {
+    const resp = await fetch(basePath + '/api/label', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ bufferName: currentBufferName, label: label.trim() })
+    });
+    const data = await resp.json();
+    if (data.error) { alert('Label failed: ' + data.error); return; }
+    headerTitle.textContent = label.trim() || currentBufferName;
+  } catch (err) { alert('Label failed: ' + err.message); }
+});
 document.getElementById('kill-btn').addEventListener('click', killSession);
 document.getElementById('fb-back').addEventListener('click', fbNavigateUp);
 document.getElementById('fb-hidden-toggle').addEventListener('click', fbToggleHidden);
