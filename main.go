@@ -622,6 +622,13 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 			sessions[i].Status = st
 		}
 	}
+	phoneTurns.mu.Lock()
+	for i := range sessions {
+		if phoneTurns.m[sessions[i].SessionID] > 0 && sessions[i].Status != "permission" {
+			sessions[i].Status = "busy"
+		}
+	}
+	phoneTurns.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"sessions": sessions})
@@ -1022,6 +1029,31 @@ func jsonRPCError(id json.RawMessage, code int, message string) []byte {
 // bridgeWebSocket connects to the proxy socket and bridges to the browser.
 // Reads the replay, keeping only responses and the last N notifications,
 // then forwards live traffic.
+// Phone-driven turns: the Emacs status sidecar can't see turns the
+// phone starts (Emacs isn't the driver), but every one of them flows
+// through this bridge — track session/prompt requests and their
+// responses so /api/sessions can report "busy" for them too.
+var phoneTurns = struct {
+	mu sync.Mutex
+	m  map[string]int
+}{m: map[string]int{}}
+
+func phoneTurnStart(sid string) {
+	phoneTurns.mu.Lock()
+	defer phoneTurns.mu.Unlock()
+	phoneTurns.m[sid]++
+}
+
+func phoneTurnEnd(sid string) {
+	phoneTurns.mu.Lock()
+	defer phoneTurns.mu.Unlock()
+	if phoneTurns.m[sid] <= 1 {
+		delete(phoneTurns.m, sid)
+	} else {
+		phoneTurns.m[sid]--
+	}
+}
+
 func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
@@ -1084,10 +1116,20 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 		len(responses), len(notifications))
 
 	// Bridge live traffic
+	var brMu sync.Mutex
+	inflight := map[string]string{} // request id -> sessionId (this bridge's prompts)
 	var once sync.Once
 	closeAll := func() {
 		ws.Close()
 		conn.Close()
+		// If the phone vanishes mid-turn its response never routes back;
+		// don't leave the session stuck "busy".
+		brMu.Lock()
+		for _, sid := range inflight {
+			phoneTurnEnd(sid)
+		}
+		inflight = map[string]string{}
+		brMu.Unlock()
 	}
 
 	go func() {
@@ -1099,6 +1141,21 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 					log.Printf("ws recv: %v", err)
 				}
 				return
+			}
+			var req struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+				Params struct {
+					SessionID string `json:"sessionId"`
+				} `json:"params"`
+			}
+			if json.Unmarshal([]byte(msg), &req) == nil &&
+				req.Method == "session/prompt" &&
+				req.Params.SessionID != "" && len(req.ID) > 0 {
+				brMu.Lock()
+				inflight[string(req.ID)] = req.Params.SessionID
+				brMu.Unlock()
+				phoneTurnStart(req.Params.SessionID)
 			}
 			conn.Write([]byte(msg))
 			conn.Write([]byte("\n"))
@@ -1114,6 +1171,19 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 				conn.Write(resp)
 				conn.Write([]byte("\n"))
 				return
+			}
+			var rsp struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			if json.Unmarshal(line, &rsp) == nil &&
+				rsp.Method == "" && len(rsp.ID) > 0 {
+				brMu.Lock()
+				if sid, ok := inflight[string(rsp.ID)]; ok {
+					delete(inflight, string(rsp.ID))
+					phoneTurnEnd(sid)
+				}
+				brMu.Unlock()
 			}
 			websocket.Message.Send(ws, string(line))
 		}
