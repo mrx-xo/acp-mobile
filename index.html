@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Agent">
@@ -151,12 +151,17 @@ body {
 #header .header-status {
   font-size: 11px; color: var(--fg-mute); font-family: var(--mono);
 }
-#header .header-status.connected { color: var(--green); }
+/* Connected is the boring default — collapse it to a green dot;
+   connecting/error states keep their words. */
+#header .header-status.connected { font-size: 0; }
+#header .header-status.connected::before {
+  content: "\25CF"; font-size: 11px; color: var(--green);
+}
 #header .header-status.error { color: var(--red); }
 #header .mode-btn {
-  border: 1px solid var(--fg-mute); border-radius: 4px;
-  padding: 1px 6px; font-size: 10px; font-weight: 600;
-  color: var(--fg-dim); background: transparent; cursor: pointer;
+  border: none !important; border-radius: 999px;
+  padding: 2px 9px; font-size: 10px; font-weight: 600;
+  color: var(--fg-dim); background: var(--bg1); cursor: pointer;
   font-family: var(--mono);
 }
 #header .mode-btn:active { opacity: 0.7; }
@@ -176,6 +181,8 @@ body {
   font-family: var(--mono);
 }
 #header .files-btn:active { opacity: 0.7; }
+/* File browser adds little on a phone — parked until it earns the spot */
+#files-btn { display: none; }
 
 /* File browser overlay */
 #file-browser {
@@ -441,12 +448,10 @@ body {
 }
 #thinking.visible { display: flex; align-items: center; gap: 8px; }
 #thinking .spinner {
-  width: 16px; height: 16px; border: 2px solid var(--bg2);
-  border-top-color: var(--yellow); border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+  color: var(--yellow); font-size: 14px; font-family: var(--mono);
+  width: 16px; text-align: center;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
-#thinking .label { color: var(--fg-dim); font-size: 13px; font-style: italic; font-family: var(--mono); }
+#thinking .label { color: var(--fg-mute); font-size: 12px; font-family: var(--mono); }
 
 /* Scroll-to-bottom button */
 #scroll-btn {
@@ -591,7 +596,7 @@ body {
 </div>
 <div id="messages"></div>
 <div id="swipe-indicator"></div>
-<div id="thinking"><div class="spinner"></div><span class="label">Agent is thinking...</span></div>
+<div id="thinking"><span class="spinner" id="spinner-glyph">⠋</span><span class="label">thinking…</span></div>
 <button id="scroll-btn">&darr;</button>
 <div id="input-area">
   <textarea id="prompt" rows="1" placeholder="Message the agent..." enterkeyhint="send"></textarea>
@@ -614,6 +619,22 @@ const navigatorEl = document.getElementById('navigator');
 const chatViewEl = document.getElementById('chat-view');
 const navListEl = document.getElementById('nav-list');
 const backBtn = document.getElementById('back-btn');
+
+// iOS keyboard fix: the layout viewport ignores the keyboard, so a
+// bottom-pinned composer disappears behind it. Track the *visual*
+// viewport and size the body to it; re-pin chat scroll if it was at
+// the bottom.
+if (window.visualViewport) {
+  const vv = window.visualViewport;
+  const syncViewport = () => {
+    const wasAtBottom = isAtBottom;
+    document.body.style.height = vv.height + 'px';
+    window.scrollTo(0, 0);
+    if (wasAtBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+  };
+  vv.addEventListener('resize', syncViewport);
+  vv.addEventListener('scroll', syncViewport);
+}
 
 // Derive base path for proxy-safe URLs (e.g. "/app/acp-mobile/" -> "/app/acp-mobile")
 const basePath = location.pathname.replace(/\/$/, '');
@@ -1145,11 +1166,24 @@ messagesEl.addEventListener('scroll', () => {
   scrollBtn.classList.toggle('visible', !isAtBottom);
 });
 
+// Terminal-style braille spinner (the rig is a terminal; so is this)
+const SPINNER_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+let spinnerTimer = null, spinnerIdx = 0;
+const spinnerGlyph = document.getElementById('spinner-glyph');
+
 function setProcessing(v) {
   processing = v;
   thinkingEl.classList.toggle('visible', v);
   sendBtn.style.display = v ? 'none' : '';
   stopBtn.style.display = v ? 'flex' : 'none';
+  if (v && !spinnerTimer) {
+    spinnerTimer = setInterval(() => {
+      spinnerIdx = (spinnerIdx + 1) % SPINNER_FRAMES.length;
+      spinnerGlyph.textContent = SPINNER_FRAMES[spinnerIdx];
+    }, 80);
+  } else if (!v && spinnerTimer) {
+    clearInterval(spinnerTimer); spinnerTimer = null;
+  }
 }
 
 function updateModeBtn() {
