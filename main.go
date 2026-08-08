@@ -267,6 +267,17 @@ func main() {
 		http.FileServerFS(fontsFS).ServeHTTP(w, r)
 	}))
 
+	mux.HandleFunc("/apple-touch-icon.png", func(w http.ResponseWriter, r *http.Request) {
+		data, err := fontsFS.ReadFile("fonts/apple-touch-icon.png")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(data)
+	})
+
 	mux.HandleFunc("/api/sessions", handleSessions)
 	mux.HandleFunc("/api/spawn", handleSpawn)
 	mux.HandleFunc("/api/kill", handleKill)
@@ -305,6 +316,14 @@ func main() {
 		clientIP := r.RemoteAddr
 		if h, _, err := net.SplitHostPort(clientIP); err == nil {
 			clientIP = h
+		}
+
+		// The icon must be public: iOS fetches apple-touch-icon WITHOUT
+		// cookies during Add to Home Screen; a 401 silently falls back
+		// to a page-screenshot icon. It's just a glyph — no secrets.
+		if r.URL.Path == "/apple-touch-icon.png" {
+			mux.ServeHTTP(w, r)
+			return
 		}
 
 		// Auth: if authkey query param is present and valid, set cookie and redirect
