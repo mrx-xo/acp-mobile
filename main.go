@@ -282,6 +282,7 @@ func main() {
 	mux.HandleFunc("/api/spawn", handleSpawn)
 	mux.HandleFunc("/api/kill", handleKill)
 	mux.HandleFunc("/api/label", handleLabel)
+	mux.HandleFunc("/api/preview", handlePreview)
 	mux.HandleFunc("/files/list", handleFileList)
 	mux.HandleFunc("/files/read", handleFileRead)
 
@@ -670,6 +671,107 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// handlePreview returns the tail of a session's conversation — the
+// multiplex socket replays full history to any connection, so we dial,
+// drain the replay, and keep the last few user/agent messages.
+func handlePreview(w http.ResponseWriter, r *http.Request) {
+	pid := r.URL.Query().Get("pid")
+	if _, err := strconv.Atoi(pid); err != nil {
+		http.Error(w, "invalid pid", http.StatusBadRequest)
+		return
+	}
+	sockPath := findSocket(pid)
+	if sockPath == "" {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	conn, err := net.DialTimeout("unix", sockPath, 500*time.Millisecond)
+	if err != nil {
+		http.Error(w, "connect failed", http.StatusBadGateway)
+		return
+	}
+	defer conn.Close()
+
+	type pvMsg struct {
+		Role string `json:"role"`
+		Text string `json:"text"`
+	}
+	var msgs []pvMsg
+
+	appendMsg := func(role, text string) {
+		if text == "" {
+			return
+		}
+		if n := len(msgs); n > 0 && msgs[n-1].Role == role {
+			msgs[n-1].Text += text
+			return
+		}
+		msgs = append(msgs, pvMsg{Role: role, Text: text})
+		// Rolling window: coalesced turns, keep a small tail
+		if len(msgs) > 12 {
+			msgs = msgs[len(msgs)-12:]
+		}
+	}
+
+	buf := make([]byte, 0, 64*1024)
+	tmp := make([]byte, 256*1024)
+	total := 0
+	for {
+		// Replay has no end marker; a quiet socket means it's drained.
+		conn.SetDeadline(time.Now().Add(200 * time.Millisecond))
+		n, err := conn.Read(tmp)
+		if n > 0 {
+			total += n
+			buf = append(buf, tmp[:n]...)
+			for {
+				nl := bytes.IndexByte(buf, '\n')
+				if nl < 0 {
+					break
+				}
+				line := buf[:nl]
+				buf = buf[nl+1:]
+				var msg struct {
+					Method string `json:"method"`
+					Params struct {
+						Update struct {
+							SessionUpdate string `json:"sessionUpdate"`
+							Content       struct {
+								Text string `json:"text"`
+							} `json:"content"`
+						} `json:"update"`
+					} `json:"params"`
+				}
+				if json.Unmarshal(line, &msg) != nil || msg.Method != "session/update" {
+					continue
+				}
+				switch msg.Params.Update.SessionUpdate {
+				case "user_message_chunk":
+					appendMsg("user", msg.Params.Update.Content.Text)
+				case "agent_message_chunk":
+					appendMsg("agent", msg.Params.Update.Content.Text)
+				}
+			}
+		}
+		if err != nil || total > 8*1024*1024 {
+			break
+		}
+	}
+
+	// Final trim: last 8 turns, each capped for the sheet
+	if len(msgs) > 8 {
+		msgs = msgs[len(msgs)-8:]
+	}
+	for i := range msgs {
+		runes := []rune(msgs[i].Text)
+		if len(runes) > 700 {
+			msgs[i].Text = "…" + string(runes[len(runes)-700:])
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"messages": msgs})
 }
 
 // handleLabel sets/clears a convo label via the Emacs daemon — same
