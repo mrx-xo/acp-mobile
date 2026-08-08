@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
@@ -30,6 +31,14 @@ import (
 
 //go:embed index.html
 var indexHTML []byte
+
+// buildID fingerprints the embedded UI; clients compare it against
+// /api/sessions' version and reload themselves when it changes — iOS
+// standalone web apps resume frozen pages and never refetch on their own.
+var buildID = func() string {
+	sum := sha256.Sum256(indexHTML)
+	return hex.EncodeToString(sum[:4])
+}()
 
 // Iosevka Term Slab (subset woff2) — same face the Emacs rig runs, so
 // the phone UI and agent-shell read as one tool.
@@ -220,7 +229,9 @@ func main() {
 			fmt.Sprintf("default-src 'self'; img-src 'self' data: blob:; script-src 'nonce-%s'; style-src 'unsafe-inline'; frame-ancestors 'none'", nonce))
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(bytes.Replace(indexHTML, []byte("__CSP_NONCE__"), []byte(nonce), 1))
+		page := bytes.Replace(indexHTML, []byte("__CSP_NONCE__"), []byte(nonce), 1)
+		page = bytes.Replace(page, []byte("__BUILD_ID__"), []byte(buildID), 1)
+		w.Write(page)
 	})
 
 	mux.Handle("/ws", &websocket.Server{
@@ -632,7 +643,7 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 	phoneTurns.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"sessions": sessions})
+	json.NewEncoder(w).Encode(map[string]interface{}{"sessions": sessions, "version": buildID})
 }
 
 func handleSpawn(w http.ResponseWriter, r *http.Request) {

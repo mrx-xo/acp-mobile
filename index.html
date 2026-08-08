@@ -739,6 +739,10 @@ if (window.visualViewport) {
 // Derive base path for proxy-safe URLs (e.g. "/app/acp-mobile/" -> "/app/acp-mobile")
 const basePath = location.pathname.replace(/\/$/, '');
 
+// Self-update: iOS standalone apps resume frozen pages indefinitely.
+// When the server reports a different build, pull fresh code.
+const BUILD_ID = '__BUILD_ID__';
+
 let ws, nextId = 100, sessionId = null;
 let currentAgentMsg = null;
 let processing = false;
@@ -2284,6 +2288,10 @@ async function loadSessions() {
       return;
     }
     const data = await resp.json();
+    if (data.version && BUILD_ID.indexOf('__') !== 0 && data.version !== BUILD_ID) {
+      location.reload();
+      return;
+    }
     const sessions = data.sessions || [];
     if (sessions.length === 0) {
       navListEl.innerHTML = '<div id="nav-empty">No active sessions</div>';
