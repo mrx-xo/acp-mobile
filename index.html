@@ -74,6 +74,8 @@ body {
   font-family: var(--mono);
 }
 #nav-header .nav-btn:active { opacity: 0.6; }
+#refresh-btn.spin { animation: refresh-rot 0.8s linear infinite; }
+@keyframes refresh-rot { to { transform: rotate(360deg); } }
 #nav-list {
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
@@ -2389,8 +2391,15 @@ function timeAgo(ts) {
   return Math.floor(secs / 86400) + 'd';
 }
 
-async function loadSessions() {
-  navListEl.innerHTML = '<div id="nav-empty">Loading...</div>';
+let lastSessionsJson = '';
+
+// silent=true: background poll — no "Loading" placeholder, no re-render
+// unless the data actually changed, scroll position preserved. The ↻
+// button spins as the only hint anything happened.
+async function loadSessions(silent) {
+  const refreshBtn = document.getElementById('refresh-btn');
+  if (!silent) navListEl.innerHTML = '<div id="nav-empty">Loading...</div>';
+  else refreshBtn.classList.add('spin');
   try {
     const resp = await fetch(basePath + '/api/sessions', { method: 'POST' });
     if (!resp.ok) {
@@ -2407,16 +2416,26 @@ async function loadSessions() {
     }
     const sessions = data.sessions || [];
     if (sessions.length === 0) {
+      lastSessionsJson = '';
       navListEl.innerHTML = '<div id="nav-empty">No active sessions</div>';
       return;
     }
     discoverMode = true;
+    const j = JSON.stringify(sessions);
+    if (silent && j === lastSessionsJson) return;
+    lastSessionsJson = j;
+    const st = navListEl.scrollTop;
     renderSessions(sessions);
+    navListEl.scrollTop = st;
   } catch (err) {
-    // /api/sessions not available -- single socket mode
-    discoverMode = false;
-    showChat();
-    connect();
+    if (!silent) {
+      // /api/sessions not available -- single socket mode
+      discoverMode = false;
+      showChat();
+      connect();
+    }
+  } finally {
+    refreshBtn.classList.remove('spin');
   }
 }
 
@@ -2623,7 +2642,7 @@ spGo.addEventListener('click', async () => {
     // Wait for the new session's socket, then walk straight into it
     for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 1000));
-      await loadSessions();
+      await loadSessions(true);
       const fresh = lastSessions.find(x => !prevPids.has(x.pid));
       if (fresh) {
         clearInterval(spin);
@@ -2673,7 +2692,7 @@ function pollForNewSession() {
   let attempts = 0;
   const poll = () => {
     if (attempts++ > 10) return;
-    loadSessions().then(() => {
+    loadSessions(true).then(() => {
       if (lastSessions.length <= before) setTimeout(poll, 1000);
     });
   };
@@ -2830,7 +2849,7 @@ document.getElementById('spawn-btn').addEventListener('click', spawnAgent);
       spinT = setInterval(() => {
         ptr.textContent = FRAMES[spinI = (spinI + 1) % FRAMES.length];
       }, 80);
-      try { await loadSessions(); } catch (_) {}
+      try { await loadSessions(true); } catch (_) {}
       refreshing = false;
     }
     reset();
@@ -2842,7 +2861,7 @@ document.getElementById('spawn-btn').addEventListener('click', spawnAgent);
 setInterval(() => {
   if (discoverMode && !navigatorEl.classList.contains('hidden')
       && document.visibilityState === 'visible') {
-    loadSessions();
+    loadSessions(true);
   }
 }, 12000);
 document.getElementById('refresh-btn').addEventListener('click', loadSessions);
