@@ -472,7 +472,27 @@ type sessionInfo struct {
 	Cwd          string `json:"cwd,omitempty"`
 	Project      string `json:"project,omitempty"`
 	BufferName   string `json:"bufferName,omitempty"`
+	Preview      string `json:"preview,omitempty"` // first user message, for card headlines
+	Label        string `json:"label,omitempty"`   // user-set label from labels.json sidecar
 	LastActivity int64  `json:"lastActivity"` // unix timestamp
+}
+
+// loadLabels reads the sessionId→label sidecar written by Emacs (or by hand).
+// Missing/corrupt file is not an error — labels are optional.
+func loadLabels() map[string]string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".acp-mobile", "labels.json"))
+	if err != nil {
+		return nil
+	}
+	var labels map[string]string
+	if json.Unmarshal(data, &labels) != nil {
+		return nil
+	}
+	return labels
 }
 
 func handleSessions(w http.ResponseWriter, r *http.Request) {
@@ -525,6 +545,13 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 	for _, r := range results {
 		if r.ok {
 			sessions = append(sessions, r.info)
+		}
+	}
+
+	labels := loadLabels()
+	for i := range sessions {
+		if l, ok := labels[sessions[i].SessionID]; ok {
+			sessions[i].Label = l
 		}
 	}
 
@@ -640,6 +667,7 @@ func probeSocket(sockPath string, pid int) sessionInfo {
 	// We only need the first ~2 response messages (initialize + session/new).
 	buf := make([]byte, 64*1024)
 	var data []byte
+	var totalRead int
 	gotSessionID := false
 	gotTitle := false
 
@@ -680,6 +708,30 @@ func probeSocket(sockPath string, pid int) sessionInfo {
 					continue
 				}
 
+				// First user message in the replay becomes the card
+				// headline (replay coalesces chunks, so one notification
+				// ≈ one full prompt).
+				if info.Preview == "" && msg.Method == "session/update" && msg.Params != nil {
+					var upd struct {
+						Update struct {
+							SessionUpdate string `json:"sessionUpdate"`
+							Content       struct {
+								Text string `json:"text"`
+							} `json:"content"`
+						} `json:"update"`
+					}
+					if json.Unmarshal(msg.Params, &upd) == nil &&
+						upd.Update.SessionUpdate == "user_message_chunk" &&
+						upd.Update.Content.Text != "" {
+						preview := strings.Join(strings.Fields(upd.Update.Content.Text), " ")
+						if len(preview) > 120 {
+							preview = preview[:120]
+						}
+						info.Preview = preview
+					}
+					continue
+				}
+
 				if msg.Result == nil {
 					continue
 				}
@@ -712,10 +764,16 @@ func probeSocket(sockPath string, pid int) sessionInfo {
 					info.Project = filepath.Base(info.Cwd)
 				}
 
-				if gotSessionID && gotTitle && info.BufferName != "" {
+				if gotSessionID && gotTitle && info.BufferName != "" && info.Preview != "" {
 					return info
 				}
 			}
+		}
+		totalRead += n
+		// The handshake and first prompt live at the top of the replay;
+		// don't chew through megabytes of history for a card headline.
+		if totalRead > 512*1024 {
+			break
 		}
 		if err != nil {
 			break
