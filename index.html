@@ -2591,6 +2591,38 @@ function attachPeekSwipe(d, s, name) {
   });
 }
 
+// iOS-style edge-swipe back: start on the left edge of the chat, drag
+// right, release past threshold → back to the session list. The whole
+// view follows the finger like the native gesture.
+(function () {
+  let sx = 0, sy = 0, dx = 0, state = 'idle'; // idle | armed | dragging
+  chatViewEl.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    dx = 0;
+    state = (t.clientX <= 30) ? 'armed' : 'idle';
+    sx = t.clientX; sy = t.clientY;
+    chatViewEl.style.transition = '';
+  }, { passive: true });
+  chatViewEl.addEventListener('touchmove', (e) => {
+    if (state === 'idle') return;
+    const t = e.touches[0];
+    const mx = t.clientX - sx, my = t.clientY - sy;
+    if (state === 'armed') {
+      if (mx > 12 && Math.abs(mx) > Math.abs(my) * 1.5) state = 'dragging';
+      else if (Math.abs(my) > 16) state = 'idle';
+      if (state !== 'dragging') return;
+    }
+    dx = Math.max(0, mx);
+    chatViewEl.style.transform = 'translateX(' + dx + 'px)';
+  }, { passive: true });
+  chatViewEl.addEventListener('touchend', () => {
+    chatViewEl.style.transition = 'transform 0.18s ease';
+    chatViewEl.style.transform = '';
+    if (state === 'dragging' && dx > 80) backBtn.click();
+    state = 'idle'; dx = 0;
+  });
+})();
+
 async function showPreview(s, name) {
   pvTarget = s;
   pvTitle.textContent = name;
