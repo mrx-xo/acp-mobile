@@ -643,14 +643,14 @@ body {
 #attach-btn:active { opacity: 0.7; }
 #attach-input { display: none; }
 
-/* New outgoing messages ease in instead of popping */
-@media (prefers-reduced-motion: no-preference) {
-  .msg.msg-in {
-    animation: msg-in 0.28s cubic-bezier(0.21, 1.02, 0.55, 1);
-  }
-  @keyframes msg-in {
-    from { opacity: 0; transform: translateY(14px) scale(0.98); }
-  }
+/* New outgoing messages spring up from the composer instead of popping.
+   Deliberately NOT gated on prefers-reduced-motion — the animation was
+   asked for by name, and iOS has Reduce Motion on half the time. */
+.msg.msg-in {
+  animation: msg-in 0.34s cubic-bezier(0.18, 1.25, 0.4, 1);
+}
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(26px) scale(0.94); }
 }
 
 /* Send = gruvbox green ("go" in the rig's color language); icon, not glyph */
@@ -980,7 +980,10 @@ function addUserMsg(text, status) {
   const live = status === 'sending' || status === 'queued';
   if (live) d.classList.add('msg-in');
   messagesEl.appendChild(d);
-  if (isAtBottom) scrollToBottom(live);
+  // Sending always sweeps to the bottom (like every chat app);
+  // replayed messages only follow if already pinned there.
+  if (live) scrollToBottom(true);
+  else if (isAtBottom) scrollToBottom();
   return d;
 }
 
