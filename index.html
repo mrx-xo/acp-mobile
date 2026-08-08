@@ -829,8 +829,18 @@ if (window.visualViewport) {
     }
     if (wasAtBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
   };
-  vv.addEventListener('resize', syncViewport);
+  // The keyboard animates in over ~350ms and iOS fires the resize
+  // early — one measurement lands mid-animation (or before it), which
+  // left sheets stranded until some scroll forced a re-measure. Settle
+  // by re-syncing across the animation window.
+  const settleViewport = () => {
+    syncViewport();
+    [80, 180, 320, 480, 650].forEach(ms => setTimeout(syncViewport, ms));
+  };
+  vv.addEventListener('resize', settleViewport);
   vv.addEventListener('scroll', syncViewport);
+  window.addEventListener('focusin', settleViewport);
+  window.addEventListener('focusout', settleViewport);
 }
 
 // Derive base path for proxy-safe URLs (e.g. "/app/acp-mobile/" -> "/app/acp-mobile")
