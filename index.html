@@ -600,19 +600,27 @@ body {
 #reader-title {
   font-size: 12px; font-family: var(--mono); color: var(--fg-mute);
 }
+#reader-controls { display: flex; align-items: center; gap: 4px; }
+#reader-smaller, #reader-bigger {
+  background: var(--bg1); border: 1px solid var(--bg2); border-radius: 8px;
+  color: var(--fg); font-family: var(--mono); font-size: 13px;
+  padding: 6px 10px; cursor: pointer;
+}
+#reader-smaller:active, #reader-bigger:active { background: var(--bg2); }
 #reader-close {
   background: none; border: none; color: var(--fg);
-  font-size: 26px; line-height: 1; padding: 2px 10px; cursor: pointer;
+  font-size: 26px; line-height: 1; padding: 2px 6px 2px 10px; cursor: pointer;
 }
 #reader-body {
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding: 18px 18px calc(24px + env(safe-area-inset-bottom));
 }
-/* The cloned bubble, unboxed and enlarged for reading */
+/* The cloned bubble, unboxed and enlarged for reading.  Size is a
+   variable so the A−/A+ controls only ever touch the reader. */
 #reader-body .msg {
   max-width: none; margin: 0; padding: 0;
   background: none; border: none; border-radius: 0;
-  font-size: 17px; line-height: 1.65;
+  font-size: var(--reader-fs, 19px); line-height: 1.65;
   pointer-events: none;
   -webkit-touch-callout: default;
   -webkit-user-select: text; user-select: text;
@@ -833,7 +841,11 @@ body {
 <div id="reader">
   <div id="reader-head">
     <span id="reader-title"></span>
-    <button id="reader-close" aria-label="Close">&times;</button>
+    <div id="reader-controls">
+      <button id="reader-smaller" aria-label="Smaller text">A&minus;</button>
+      <button id="reader-bigger" aria-label="Bigger text">A+</button>
+      <button id="reader-close" aria-label="Close">&times;</button>
+    </div>
   </div>
   <div id="reader-body"></div>
 </div>
@@ -3090,6 +3102,20 @@ document.getElementById('mm-copy').addEventListener('click', () => {
   closeMsgMenu();
 });
 document.getElementById('reader-close').addEventListener('click', closeReader);
+// Reader-only text size: A−/A+ nudge a CSS var scoped to the reader,
+// clamped 15–31px, remembered across sessions.  Chat text never moves.
+let readerFs = parseInt(localStorage.getItem('readerFs'), 10) || 19;
+function applyReaderFs() {
+  readerBody.style.setProperty('--reader-fs', readerFs + 'px');
+  localStorage.setItem('readerFs', String(readerFs));
+}
+applyReaderFs();
+document.getElementById('reader-smaller').addEventListener('click', () => {
+  readerFs = Math.max(15, readerFs - 2); applyReaderFs();
+});
+document.getElementById('reader-bigger').addEventListener('click', () => {
+  readerFs = Math.min(31, readerFs + 2); applyReaderFs();
+});
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (readerEl.classList.contains('visible')) closeReader();
