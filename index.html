@@ -626,6 +626,19 @@ body {
   -webkit-user-select: text; user-select: text;
 }
 #reader-body .msg .role, #reader-body .msg .meta { display: none; }
+/* Chat children pin their own px sizes (.text 14px, code 13px, h1-h3
+   16/15/14...) which override the bubble's size — inside the reader,
+   re-scale them relative to --reader-fs so A−/A+ moves everything. */
+#reader-body .msg .text,
+#reader-body .msg .md,
+#reader-body .msg .tool-body {
+  font-size: inherit; line-height: inherit;
+}
+#reader-body .msg .md pre { font-size: 0.8em; line-height: 1.45; }
+#reader-body .msg .md code:not(pre code) { font-size: 0.85em; }
+#reader-body .msg .md h1 { font-size: 1.25em; }
+#reader-body .msg .md h2 { font-size: 1.15em; }
+#reader-body .msg .md h3 { font-size: 1.05em; }
 
 /* Spawn sheet: new convo from the phone */
 #spawn-scrim {
