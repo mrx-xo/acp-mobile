@@ -565,6 +565,60 @@ body {
 .pv-msg.agent { color: var(--fg); }
 .session-card { touch-action: pan-y; }
 
+/* Long-press a message → mini menu (view/copy) + full-screen reader.
+   Selection callout is disabled on bubbles so iOS doesn't fight the
+   long-press; the reader re-enables selection for copy-by-hand. */
+.msg { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+#mm-scrim {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+  display: none; z-index: 129;
+}
+#mm-scrim.visible { display: block; }
+#msg-menu {
+  position: fixed; left: 16px; right: 16px; z-index: 130;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  background: var(--bg1); border: 1px solid var(--bg2); border-radius: 14px;
+  display: none; flex-direction: column; overflow: hidden;
+}
+#msg-menu.visible { display: flex; }
+#msg-menu button {
+  background: none; border: none; color: var(--fg); font-family: var(--mono);
+  font-size: 15px; padding: 15px; cursor: pointer; text-align: center;
+}
+#msg-menu button + button { border-top: 1px solid var(--bg2); }
+#msg-menu button:active { background: var(--bg2); }
+#reader {
+  position: fixed; inset: 0; z-index: 131; background: var(--bg0);
+  display: none; flex-direction: column;
+}
+#reader.visible { display: flex; }
+#reader-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+  border-bottom: 1px solid var(--bg2); flex-shrink: 0;
+}
+#reader-title {
+  font-size: 12px; font-family: var(--mono); color: var(--fg-mute);
+}
+#reader-close {
+  background: none; border: none; color: var(--fg);
+  font-size: 26px; line-height: 1; padding: 2px 10px; cursor: pointer;
+}
+#reader-body {
+  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 18px 18px calc(24px + env(safe-area-inset-bottom));
+}
+/* The cloned bubble, unboxed and enlarged for reading */
+#reader-body .msg {
+  max-width: none; margin: 0; padding: 0;
+  background: none; border: none; border-radius: 0;
+  font-size: 17px; line-height: 1.65;
+  pointer-events: none;
+  -webkit-touch-callout: default;
+  -webkit-user-select: text; user-select: text;
+}
+#reader-body .msg .role, #reader-body .msg .meta { display: none; }
+
 /* Spawn sheet: new convo from the phone */
 #spawn-scrim {
   position: fixed; inset: 0; background: rgba(0,0,0,0.55);
@@ -771,6 +825,18 @@ body {
   <button id="stop-btn">Stop</button>
 </div>
 </div><!-- /chat-view -->
+<div id="mm-scrim"></div>
+<div id="msg-menu">
+  <button id="mm-view">View full screen</button>
+  <button id="mm-copy">Copy text</button>
+</div>
+<div id="reader">
+  <div id="reader-head">
+    <span id="reader-title"></span>
+    <button id="reader-close" aria-label="Close">&times;</button>
+  </div>
+  <div id="reader-body"></div>
+</div>
 <div id="spawn-scrim"></div>
 <div id="spawn-sheet">
   <div id="sp-head">
@@ -2957,6 +3023,78 @@ document.getElementById('fbv-back').addEventListener('click', closeFileViewer);
 document.getElementById('scroll-btn').addEventListener('click', scrollToBottom);
 document.getElementById('send').addEventListener('click', sendPrompt);
 document.getElementById('stop-btn').addEventListener('click', cancelPrompt);
+
+// --- Long-press a message → mini menu → full-screen reader ---
+const mmScrim = document.getElementById('mm-scrim');
+const msgMenu = document.getElementById('msg-menu');
+const readerEl = document.getElementById('reader');
+const readerBody = document.getElementById('reader-body');
+const readerTitle = document.getElementById('reader-title');
+let mmTarget = null;
+let lpTimer = null, lpStart = null;
+
+function openMsgMenu(el) {
+  mmTarget = el;
+  mmScrim.classList.add('visible');
+  msgMenu.classList.add('visible');
+}
+function closeMsgMenu() {
+  mmScrim.classList.remove('visible');
+  msgMenu.classList.remove('visible');
+}
+function openReader(el) {
+  // Clone the rendered bubble: markdown, code blocks and tool chrome
+  // come along for free; pointer-events are off in the reader so any
+  // cloned buttons are inert (read-only view).
+  const clone = el.cloneNode(true);
+  clone.removeAttribute('id');
+  clone.classList.remove('msg-in');
+  readerTitle.textContent =
+    el.classList.contains('user') ? 'You' :
+    el.classList.contains('agent') ? 'Agent' :
+    el.classList.contains('tool') ? 'Tool' : '';
+  readerBody.innerHTML = '';
+  readerBody.appendChild(clone);
+  readerEl.classList.add('visible');
+  readerBody.scrollTop = 0;
+}
+function closeReader() { readerEl.classList.remove('visible'); }
+
+messagesEl.addEventListener('touchstart', (e) => {
+  const msg = e.target.closest('.msg');
+  if (!msg) return;
+  const t = e.touches[0];
+  lpStart = {x: t.clientX, y: t.clientY};
+  clearTimeout(lpTimer);
+  lpTimer = setTimeout(() => { lpTimer = null; openMsgMenu(msg); }, 450);
+}, {passive: true});
+messagesEl.addEventListener('touchmove', (e) => {
+  if (!lpTimer) return;
+  const t = e.touches[0];
+  if (Math.abs(t.clientX - lpStart.x) > 10 ||
+      Math.abs(t.clientY - lpStart.y) > 10) {
+    clearTimeout(lpTimer); lpTimer = null;
+  }
+}, {passive: true});
+['touchend', 'touchcancel'].forEach((ev) =>
+  messagesEl.addEventListener(ev, () => { clearTimeout(lpTimer); lpTimer = null; }));
+
+mmScrim.addEventListener('click', closeMsgMenu);
+document.getElementById('mm-view').addEventListener('click', () => {
+  const el = mmTarget;
+  closeMsgMenu();
+  if (el) openReader(el);
+});
+document.getElementById('mm-copy').addEventListener('click', () => {
+  if (mmTarget) copyText(mmTarget._text || mmTarget.textContent.trim());
+  closeMsgMenu();
+});
+document.getElementById('reader-close').addEventListener('click', closeReader);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (readerEl.classList.contains('visible')) closeReader();
+  else if (msgMenu.classList.contains('visible')) closeMsgMenu();
+});
 
 // Start: try loading sessions (discover mode), fall back to direct connect
 loadSessions();
