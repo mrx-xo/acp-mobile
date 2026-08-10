@@ -653,9 +653,10 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Cwd  string `json:"cwd"`
-		Name string `json:"name"`
-		Task string `json:"task"`
+		Cwd    string `json:"cwd"`
+		Name   string `json:"name"`
+		Task   string `json:"task"`
+		Preset string `json:"preset"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -665,10 +666,19 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cwd is required", http.StatusBadRequest)
 		return
 	}
+	// Preset is a single char key into the rig's mr-x/agent-shell-presets;
+	// Emacs resolves it (and errors on unknown keys).
+	if req.Preset != "" && (len(req.Preset) != 1 || req.Preset[0] < 'a' || req.Preset[0] > 'z') {
+		http.Error(w, "invalid preset", http.StatusBadRequest)
+		return
+	}
 
 	args := []string{req.Name, req.Cwd}
-	if req.Task != "" {
+	if req.Task != "" || req.Preset != "" {
 		args = append(args, req.Task)
+	}
+	if req.Preset != "" {
+		args = append(args, req.Preset)
 	}
 
 	out, err := evalEmacs("agent-shell-spawn", args...)

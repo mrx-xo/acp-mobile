@@ -669,7 +669,7 @@ body {
 }
 .sp-label:first-child { margin-top: 0; }
 .sp-hint { color: var(--fg-mute); font-weight: 400; letter-spacing: 0; }
-#sp-projects {
+#sp-projects, #sp-presets {
   display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px;
   -webkit-overflow-scrolling: touch;
 }
@@ -873,6 +873,8 @@ body {
     <input id="sp-dir" placeholder="/path/to/project" autocapitalize="off" autocorrect="off">
     <div class="sp-label">LABEL <span class="sp-hint">(optional — names it here and on the rig)</span></div>
     <input id="sp-name" placeholder="e.g. usenet, muzik" autocapitalize="off">
+    <div class="sp-label">PRESET <span class="sp-hint">(model + permission mode)</span></div>
+    <div id="sp-presets"></div>
     <div class="sp-label">FIRST PROMPT <span class="sp-hint">(optional — sent once it's ready)</span></div>
     <textarea id="sp-task" rows="3" placeholder="what's the job?"></textarea>
     <button id="sp-go">spawn</button>
@@ -2723,10 +2725,24 @@ function navigateBack() {
 const spScrim = document.getElementById('spawn-scrim');
 const spSheet = document.getElementById('spawn-sheet');
 const spProjects = document.getElementById('sp-projects');
+const spPresets = document.getElementById('sp-presets');
 const spDir = document.getElementById('sp-dir');
 const spName = document.getElementById('sp-name');
 const spTask = document.getElementById('sp-task');
 const spGo = document.getElementById('sp-go');
+
+// Display copies of the rig's mr-x/agent-shell-presets (emacs.org) —
+// only the char key travels; Emacs resolves it, so this list lagging
+// behind a rig edit shows a stale label at worst.
+const SPAWN_PRESETS = [
+  {key: '',  label: 'default'},
+  {key: 'f', label: 'Fable · Bypass'},
+  {key: 'o', label: 'Opus · Bypass'},
+  {key: 's', label: 'Sonnet · Accept'},
+  {key: 'p', label: 'Opus · Plan'},
+  {key: 'h', label: 'Haiku · Auto'},
+];
+let spPreset = '';
 
 function openSpawnSheet(cwd) {
   const cwds = [...new Set(lastSessions.map(x => x.cwd).filter(Boolean))];
@@ -2744,6 +2760,19 @@ function openSpawnSheet(cwd) {
   }
   spDir.value = cwd || cwds[0] || '';
   if (!cwd && cwds[0]) spProjects.firstChild && spProjects.firstChild.classList.add('sel');
+  spPreset = '';
+  spPresets.innerHTML = '';
+  for (const p of SPAWN_PRESETS) {
+    const chip = document.createElement('button');
+    chip.className = 'sp-chip' + (p.key === spPreset ? ' sel' : '');
+    chip.textContent = p.label;
+    chip.onclick = () => {
+      spPreset = p.key;
+      [...spPresets.children].forEach(el => el.classList.remove('sel'));
+      chip.classList.add('sel');
+    };
+    spPresets.appendChild(chip);
+  }
   spName.value = ''; spTask.value = '';
   spGo.disabled = false; spGo.textContent = 'spawn';
   spScrim.classList.add('visible');
@@ -2770,7 +2799,7 @@ spGo.addEventListener('click', async () => {
     const resp = await fetch(basePath + '/api/spawn', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ cwd, name: spName.value.trim(), task: spTask.value.trim() })
+      body: JSON.stringify({ cwd, name: spName.value.trim(), task: spTask.value.trim(), preset: spPreset })
     });
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
