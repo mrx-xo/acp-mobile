@@ -1608,7 +1608,7 @@ function scheduleReconnect() {
       try {
         const resp = await fetch(basePath + '/api/sessions', { method: 'POST' });
         const data = await resp.json();
-        const same = (data.sessions || []).find(s => s.sessionId === currentSessionKey);
+        const same = (data.sessions || []).find(s => sKey(s) === currentSessionKey);
         if (same) currentSockPid = same.pid;
       } catch (err) { /* offline — fall through to the old pid */ }
     }
@@ -2495,11 +2495,12 @@ let discoverMode = false;
 let sortMode = localStorage.getItem('acp-sort') || 'project'; // 'project' or 'recent'
 let lastSessions = [];
 
-// Card identity: session id when known, pid as fallback while the
-// handshake hasn't produced one yet.  Session id survives the rig's
-// reload (SPC c y) — pid does not.
+// Card identity: buffer name first — it's the only thing that survives
+// the rig's reload (SPC c y), which respawns the client with a new pid
+// AND a new session id (claude resume forks).  Session id covers
+// non-rig sessions; pid covers sockets still mid-handshake.
 function sKey(s) {
-  return s.sessionId || ('pid:' + s.pid);
+  return s.bufferName || s.sessionId || ('pid:' + s.pid);
 }
 function getLastViewed(session) {
   const v = parseInt(localStorage.getItem('acp-viewed-' + sKey(session)) || '0', 10);

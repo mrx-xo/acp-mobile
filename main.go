@@ -624,26 +624,32 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// One card per SESSION, not per socket: the rig's reload (SPC c y)
-	// kills the client and respawns it — same session id, new pid — and
-	// the dying pid can still pass the liveness check during discovery.
-	// Keep the newest socket per session id; sessions still mid-handshake
-	// (no id yet) pass through untouched.
-	bySid := map[string]int{}
+	// One card per CONVO, not per socket.  The rig's reload (SPC c y)
+	// kills the client and respawns it with the SAME buffer name but a
+	// NEW pid and — because claude resume forks — a NEW session id.  So
+	// the buffer name is the only identity that survives a resync; fall
+	// back to session id for non-rig sessions, and let mid-handshake
+	// sockets (neither yet) pass through untouched.  Newest socket wins
+	// — the dying pid can still pass discovery's liveness check.
+	byKey := map[string]int{}
 	deduped := sessions[:0]
 	for _, s := range sessions {
-		if s.SessionID == "" {
+		key := s.BufferName
+		if key == "" {
+			key = s.SessionID
+		}
+		if key == "" {
 			deduped = append(deduped, s)
 			continue
 		}
-		if j, ok := bySid[s.SessionID]; ok {
+		if j, ok := byKey[key]; ok {
 			if s.LastActivity > deduped[j].LastActivity ||
 				(s.LastActivity == deduped[j].LastActivity && s.Pid > deduped[j].Pid) {
 				deduped[j] = s
 			}
 			continue
 		}
-		bySid[s.SessionID] = len(deduped)
+		byKey[key] = len(deduped)
 		deduped = append(deduped, s)
 	}
 	sessions = deduped
