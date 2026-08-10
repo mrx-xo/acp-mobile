@@ -615,17 +615,16 @@ body {
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding: 18px 18px calc(24px + env(safe-area-inset-bottom));
 }
-/* The cloned bubble, unboxed and enlarged for reading.  Size is a
-   variable so the A−/A+ controls only ever touch the reader. */
+/* The cloned bubble keeps its chat chrome (background, accent border,
+   role label) — just full-width and enlarged.  Size is a variable so
+   the A−/A+ controls only ever touch the reader. */
 #reader-body .msg {
-  max-width: none; margin: 0; padding: 0;
-  background: none; border: none; border-radius: 0;
+  max-width: none; width: auto; margin: 0; padding: 16px;
   font-size: var(--reader-fs, 19px); line-height: 1.65;
   pointer-events: none;
   -webkit-touch-callout: default;
   -webkit-user-select: text; user-select: text;
 }
-#reader-body .msg .role, #reader-body .msg .meta { display: none; }
 /* Chat children pin their own px sizes (.text 14px, code 13px, h1-h3
    16/15/14...) which override the bubble's size — inside the reader,
    re-scale them relative to --reader-fs so A−/A+ moves everything. */
