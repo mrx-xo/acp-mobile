@@ -967,6 +967,7 @@ let isAtBottom = true;
 let msgIdCounter = 0;
 let projectCwd = null;
 let currentSockPid = null;
+let currentSessionKey = null;
 let currentBufferName = null;
 
 // Permission state
@@ -1591,7 +1592,7 @@ function scheduleReconnect() {
   if (reconnectTimer) return;
   const delay = Math.min(60000, 2000 * Math.pow(2, reconnectAttempts));
   reconnectAttempts++;
-  reconnectTimer = setTimeout(() => {
+  reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
     messagesEl.innerHTML = '';
     currentAgentMsg = null;
@@ -1599,6 +1600,18 @@ function scheduleReconnect() {
     allReplayTurns = [];
     pendingPermissions = [];
     renderedTurnStart = 0;
+    // The rig's reload (SPC c y) respawns the client under a new pid —
+    // same session id.  Re-resolve before dialing so the open chat
+    // follows its session onto the new socket instead of dying with
+    // the old pid.
+    if (currentSessionKey && currentSessionKey.indexOf('pid:') !== 0) {
+      try {
+        const resp = await fetch(basePath + '/api/sessions', { method: 'POST' });
+        const data = await resp.json();
+        const same = (data.sessions || []).find(s => s.sessionId === currentSessionKey);
+        if (same) currentSockPid = same.pid;
+      } catch (err) { /* offline — fall through to the old pid */ }
+    }
     if (currentSockPid) {
       connect(String(currentSockPid));
     } else {
@@ -2482,15 +2495,25 @@ let discoverMode = false;
 let sortMode = localStorage.getItem('acp-sort') || 'project'; // 'project' or 'recent'
 let lastSessions = [];
 
-function getLastViewed(pid) {
-  return parseInt(localStorage.getItem('acp-viewed-' + pid) || '0', 10);
+// Card identity: session id when known, pid as fallback while the
+// handshake hasn't produced one yet.  Session id survives the rig's
+// reload (SPC c y) — pid does not.
+function sKey(s) {
+  return s.sessionId || ('pid:' + s.pid);
 }
-function markViewed(pid) {
-  localStorage.setItem('acp-viewed-' + pid, String(Math.floor(Date.now() / 1000)));
+function getLastViewed(session) {
+  const v = parseInt(localStorage.getItem('acp-viewed-' + sKey(session)) || '0', 10);
+  // Entries written before session-keying were keyed by bare pid —
+  // honor them so the switch doesn't mark every card unread once.
+  const old = parseInt(localStorage.getItem('acp-viewed-' + session.pid) || '0', 10);
+  return Math.max(v, old);
+}
+function markViewed(session) {
+  localStorage.setItem('acp-viewed-' + sKey(session), String(Math.floor(Date.now() / 1000)));
 }
 function isUnread(session) {
   if (!session.lastActivity) return false;
-  return session.lastActivity > getLastViewed(session.pid);
+  return session.lastActivity > getLastViewed(session);
 }
 function toggleSort() {
   sortMode = sortMode === 'project' ? 'recent' : 'project';
@@ -2672,8 +2695,9 @@ function makeSessionCard(s, name) {
 }
 
 function selectSession(session) {
-  markViewed(session.pid);
+  markViewed(session);
   currentSockPid = session.pid;
+  currentSessionKey = sKey(session);
   messagesEl.innerHTML = '';
   currentAgentMsg = null;
   sessionId = null;
@@ -2795,7 +2819,10 @@ spGo.addEventListener('click', async () => {
   let fi = 0;
   const spin = setInterval(() => { spGo.textContent = frames[fi = (fi + 1) % frames.length] + ' spawning'; }, 80);
   try {
-    const prevPids = new Set(lastSessions.map(x => x.pid));
+    // Keyed by session, not pid: a rig-side reload of some OTHER convo
+    // mid-wait surfaces a new pid but keeps its session id — only a
+    // genuinely new session counts as our spawn.
+    const prevKeys = new Set(lastSessions.map(sKey));
     const resp = await fetch(basePath + '/api/spawn', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -2807,7 +2834,7 @@ spGo.addEventListener('click', async () => {
     for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 1000));
       await loadSessions(true);
-      const fresh = lastSessions.find(x => !prevPids.has(x.pid));
+      const fresh = lastSessions.find(x => !prevKeys.has(sKey(x)));
       if (fresh) {
         clearInterval(spin);
         hideSpawnSheet();

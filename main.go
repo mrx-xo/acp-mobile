@@ -624,6 +624,30 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// One card per SESSION, not per socket: the rig's reload (SPC c y)
+	// kills the client and respawns it — same session id, new pid — and
+	// the dying pid can still pass the liveness check during discovery.
+	// Keep the newest socket per session id; sessions still mid-handshake
+	// (no id yet) pass through untouched.
+	bySid := map[string]int{}
+	deduped := sessions[:0]
+	for _, s := range sessions {
+		if s.SessionID == "" {
+			deduped = append(deduped, s)
+			continue
+		}
+		if j, ok := bySid[s.SessionID]; ok {
+			if s.LastActivity > deduped[j].LastActivity ||
+				(s.LastActivity == deduped[j].LastActivity && s.Pid > deduped[j].Pid) {
+				deduped[j] = s
+			}
+			continue
+		}
+		bySid[s.SessionID] = len(deduped)
+		deduped = append(deduped, s)
+	}
+	sessions = deduped
+
 	labels := loadLabels()
 	statuses := loadSidecar("status.json")
 	for i := range sessions {
