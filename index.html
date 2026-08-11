@@ -677,7 +677,12 @@ body {
   color: var(--fg-mute); font-size: 14px; font-family: var(--mono);
   padding: 32px 16px; text-align: center; line-height: 1.6;
 }
-#pins-btn svg { display: block; }
+.pin-group-title {
+  font-size: 12px; font-weight: 700; font-family: var(--mono);
+  color: var(--orange); margin: 18px 0 8px;
+}
+.pin-group-title:first-child { margin-top: 0; }
+#pins-btn svg, #nav-pins-btn svg { display: block; }
 
 /* Spawn sheet: new convo from the phone */
 #spawn-scrim {
@@ -833,6 +838,7 @@ body {
 <div id="navigator">
   <div id="nav-header">
     <span class="nav-title">Sessions</span>
+    <button class="nav-btn" id="nav-pins-btn" aria-label="Pinned messages"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg></button>
     <button class="nav-btn" id="sort-btn">Recent</button>
     <button class="nav-btn" id="spawn-btn">+</button>
     <button class="nav-btn" id="refresh-btn">&#8635;</button>
@@ -3291,49 +3297,87 @@ function togglePin(el) {
   }
   savePins(pins);
 }
+function buildPinItem(p, storageKey, rerender) {
+  const item = document.createElement('div');
+  item.className = 'pin-item';
+  const meta = document.createElement('div');
+  meta.className = 'pin-meta';
+  const when = new Date(p.ts);
+  const label = document.createElement('span');
+  label.textContent = (p.role ? p.role + ' · ' : '') +
+    when.toLocaleDateString() + ' ' +
+    when.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  const unpin = document.createElement('button');
+  unpin.className = 'pin-unpin';
+  unpin.textContent = 'Unpin';
+  unpin.onclick = (e) => {
+    e.stopPropagation();
+    try {
+      const arr = (JSON.parse(localStorage.getItem(storageKey)) || [])
+        .filter(q => q.ts !== p.ts);
+      if (arr.length) localStorage.setItem(storageKey, JSON.stringify(arr));
+      else localStorage.removeItem(storageKey);
+    } catch (e2) { console.warn('unpin failed', e2); }
+    rerender();
+  };
+  meta.appendChild(label);
+  meta.appendChild(unpin);
+  const holder = document.createElement('div');
+  holder.innerHTML = p.html;
+  item.appendChild(meta);
+  item.appendChild(holder);
+  // Tap → same full-screen view-only reader as in chat
+  item.addEventListener('click', () => {
+    openReader(holder.querySelector('.msg') || holder);
+  });
+  return item;
+}
+function pinsEmpty(text) {
+  const empty = document.createElement('div');
+  empty.className = 'pins-empty';
+  empty.textContent = text;
+  pinsBody.appendChild(empty);
+}
 function renderPins() {
   const pins = loadPins();
   pinsBody.innerHTML = '';
   if (!pins.length) {
-    const empty = document.createElement('div');
-    empty.className = 'pins-empty';
-    empty.textContent = 'Nothing pinned yet — hold a message and tap "Pin message".';
-    pinsBody.appendChild(empty);
+    pinsEmpty('Nothing pinned yet — hold a message and tap "Pin message".');
     return;
   }
-  for (const p of pins) {
-    const item = document.createElement('div');
-    item.className = 'pin-item';
-    const meta = document.createElement('div');
-    meta.className = 'pin-meta';
-    const when = new Date(p.ts);
-    const label = document.createElement('span');
-    label.textContent = (p.role ? p.role + ' · ' : '') +
-      when.toLocaleDateString() + ' ' +
-      when.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
-    const unpin = document.createElement('button');
-    unpin.className = 'pin-unpin';
-    unpin.textContent = 'Unpin';
-    unpin.onclick = (e) => {
-      e.stopPropagation();
-      savePins(loadPins().filter(q => q.ts !== p.ts));
-      renderPins();
-    };
-    meta.appendChild(label);
-    meta.appendChild(unpin);
-    const holder = document.createElement('div');
-    holder.innerHTML = p.html;
-    item.appendChild(meta);
-    item.appendChild(holder);
-    // Tap → same full-screen view-only reader as in chat
-    item.addEventListener('click', () => {
-      openReader(holder.querySelector('.msg') || holder);
-    });
-    pinsBody.appendChild(item);
+  for (const p of pins) pinsBody.appendChild(buildPinItem(p, pinsKey(), renderPins));
+}
+// Global view (Sessions screen): every convo's pins, grouped by session
+function renderAllPins() {
+  pinsBody.innerHTML = '';
+  const keys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.indexOf('pins:') === 0) keys.push(k);
   }
+  let shown = 0;
+  for (const k of keys.sort()) {
+    let pins;
+    try { pins = JSON.parse(localStorage.getItem(k)) || []; }
+    catch { continue; }
+    if (!pins.length) continue;
+    const name = k.slice(5);
+    const s = lastSessions.find(x => x.bufferName === name) || {};
+    const title = document.createElement('div');
+    title.className = 'pin-group-title';
+    title.textContent = s.label || name;
+    pinsBody.appendChild(title);
+    for (const p of pins) pinsBody.appendChild(buildPinItem(p, k, renderAllPins));
+    shown += pins.length;
+  }
+  if (!shown) pinsEmpty('Nothing pinned yet — hold a message in a chat and tap "Pin message".');
 }
 document.getElementById('pins-btn').addEventListener('click', () => {
   renderPins();
+  pinsEl.classList.add('visible');
+});
+document.getElementById('nav-pins-btn').addEventListener('click', () => {
+  renderAllPins();
   pinsEl.classList.add('visible');
 });
 document.getElementById('pins-close').addEventListener('click', () =>
