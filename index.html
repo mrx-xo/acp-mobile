@@ -639,6 +639,46 @@ body {
 #reader-body .msg .md h2 { font-size: 1.15em; }
 #reader-body .msg .md h3 { font-size: 1.05em; }
 
+/* Pinned messages: header pin → full-screen per-convo list, view-only.
+   Sits below the reader (131) so tapping a pin opens the reader on top. */
+#pins {
+  position: fixed; inset: 0; z-index: 128; background: var(--bg0);
+  display: none; flex-direction: column;
+}
+#pins.visible { display: flex; }
+#pins-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+  border-bottom: 1px solid var(--bg2); flex-shrink: 0;
+}
+#pins-title { font-size: 12px; font-family: var(--mono); color: var(--fg-mute); }
+#pins-close {
+  background: none; border: none; color: var(--fg);
+  font-size: 26px; line-height: 1; padding: 2px 6px 2px 10px; cursor: pointer;
+}
+#pins-body {
+  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 18px 18px calc(24px + env(safe-area-inset-bottom));
+}
+.pin-item { margin-bottom: 20px; }
+.pin-meta {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; font-family: var(--mono); color: var(--fg-mute);
+  margin-bottom: 6px;
+}
+.pin-unpin {
+  background: none; border: none; color: var(--fg-mute);
+  font-family: var(--mono); font-size: 11px; padding: 2px 6px; cursor: pointer;
+}
+.pin-unpin:active { color: var(--red); }
+/* Stored bubble renders full-width and inert; tap opens the reader */
+.pin-item .msg { max-width: none; width: auto; margin: 0; pointer-events: none; }
+.pins-empty {
+  color: var(--fg-mute); font-size: 14px; font-family: var(--mono);
+  padding: 32px 16px; text-align: center; line-height: 1.6;
+}
+#pins-btn svg { display: block; }
+
 /* Spawn sheet: new convo from the phone */
 #spawn-scrim {
   position: fixed; inset: 0; background: rgba(0,0,0,0.55);
@@ -812,6 +852,7 @@ body {
     </div>
   </div>
   <div class="header-actions">
+    <button class="files-btn" id="pins-btn" aria-label="Pinned messages"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg></button>
     <button class="files-btn" id="files-btn">Files</button>
     <button class="files-btn" id="kill-btn" style="color:var(--red);border-color:var(--red);display:none">Kill</button>
   </div>
@@ -848,7 +889,15 @@ body {
 <div id="mm-scrim"></div>
 <div id="msg-menu">
   <button id="mm-view">View full screen</button>
+  <button id="mm-pin">Pin message</button>
   <button id="mm-copy">Copy text</button>
+</div>
+<div id="pins">
+  <div id="pins-head">
+    <span id="pins-title">Pinned</span>
+    <button id="pins-close" aria-label="Close">&times;</button>
+  </div>
+  <div id="pins-body"></div>
 </div>
 <div id="reader">
   <div id="reader-head">
@@ -3139,11 +3188,13 @@ const msgMenu = document.getElementById('msg-menu');
 const readerEl = document.getElementById('reader');
 const readerBody = document.getElementById('reader-body');
 const readerTitle = document.getElementById('reader-title');
+const mmPin = document.getElementById('mm-pin');
 let mmTarget = null;
 let lpTimer = null, lpStart = null;
 
 function openMsgMenu(el) {
   mmTarget = el;
+  mmPin.textContent = isPinned(el) ? 'Unpin message' : 'Pin message';
   mmScrim.classList.add('visible');
   msgMenu.classList.add('visible');
 }
@@ -3198,6 +3249,99 @@ document.getElementById('mm-copy').addEventListener('click', () => {
   if (mmTarget) copyText(mmTarget._text || mmTarget.textContent.trim());
   closeMsgMenu();
 });
+
+// --- Pinned messages: per-convo (buffer name = durable identity),
+// stored in localStorage as the rendered bubble HTML so the pin
+// survives replays/reloads without needing a stable message id ---
+const pinsEl = document.getElementById('pins');
+const pinsBody = document.getElementById('pins-body');
+
+function pinsKey() {
+  return 'pins:' + (currentBufferName || currentSessionKey || 'unknown');
+}
+function loadPins() {
+  try { return JSON.parse(localStorage.getItem(pinsKey())) || []; }
+  catch { return []; }
+}
+function savePins(pins) {
+  try { localStorage.setItem(pinsKey(), JSON.stringify(pins)); }
+  catch (e) { console.warn('pin save failed', e); }
+}
+function msgPinText(el) { return el._text || el.textContent.trim(); }
+function isPinned(el) {
+  const text = msgPinText(el);
+  return loadPins().some(p => p.text === text);
+}
+function togglePin(el) {
+  const text = msgPinText(el);
+  let pins = loadPins();
+  if (pins.some(p => p.text === text)) {
+    pins = pins.filter(p => p.text !== text);
+  } else {
+    const clone = el.cloneNode(true);
+    clone.removeAttribute('id');
+    clone.classList.remove('msg-in');
+    pins.push({
+      html: clone.outerHTML, text,
+      role: el.classList.contains('user') ? 'You' :
+            el.classList.contains('agent') ? 'Agent' :
+            el.classList.contains('tool') ? 'Tool' : '',
+      ts: Date.now()
+    });
+  }
+  savePins(pins);
+}
+function renderPins() {
+  const pins = loadPins();
+  pinsBody.innerHTML = '';
+  if (!pins.length) {
+    const empty = document.createElement('div');
+    empty.className = 'pins-empty';
+    empty.textContent = 'Nothing pinned yet — hold a message and tap "Pin message".';
+    pinsBody.appendChild(empty);
+    return;
+  }
+  for (const p of pins) {
+    const item = document.createElement('div');
+    item.className = 'pin-item';
+    const meta = document.createElement('div');
+    meta.className = 'pin-meta';
+    const when = new Date(p.ts);
+    const label = document.createElement('span');
+    label.textContent = (p.role ? p.role + ' · ' : '') +
+      when.toLocaleDateString() + ' ' +
+      when.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    const unpin = document.createElement('button');
+    unpin.className = 'pin-unpin';
+    unpin.textContent = 'Unpin';
+    unpin.onclick = (e) => {
+      e.stopPropagation();
+      savePins(loadPins().filter(q => q.ts !== p.ts));
+      renderPins();
+    };
+    meta.appendChild(label);
+    meta.appendChild(unpin);
+    const holder = document.createElement('div');
+    holder.innerHTML = p.html;
+    item.appendChild(meta);
+    item.appendChild(holder);
+    // Tap → same full-screen view-only reader as in chat
+    item.addEventListener('click', () => {
+      openReader(holder.querySelector('.msg') || holder);
+    });
+    pinsBody.appendChild(item);
+  }
+}
+document.getElementById('pins-btn').addEventListener('click', () => {
+  renderPins();
+  pinsEl.classList.add('visible');
+});
+document.getElementById('pins-close').addEventListener('click', () =>
+  pinsEl.classList.remove('visible'));
+mmPin.addEventListener('click', () => {
+  if (mmTarget) togglePin(mmTarget);
+  closeMsgMenu();
+});
 document.getElementById('reader-close').addEventListener('click', closeReader);
 // Reader-only text size: A−/A+ nudge a CSS var scoped to the reader,
 // clamped 15–31px, remembered across sessions.  Chat text never moves.
@@ -3217,6 +3361,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (readerEl.classList.contains('visible')) closeReader();
   else if (msgMenu.classList.contains('visible')) closeMsgMenu();
+  else if (pinsEl.classList.contains('visible')) pinsEl.classList.remove('visible');
 });
 
 // Start: try loading sessions (discover mode), fall back to direct connect
