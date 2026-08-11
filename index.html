@@ -962,6 +962,7 @@ let ws, nextId = 100, sessionId = null;
 let currentAgentMsg = null;
 let processing = false;
 let reconnectAttempts = 0;
+let waitForSessionAttempts = 0;
 let reconnectTimer = null;
 let isAtBottom = true;
 let msgIdCounter = 0;
@@ -1558,6 +1559,7 @@ function connect(pid) {
     statusText.textContent = 'Connected';
     statusText.className = 'header-status connected';
     reconnectAttempts = 0;
+    waitForSessionAttempts = 0;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   };
 
@@ -1619,17 +1621,23 @@ function scheduleReconnect() {
         } else if (!sessions.some(s => s.pid === currentSockPid)) {
           // Our socket is gone and the session hasn't resurfaced yet
           // (mid-reload on the rig, or killed, or its probe timed out).
-          // Dialing the dead pid just burns retries — wait and re-check.
-          if (reconnectAttempts < 8) {
+          // Dialing the dead pid just burns retries — re-check on a
+          // fast fixed clock (a rig reload resurfaces in seconds; the
+          // ws backoff would stretch this to minutes).
+          if (waitForSessionAttempts < 10) {
+            waitForSessionAttempts++;
             statusText.textContent = 'Waiting for session...';
             statusText.className = 'header-status';
+            reconnectAttempts = 1; // pin backoff: ~4s per re-check
             scheduleReconnect();
             return;
           }
-          // It never came back — bail to the list rather than freeze.
+          // ~40s and it never came back — bail to the list, not a freeze.
+          waitForSessionAttempts = 0;
           showNavigator();
           return;
         }
+        waitForSessionAttempts = 0;
       } catch (err) { /* offline — fall through to the old pid */ }
     }
     if (currentSockPid) {
