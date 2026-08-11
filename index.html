@@ -566,9 +566,15 @@ body {
 .session-card { touch-action: pan-y; }
 
 /* Long-press a message → mini menu (view/copy) + full-screen reader.
-   Selection callout is disabled on bubbles so iOS doesn't fight the
-   long-press; the reader re-enables selection for copy-by-hand. */
-.msg { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+   Selection is disabled on the WHOLE page, not just bubbles: iOS
+   otherwise anchors a selection on the nearest selectable ancestor and
+   highlights the entire screen behind our menu. Opt back in only where
+   copy-by-hand matters: inputs, the reader, the file viewer. */
+html, body { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+input, textarea, #fbv-content {
+  -webkit-touch-callout: default;
+  -webkit-user-select: text; user-select: text;
+}
 #mm-scrim {
   position: fixed; inset: 0; background: rgba(0,0,0,0.45);
   display: none; z-index: 129;
