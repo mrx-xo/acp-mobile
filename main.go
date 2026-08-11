@@ -571,6 +571,14 @@ func loadLabels() map[string]string {
 	return labels
 }
 
+// probeCache: identity fields from the last successful probe of each pid.
+// /api/sessions probes race a 3s budget; under load a slow probe used to
+// return a bare {pid} card with no bufferName/sessionId.
+var probeCache = struct {
+	mu sync.Mutex
+	m  map[int]sessionInfo
+}{m: map[int]sessionInfo{}}
+
 func handleSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -578,6 +586,19 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	socks := discoverSockets()
+
+	// Prune cache entries for sockets that no longer exist.
+	alive := map[int]bool{}
+	for _, s := range socks {
+		alive[s.pid] = true
+	}
+	probeCache.mu.Lock()
+	for pid := range probeCache.m {
+		if !alive[pid] {
+			delete(probeCache.m, pid)
+		}
+	}
+	probeCache.mu.Unlock()
 
 	type result struct {
 		info sessionInfo
@@ -605,13 +626,25 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-done:
 				info.LastActivity = sock.mtime
+				if info.BufferName != "" || info.SessionID != "" {
+					probeCache.mu.Lock()
+					probeCache.m[sock.pid] = info
+					probeCache.mu.Unlock()
+				}
 				results[idx] = result{info: info, ok: true}
 			case <-ctx.Done():
-				// Timed out — return partial info
-				results[idx] = result{
-					info: sessionInfo{Pid: sock.pid, LastActivity: sock.mtime},
-					ok:   true,
-				}
+				// Timed out — fall back to the last successful probe's
+				// identity fields.  A bare {pid} card can't be matched by
+				// bufferName/sessionId, which breaks the client's card
+				// keying and reconnect re-resolve exactly when a rig-side
+				// reload makes them matter most.
+				probeCache.mu.Lock()
+				cached := probeCache.m[sock.pid]
+				probeCache.mu.Unlock()
+				cached.Pid = sock.pid
+				cached.LastActivity = sock.mtime
+				cached.Status = "" // liveness is stale; sidecars re-merge below
+				results[idx] = result{info: cached, ok: true}
 			}
 		}()
 	}

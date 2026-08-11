@@ -1603,13 +1603,33 @@ function scheduleReconnect() {
     // The rig's reload (SPC c y) respawns the client under a new pid —
     // same session id.  Re-resolve before dialing so the open chat
     // follows its session onto the new socket instead of dying with
-    // the old pid.
+    // the old pid.  (Observed failure this guards against: 40+ dials
+    // of a dead pid — "ws: no socket for pid N" — freezing the view.)
     if (currentSessionKey && currentSessionKey.indexOf('pid:') !== 0) {
       try {
         const resp = await fetch(basePath + '/api/sessions', { method: 'POST' });
         const data = await resp.json();
-        const same = (data.sessions || []).find(s => sKey(s) === currentSessionKey);
-        if (same) currentSockPid = same.pid;
+        const sessions = data.sessions || [];
+        const same = sessions.find(s => sKey(s) === currentSessionKey);
+        if (same) {
+          // Fresh socket for our session — connect eagerly, don't let
+          // earlier failed attempts' backoff delay the reunion.
+          if (same.pid !== currentSockPid) reconnectAttempts = 1;
+          currentSockPid = same.pid;
+        } else if (!sessions.some(s => s.pid === currentSockPid)) {
+          // Our socket is gone and the session hasn't resurfaced yet
+          // (mid-reload on the rig, or killed, or its probe timed out).
+          // Dialing the dead pid just burns retries — wait and re-check.
+          if (reconnectAttempts < 8) {
+            statusText.textContent = 'Waiting for session...';
+            statusText.className = 'header-status';
+            scheduleReconnect();
+            return;
+          }
+          // It never came back — bail to the list rather than freeze.
+          showNavigator();
+          return;
+        }
       } catch (err) { /* offline — fall through to the old pid */ }
     }
     if (currentSockPid) {
