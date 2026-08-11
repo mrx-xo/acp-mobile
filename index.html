@@ -593,6 +593,25 @@ input, textarea, #fbv-content {
 }
 #msg-menu button + button { border-top: 1px solid var(--bg2); }
 #msg-menu button:active { background: var(--bg2); }
+/* Chat ⋮ menu: same bottom-sheet pattern as the message menu */
+#cm-scrim {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+  display: none; z-index: 129;
+}
+#cm-scrim.visible { display: block; }
+#chat-menu {
+  position: fixed; left: 16px; right: 16px; z-index: 130;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  background: var(--bg1); border: 1px solid var(--bg2); border-radius: 14px;
+  display: none; flex-direction: column; overflow: hidden;
+}
+#chat-menu.visible { display: flex; }
+#chat-menu button {
+  background: none; border: none; color: var(--fg); font-family: var(--mono);
+  font-size: 15px; padding: 15px; cursor: pointer; text-align: center;
+}
+#chat-menu button + button { border-top: 1px solid var(--bg2); }
+#chat-menu button:active { background: var(--bg2); }
 #reader {
   position: fixed; inset: 0; z-index: 131; background: var(--bg0);
   display: none; flex-direction: column;
@@ -673,7 +692,9 @@ input, textarea, #fbv-content {
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding: 18px 18px calc(24px + env(safe-area-inset-bottom));
 }
-.pin-item { margin-bottom: 20px; }
+.pin-item { margin-bottom: 16px; }
+/* Lighter separation than the main window's chat cards, but visible */
+.pin-item + .pin-item { border-top: 1px solid var(--bg1); padding-top: 14px; }
 .pin-meta {
   display: flex; align-items: center; justify-content: space-between;
   font-size: 11px; font-family: var(--mono); color: var(--fg-mute);
@@ -710,7 +731,7 @@ input, textarea, #fbv-content {
   font-size: 11px; color: var(--fg-mute); margin-top: 3px;
   font-family: var(--mono);
 }
-#pins-btn svg, #nav-pins-btn svg { display: block; }
+#nav-pins-btn svg { display: block; }
 
 /* Spawn sheet: new convo from the phone */
 #spawn-scrim {
@@ -886,9 +907,8 @@ input, textarea, #fbv-content {
     </div>
   </div>
   <div class="header-actions">
-    <button class="files-btn" id="pins-btn" aria-label="Pinned messages"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg></button>
     <button class="files-btn" id="files-btn">Files</button>
-    <button class="files-btn" id="kill-btn" style="color:var(--red);border-color:var(--red);display:none">Kill</button>
+    <button class="files-btn" id="chat-menu-btn" aria-label="Menu" style="display:none">&#8942;</button>
   </div>
 </div>
 <div id="file-browser">
@@ -925,6 +945,11 @@ input, textarea, #fbv-content {
   <button id="mm-view">View full screen</button>
   <button id="mm-pin">Pin message</button>
   <button id="mm-copy">Copy text</button>
+</div>
+<div id="cm-scrim"></div>
+<div id="chat-menu">
+  <button id="cm-pinned">Pinned</button>
+  <button id="cm-kill" style="color:var(--red)">Kill session</button>
 </div>
 <div id="pins">
   <div id="pins-head">
@@ -1987,7 +2012,7 @@ function flushReplay() {
     if (msg.method === 'acp-multiplex/meta' && msg.params && msg.params.name) {
       currentBufferName = msg.params.name;
       updateChatHeader();
-      document.getElementById('kill-btn').style.display = '';
+      document.getElementById('chat-menu-btn').style.display = '';
       continue;
     }
     // Permission requests from agent (reverse calls)
@@ -2183,7 +2208,7 @@ function handleMessage(msg) {
   if (msg.method === 'acp-multiplex/meta' && msg.params && msg.params.name) {
     currentBufferName = msg.params.name;
     updateChatHeader();
-    document.getElementById('kill-btn').style.display = '';
+    document.getElementById('chat-menu-btn').style.display = '';
     return;
   }
 
@@ -2817,7 +2842,7 @@ function selectSession(session) {
   projectCwd = session.cwd || null;
   currentBufferName = session.bufferName || null;
   updateChatHeader();
-  document.getElementById('kill-btn').style.display = currentBufferName ? '' : 'none';
+  document.getElementById('chat-menu-btn').style.display = currentBufferName ? '' : 'none';
   availableModes = [];
   allReplayTurns = [];
   pendingPermissions = [];
@@ -3208,7 +3233,29 @@ headerTitle.addEventListener('click', async () => {
     updateChatHeader();
   } catch (err) { alert('Label failed: ' + err.message); }
 });
-document.getElementById('kill-btn').addEventListener('click', killSession);
+// Chat ⋮ menu: Pinned (only when this chat has pins) + Kill
+const cmScrim = document.getElementById('cm-scrim');
+const chatMenu = document.getElementById('chat-menu');
+const cmPinned = document.getElementById('cm-pinned');
+function closeChatMenu() {
+  cmScrim.classList.remove('visible');
+  chatMenu.classList.remove('visible');
+}
+document.getElementById('chat-menu-btn').addEventListener('click', () => {
+  cmPinned.style.display = loadPins().length ? '' : 'none';
+  cmScrim.classList.add('visible');
+  chatMenu.classList.add('visible');
+});
+cmScrim.addEventListener('click', closeChatMenu);
+cmPinned.addEventListener('click', () => {
+  closeChatMenu();
+  renderPins();
+  pinsEl.classList.add('visible');
+});
+document.getElementById('cm-kill').addEventListener('click', () => {
+  closeChatMenu();
+  killSession();
+});
 document.getElementById('fb-back').addEventListener('click', fbNavigateUp);
 document.getElementById('fb-hidden-toggle').addEventListener('click', fbToggleHidden);
 document.getElementById('fb-close').addEventListener('click', closeFileBrowser);
@@ -3439,10 +3486,6 @@ function renderAllPins() {
     pinsBody.appendChild(card);
   }
 }
-document.getElementById('pins-btn').addEventListener('click', () => {
-  renderPins();
-  pinsEl.classList.add('visible');
-});
 document.getElementById('nav-pins-btn').addEventListener('click', () => {
   renderAllPins();
   pinsEl.classList.add('visible');
@@ -3473,6 +3516,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (readerEl.classList.contains('visible')) closeReader();
   else if (msgMenu.classList.contains('visible')) closeMsgMenu();
+  else if (chatMenu.classList.contains('visible')) closeChatMenu();
   else if (pinsEl.classList.contains('visible')) pinsEl.classList.remove('visible');
 });
 
