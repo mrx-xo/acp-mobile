@@ -66,7 +66,19 @@ body {
 }
 #nav-header .nav-title {
   flex: 1; font-size: 18px; font-weight: 700; color: var(--fg);
-  font-family: var(--mono);
+  font-family: var(--mono); cursor: pointer;
+}
+#nav-header .nav-title:active { opacity: 0.6; }
+/* Tap affordance: the title is the Sessions/Projects toggle */
+#nav-header .nav-caret {
+  color: var(--fg-mute); font-size: 13px; font-weight: 400;
+  margin-left: 6px;
+}
+/* Loading spinner (braille frames while any fetch is in flight);
+   fixed width so the header doesn't shift when it appears */
+#nav-spin {
+  width: 18px; text-align: center; color: var(--yellow);
+  font-family: var(--mono); font-size: 15px; flex-shrink: 0;
 }
 #nav-header .nav-btn {
   background: transparent; border: none; color: var(--orange);
@@ -886,11 +898,10 @@ input, textarea, #fbv-content {
 <body>
 <div id="navigator">
   <div id="nav-header">
-    <span class="nav-title">Sessions</span>
+    <span class="nav-title" id="nav-title"><span id="nav-title-text">Sessions</span><span class="nav-caret">&#8964;</span></span>
+    <span id="nav-spin"></span>
     <button class="nav-btn" id="nav-pins-btn" aria-label="Pinned messages"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg></button>
-    <button class="nav-btn" id="sort-btn">Recent</button>
     <button class="nav-btn" id="spawn-btn">+</button>
-    <button class="nav-btn" id="refresh-btn">&#8635;</button>
   </div>
   <div id="ptr">↻</div>
   <div id="nav-list"></div>
@@ -2656,7 +2667,6 @@ function isUnread(session) {
 function toggleSort() {
   sortMode = sortMode === 'project' ? 'recent' : 'project';
   localStorage.setItem('acp-sort', sortMode);
-  document.getElementById('sort-btn').textContent = sortMode === 'project' ? 'Recent' : 'Project';
   renderSessions(lastSessions);
 }
 
@@ -2671,25 +2681,24 @@ function timeAgo(ts) {
 
 let lastSessionsJson = '';
 
-// All loading states live in the header: the ↻ button becomes the
-// braille spinner while any fetch is in flight. The list itself never
+// All loading states live in the header: #nav-spin shows braille
+// frames while any fetch is in flight (empty when idle — the refresh
+// button is gone, pull-to-refresh is the manual path). The list never
 // flashes a "Loading" placeholder.
-const refreshBtnEl = document.getElementById('refresh-btn');
+const navSpinEl = document.getElementById('nav-spin');
 const NAV_FRAMES = ['\u280b','\u2819','\u2839','\u2838','\u283c','\u2834','\u2826','\u2827','\u2807','\u280f'];
 let navSpinCount = 0, navSpinT = null, navSpinI = 0;
 function navSpinStart() {
   if (++navSpinCount === 1) {
-    refreshBtnEl.style.color = 'var(--yellow)';
     navSpinT = setInterval(() => {
-      refreshBtnEl.textContent = NAV_FRAMES[navSpinI = (navSpinI + 1) % NAV_FRAMES.length];
+      navSpinEl.textContent = NAV_FRAMES[navSpinI = (navSpinI + 1) % NAV_FRAMES.length];
     }, 80);
   }
 }
 function navSpinStop() {
   if (navSpinCount > 0 && --navSpinCount === 0) {
     clearInterval(navSpinT); navSpinT = null;
-    refreshBtnEl.textContent = '\u21bb';
-    refreshBtnEl.style.color = '';
+    navSpinEl.textContent = '';
   }
 }
 
@@ -2739,7 +2748,8 @@ async function loadSessions(silent) {
 function renderSessions(sessions) {
   lastSessions = sessions;
   navListEl.innerHTML = '';
-  document.getElementById('sort-btn').textContent = sortMode === 'project' ? 'Recent' : 'Project';
+  document.getElementById('nav-title-text').textContent =
+    sortMode === 'project' ? 'Projects' : 'Sessions';
 
   if (sortMode === 'recent') {
     // Flat list sorted by lastActivity descending
@@ -3043,7 +3053,7 @@ async function killSessionByName(bufferName) {
 }
 
 // Wire up event listeners (no inline onclick for CSP compatibility)
-document.getElementById('sort-btn').addEventListener('click', toggleSort);
+document.getElementById('nav-title').addEventListener('click', toggleSort);
 // Peek sheet: last few turns from the replay, no full open
 const pvScrim = document.getElementById('preview-scrim');
 const pvSheet = document.getElementById('preview-sheet');
@@ -3208,7 +3218,6 @@ setInterval(() => {
     loadSessions(true);
   }
 }, 12000);
-document.getElementById('refresh-btn').addEventListener('click', loadSessions);
 document.getElementById('back-btn').addEventListener('click', navigateBack);
 document.getElementById('mode-btn').addEventListener('click', cycleMode);
 document.getElementById('files-btn').addEventListener('click', openFileBrowser);
