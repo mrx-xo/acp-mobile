@@ -569,12 +569,20 @@ body {
 #pv-body {
   overflow-y: auto; -webkit-overflow-scrolling: touch;
   padding: 12px 16px;
+  background: var(--bg-hard); /* chat canvas, so bubbles read like the real convo */
 }
-.pv-msg { margin-bottom: 12px; font-size: 13px; line-height: 1.5;
-  white-space: pre-wrap; word-break: break-word; }
-.pv-msg.user { color: var(--orange); }
-.pv-msg.user::before { content: "𐆖 "; }
-.pv-msg.agent { color: var(--fg); }
+/* Compact versions of the chat's bubble language: user = orange-railed
+   prompt line pushed right, agent = flat surface card on the left. */
+.pv-msg { margin-bottom: 10px; font-size: 13px; line-height: 1.5;
+  word-break: break-word; padding: 10px 12px; border-radius: 10px; }
+.pv-msg.user {
+  background: var(--bg1); color: var(--fg); font-family: var(--mono);
+  white-space: pre-wrap; width: fit-content; max-width: 85%;
+  margin-left: auto; border-left: 3px solid var(--orange);
+  border-radius: 4px 10px 10px 4px;
+}
+.pv-msg.user::before { content: "𐆖 "; color: var(--orange); }
+.pv-msg.agent { background: var(--bg0); color: var(--fg); }
 .session-card { touch-action: pan-y; }
 
 /* Swipe-left a message → mini menu (view/copy/pin) + full-screen reader.
@@ -860,42 +868,49 @@ input, textarea, #fbv-content, .msg, .msg * {
 #stop-btn:active { background: #cc241d; }
 
 /* Markdown in agent messages */
-.msg.agent .md pre {
+:is(.msg.agent, .pv-msg.agent) .md pre {
   background: var(--bg-hard); border: 1px solid var(--bg1);
   border-radius: 6px; padding: 10px; margin: 6px 0;
   overflow-x: auto; font-size: 13px; line-height: 1.4;
 }
-.msg.agent .md code {
+:is(.msg.agent, .pv-msg.agent) .md code {
   font-family: var(--mono);
 }
-.msg.agent .md code:not(pre code) {
+:is(.msg.agent, .pv-msg.agent) .md code:not(pre code) {
   background: var(--bg-hard); padding: 2px 5px; border-radius: 3px;
   color: var(--aqua); font-size: 13px;
 }
-.msg.agent .md strong { font-weight: 700; }
-.msg.agent .md em { font-style: italic; }
-.msg.agent .md a { color: var(--purple); text-decoration: underline; }
-.msg.agent .md ul, .msg.agent .md ol {
+:is(.msg.agent, .pv-msg.agent) .md strong { font-weight: 700; }
+:is(.msg.agent, .pv-msg.agent) .md em { font-style: italic; }
+:is(.msg.agent, .pv-msg.agent) .md a { color: var(--purple); text-decoration: underline; }
+:is(.msg.agent, .pv-msg.agent) .md ul, :is(.msg.agent, .pv-msg.agent) .md ol {
   margin: 4px 0; padding-left: 20px;
 }
-.msg.agent .md li { margin: 2px 0; }
+:is(.msg.agent, .pv-msg.agent) .md li { margin: 2px 0; }
 /* Same heading ramp as agent-shell's org-level face remap (orange/yellow/aqua) */
-.msg.agent .md h1, .msg.agent .md h2, .msg.agent .md h3 {
+:is(.msg.agent, .pv-msg.agent) .md h1, :is(.msg.agent, .pv-msg.agent) .md h2, :is(.msg.agent, .pv-msg.agent) .md h3 {
   margin: 10px 0 4px 0; font-weight: 700;
   font-family: var(--mono);
 }
-.msg.agent .md h1 { font-size: 16px; color: var(--h1); }
-.msg.agent .md h2 { font-size: 15px; color: var(--h2); }
-.msg.agent .md h3 { font-size: 14px; color: var(--h3); }
-.msg.agent .md blockquote {
+:is(.msg.agent, .pv-msg.agent) .md h1 { font-size: 16px; color: var(--h1); }
+:is(.msg.agent, .pv-msg.agent) .md h2 { font-size: 15px; color: var(--h2); }
+:is(.msg.agent, .pv-msg.agent) .md h3 { font-size: 14px; color: var(--h3); }
+:is(.msg.agent, .pv-msg.agent) .md blockquote {
   border-left: 3px solid var(--bg2); padding-left: 12px;
   color: var(--fg-dim); margin: 6px 0;
 }
-.msg.agent .md hr {
+:is(.msg.agent, .pv-msg.agent) .md hr {
   border: none; border-top: 1px solid var(--bg1); margin: 8px 0;
 }
-.msg.agent .md p { margin: 4px 0; }
-.msg.agent .md { color: var(--fg); font-size: 15px; line-height: 22px; }
+:is(.msg.agent, .pv-msg.agent) .md p { margin: 4px 0; }
+:is(.msg.agent, .pv-msg.agent) .md { color: var(--fg); font-size: 15px; line-height: 22px; }
+/* Peek sheet: same markdown look as bubbles, but at the sheet's compact size */
+.pv-msg.agent .md { font-size: 13px; line-height: 1.5; }
+.pv-msg.agent .md h1 { font-size: 14px; }
+.pv-msg.agent .md h2 { font-size: 13.5px; }
+.pv-msg.agent .md h3 { font-size: 13px; }
+.pv-msg.agent .md pre { font-size: 12px; }
+.pv-msg.agent .md code:not(pre code) { font-size: 12px; }
 </style>
 </head>
 <body>
@@ -3161,8 +3176,9 @@ async function showPreview(s, name) {
     const data = await resp.json();
     const msgs = data.messages || [];
     pvBody.innerHTML = msgs.length
-      ? msgs.map(m => '<div class="pv-msg ' + (m.role === 'user' ? 'user' : 'agent') + '">'
-          + escHtml(m.text) + '</div>').join('')
+      ? msgs.map(m => m.role === 'user'
+          ? '<div class="pv-msg user">' + escHtml(m.text) + '</div>'
+          : '<div class="pv-msg agent"><div class="md">' + renderMarkdown(m.text) + '</div></div>').join('')
       : '<div class="pv-msg agent">(empty conversation)</div>';
     pvBody.scrollTop = pvBody.scrollHeight;
   } catch (err) {
