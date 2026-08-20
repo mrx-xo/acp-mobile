@@ -577,13 +577,13 @@ body {
 .pv-msg.agent { color: var(--fg); }
 .session-card { touch-action: pan-y; }
 
-/* Long-press a message → mini menu (view/copy) + full-screen reader.
-   Selection is disabled on the WHOLE page, not just bubbles: iOS
-   otherwise anchors a selection on the nearest selectable ancestor and
-   highlights the entire screen behind our menu. Opt back in only where
-   copy-by-hand matters: inputs, the reader, the file viewer. */
+/* Swipe-left a message → mini menu (view/copy/pin) + full-screen reader.
+   Selection stays disabled on the chrome (nav, headers, buttons) so a
+   stray long-press never highlights the UI, but is ENABLED on message
+   bubbles so you can long-press to select/copy text inline. Also on:
+   inputs, the reader, the file viewer. */
 html, body { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
-input, textarea, #fbv-content {
+input, textarea, #fbv-content, .msg, .msg * {
   -webkit-touch-callout: default;
   -webkit-user-select: text; user-select: text;
 }
@@ -658,10 +658,13 @@ input, textarea, #fbv-content {
 #reader-body .msg {
   max-width: none; width: auto; margin: 0; padding: 16px;
   font-size: var(--reader-fs, 19px); line-height: 1.65;
-  pointer-events: none;
+  pointer-events: auto;
   -webkit-touch-callout: default;
   -webkit-user-select: text; user-select: text;
 }
+/* Keep the cloned bubble read-only: text selects, but links/buttons in
+   the clone stay inert (no navigating out of the reader). */
+#reader-body .msg a, #reader-body .msg button { pointer-events: none; }
 /* Chat children pin their own px sizes (.text 14px, code 13px, h1-h3
    16/15/14...) which override the bubble's size — inside the reader,
    re-scale them relative to --reader-fs so A−/A+ moves everything. */
@@ -1573,9 +1576,36 @@ function addPlanApprovalButtons(toolEl) {
 }
 
 function copyText(text) {
-  navigator.clipboard.writeText(text).then(() => {
-    showToast('Copied to clipboard');
-  }).catch(() => {});
+  // navigator.clipboard only exists in a secure context (HTTPS/localhost).
+  // The phone reaches this over plain HTTP, where it's undefined — fall back
+  // to a temporary textarea + execCommand (the iOS-safe Range selection dance).
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text)
+      .then(() => showToast('Copied to clipboard'))
+      .catch(() => legacyCopy(text));
+    return;
+  }
+  legacyCopy(text);
+}
+
+function legacyCopy(text) {
+  // clipboard.js's proven iOS technique: a readonly textarea kept off-screen
+  // (12pt to block iOS zoom, positioned at the current scroll offset so
+  // focusing it doesn't jump the page), select its value, then execCommand.
+  const yOffset = window.pageYOffset || document.documentElement.scrollTop || 0;
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'font-size:12pt;border:0;padding:0;margin:0;position:absolute;left:-9999px;';
+  ta.style.top = yOffset + 'px';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  showToast(ok ? 'Copied to clipboard' : 'Copy failed — long-press to select');
 }
 
 function showToast(msg) {
@@ -3281,7 +3311,7 @@ const readerBody = document.getElementById('reader-body');
 const readerTitle = document.getElementById('reader-title');
 const mmPin = document.getElementById('mm-pin');
 let mmTarget = null;
-let lpTimer = null, lpStart = null;
+let swStart = null, swMsg = null, swDone = false;
 
 function openMsgMenu(el) {
   mmTarget = el;
@@ -3295,8 +3325,9 @@ function closeMsgMenu() {
 }
 function openReader(el) {
   // Clone the rendered bubble: markdown, code blocks and tool chrome
-  // come along for free; pointer-events are off in the reader so any
-  // cloned buttons are inert (read-only view).
+  // come along for free. cloneNode drops JS listeners, and reader CSS
+  // pins links/buttons to pointer-events:none, so it stays read-only
+  // while the text itself is still selectable.
   const clone = el.cloneNode(true);
   clone.removeAttribute('id');
   clone.classList.remove('msg-in');
@@ -3311,24 +3342,27 @@ function openReader(el) {
 }
 function closeReader() { readerEl.classList.remove('visible'); }
 
+// Swipe-left on a message → action menu. Long-press is left to iOS for
+// native text selection/copy; a clear horizontal left drag opens the menu.
 messagesEl.addEventListener('touchstart', (e) => {
   const msg = e.target.closest('.msg');
-  if (!msg) return;
-  const t = e.touches[0];
-  lpStart = {x: t.clientX, y: t.clientY};
-  clearTimeout(lpTimer);
-  lpTimer = setTimeout(() => { lpTimer = null; openMsgMenu(msg); }, 450);
+  swMsg = msg; swDone = false;
+  swStart = msg ? {x: e.touches[0].clientX, y: e.touches[0].clientY} : null;
 }, {passive: true});
 messagesEl.addEventListener('touchmove', (e) => {
-  if (!lpTimer) return;
+  if (!swStart || !swMsg || swDone) return;
   const t = e.touches[0];
-  if (Math.abs(t.clientX - lpStart.x) > 10 ||
-      Math.abs(t.clientY - lpStart.y) > 10) {
-    clearTimeout(lpTimer); lpTimer = null;
+  const dx = t.clientX - swStart.x, dy = t.clientY - swStart.y;
+  if (Math.abs(dy) > 24) { swDone = true; return; }          // vertical → scroll
+  // Clear left drag, and not while a text selection is being dragged.
+  if (dx < -55 && Math.abs(dx) > Math.abs(dy) * 1.5 &&
+      !window.getSelection().toString()) {
+    swDone = true;
+    openMsgMenu(swMsg);
   }
 }, {passive: true});
 ['touchend', 'touchcancel'].forEach((ev) =>
-  messagesEl.addEventListener(ev, () => { clearTimeout(lpTimer); lpTimer = null; }));
+  messagesEl.addEventListener(ev, () => { swStart = null; swMsg = null; swDone = false; }));
 
 mmScrim.addEventListener('click', closeMsgMenu);
 document.getElementById('mm-view').addEventListener('click', () => {
