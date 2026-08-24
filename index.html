@@ -398,6 +398,9 @@ body {
   color: var(--fg); white-space: pre-wrap; max-height: 300px;
   overflow-y: auto; line-height: 16px;
 }
+.msg.tool .tool-separator {
+  border: none; border-top: 1px solid var(--bg2); margin: 8px 0;
+}
 .msg.tool.expanded .tool-body { display: block; }
 .msg.tool .tool-hint {
   color: var(--fg-mute); font-size: 10px; margin-top: 4px; font-style: italic;
@@ -1262,158 +1265,201 @@ function updateAgentMsg(el, text) {
   if (isAtBottom) scrollToBottom();
 }
 
-function addToolMsg(toolName, params, type) {
-  const d = document.createElement('div');
-  d.className = 'msg tool';
-  d.id = 'msg-' + (++msgIdCounter);
+const TOOL_KIND_ICONS = {
+  read: '\uD83D\uDCD6', edit: '\u270F\uFE0F', delete: '\uD83D\uDDD1',
+  execute: '\uD83D\uDCBB', search: '\uD83D\uDD0D', fetch: '\uD83C\uDF10',
+  think: '\uD83D\uDCAD', switch_mode: '\uD83D\uDCCB', other: '\u2699'
+};
 
-  const cleanType = (type || toolName).replace('mcp__acp__', '');
+const LEGACY_TOOL_KINDS = {
+  Read: 'read', Write: 'edit', Edit: 'edit', Bash: 'execute',
+  Grep: 'search', Glob: 'search', WebFetch: 'fetch', WebSearch: 'fetch',
+  Agent: 'think', Task: 'think', TodoWrite: 'think', ExitPlanMode: 'switch_mode'
+};
 
-  // Pick icon based on tool type
-  let icon = '\u2699'; // gear
-  if (cleanType === 'Read') icon = '\uD83D\uDCD6';
-  else if (cleanType === 'Write') icon = '\uD83D\uDCDD';
-  else if (cleanType === 'Edit') icon = '\u270F\uFE0F';
-  else if (cleanType === 'Bash') icon = '\uD83D\uDCBB';
-  else if (cleanType === 'Grep' || cleanType === 'Glob') icon = '\uD83D\uDD0D';
+function legacyToolName(update) {
+  return (update._meta && update._meta.claudeCode && update._meta.claudeCode.toolName) || '';
+}
 
-  // Extract subtitle (path/command) and description from params
-  let subtitle = '';
-  let titleText = toolName;
-  if (params) {
-    subtitle = params.file_path || params.path || params.command || '';
-    if (params.description) titleText = params.description;
+// ACP's provider-neutral kind is the styling contract.  The Claude metadata
+// fallback keeps old multiplex replays useful, but new Claude and Codex
+// adapters both advertise kind directly.
+function toolKind(update) {
+  return update.kind || LEGACY_TOOL_KINDS[legacyToolName(update)] || 'other';
+}
+
+function toolName(update) {
+  return update.title || legacyToolName(update) || '?';
+}
+
+function mergeToolUpdate(state, update) {
+  const next = state || {
+    id: '', kind: 'other', providerName: '', title: '?', status: '',
+    rawInput: null, rawOutput: null, content: null, locations: null,
+    outputText: ''
+  };
+  if (update.toolCallId) next.id = update.toolCallId;
+  if (update.kind || !state) next.kind = toolKind(update);
+  const providerName = legacyToolName(update);
+  if (providerName) next.providerName = providerName;
+  if (update.title || providerName || !state) next.title = toolName(update);
+  if (update.status) next.status = update.status;
+  if (update.rawInput !== undefined) next.rawInput = update.rawInput;
+  if (update.rawOutput !== undefined) next.rawOutput = update.rawOutput;
+  if (update.locations !== undefined) next.locations = update.locations;
+
+  const output = toolOutputText(update);
+  if (update.content !== undefined) {
+    // Initial content describes the operation (notably ACP diff blocks).
+    // Update content is normally the result and belongs after that input.
+    if (update.sessionUpdate === 'tool_call' || !output) next.content = update.content;
   }
-
-  let infoHtml = '<div class="tool-name">' + escHtml(titleText) + '</div>';
-  if (subtitle) {
-    infoHtml += '<div class="tool-path">' + escHtml(shortPath(subtitle)) + '</div>';
+  if (output && (update.sessionUpdate === 'tool_call_update' || update.rawOutput !== undefined)) {
+    next.outputText = output;
   }
+  return next;
+}
 
-  // Pre-populate tool body with input details for Edit/Write
-  let bodyHtml = '';
-  if (params && cleanType === 'Edit' && params.old_string) {
-    bodyHtml = renderDiff(params.old_string, params.new_string || '');
-  } else if (params && params.plan) {
-    bodyHtml = '<div class="md">' + renderMarkdown(params.plan) + '</div>';
-  } else if (params && cleanType === 'Write' && params.content) {
+function toolSubtitle(tool) {
+  const locations = Array.isArray(tool.locations) ? tool.locations : [];
+  if (locations.length && locations[0] && locations[0].path) return locations[0].path;
+  const content = Array.isArray(tool.content) ? tool.content : [];
+  const located = content.find(c => c && c.path);
+  if (located) return located.path;
+  const params = tool.rawInput && typeof tool.rawInput === 'object' ? tool.rawInput : null;
+  if (!params) return '';
+  if (params.file_path || params.path) return params.file_path || params.path;
+  if (params.description && params.command) return params.command;
+  if (params.cwd) return params.cwd;
+  return '';
+}
+
+function toolContentHtml(content) {
+  if (!Array.isArray(content)) return '';
+  const rendered = [];
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    if (block.type === 'diff') {
+      const path = block.path
+        ? '<div class="tool-path">' + escHtml(shortPath(block.path)) + '</div>'
+        : '';
+      rendered.push(path + renderDiff(block.oldText || '', block.newText || ''));
+      continue;
+    }
+    const inner = block.content || block;
+    if (inner.type === 'text' && inner.text) {
+      rendered.push(escHtml(inner.text));
+    } else if (inner.type === 'terminal' && inner.command) {
+      rendered.push('$ ' + escHtml(inner.command));
+    } else if (inner.type === 'resource_link' && inner.uri) {
+      rendered.push(escHtml(inner.name || inner.uri) + '\n' + escHtml(inner.uri));
+    } else if (inner.resource && inner.resource.text) {
+      rendered.push(escHtml(inner.resource.text));
+    }
+  }
+  return rendered.join('<hr class="tool-separator">');
+}
+
+function legacyToolBodyHtml(tool) {
+  const params = tool.rawInput && typeof tool.rawInput === 'object' ? tool.rawInput : null;
+  if (!params) return '';
+  if (params.old_string !== undefined || params.new_string !== undefined) {
+    return renderDiff(params.old_string || '', params.new_string || '');
+  }
+  if (params.plan) return '<div class="md">' + renderMarkdown(params.plan) + '</div>';
+  if (tool.providerName === 'Write' && params.content) {
     const preview = params.content.length > 2000
       ? params.content.slice(0, 2000) + '\n... (truncated)'
       : params.content;
-    bodyHtml = escHtml(preview);
-  } else if (params) {
-    // Show params summary for other tools (Grep pattern, Bash command, etc.)
-    const parts = [];
-    for (const [k, v] of Object.entries(params)) {
-      if (k === 'file_path' || k === 'path' || k === 'command' || k === 'description') continue; // already in title/subtitle
-      const s = typeof v === 'string' ? v : JSON.stringify(v);
-      parts.push(k + ': ' + s);
+    return escHtml(preview);
+  }
+  const parts = [];
+  for (const [k, v] of Object.entries(params)) {
+    if (k === 'file_path' || k === 'path' || k === 'command' ||
+        k === 'description' || k === 'cwd') continue;
+    const s = typeof v === 'string' ? v : JSON.stringify(v);
+    parts.push(k + ': ' + s);
+  }
+  return parts.length ? escHtml(parts.join('\n')) : '';
+}
+
+function toolBodyHtml(tool) {
+  let body = toolContentHtml(tool.content) || legacyToolBodyHtml(tool);
+  if (tool.outputText) {
+    if (body) body += '<hr class="tool-separator">';
+    body += escHtml(tool.outputText);
+  }
+  return body;
+}
+
+function renderToolCard(toolEl) {
+  const tool = toolEl._toolState;
+  Array.from(toolEl.classList)
+    .filter(c => c.indexOf('tool-kind-') === 0)
+    .forEach(c => toolEl.classList.remove(c));
+  toolEl.classList.add('tool-kind-' + String(tool.kind || 'other').replace(/[^a-z0-9_-]/gi, '-'));
+
+  const params = tool.rawInput && typeof tool.rawInput === 'object' ? tool.rawInput : null;
+  const title = (params && params.description) || tool.title || '?';
+  const nameEl = toolEl.querySelector('.tool-name');
+  nameEl.textContent = title;
+  nameEl.className = 'tool-name' +
+    (tool.status === 'completed' || tool.status === 'failed' ? ' ' + tool.status : '');
+
+  const iconEl = toolEl.querySelector('.tool-icon');
+  iconEl.textContent = tool.status === 'completed' ? '\u2713'
+    : tool.status === 'failed' ? '\u2717'
+    : TOOL_KIND_ICONS[tool.kind] || TOOL_KIND_ICONS.other;
+
+  const infoEl = toolEl.querySelector('.tool-info');
+  let pathEl = infoEl.querySelector('.tool-path');
+  const subtitle = toolSubtitle(tool);
+  if (subtitle) {
+    if (!pathEl) {
+      pathEl = document.createElement('div');
+      pathEl.className = 'tool-path';
+      infoEl.appendChild(pathEl);
     }
-    if (parts.length) bodyHtml = escHtml(parts.join('\n'));
+    pathEl.textContent = shortPath(subtitle);
+  } else if (pathEl) {
+    pathEl.remove();
   }
 
+  const body = toolEl.querySelector('.tool-body');
+  const bodyHtml = toolBodyHtml(tool);
+  body.innerHTML = bodyHtml;
+  toolEl.querySelector('.tool-hint').textContent = bodyHtml ? 'tap to view details' : 'tap to expand';
+}
+
+function makeToolMsg(tool) {
+  const d = document.createElement('div');
+  d.className = 'msg tool';
+  d.id = 'msg-' + (++msgIdCounter);
   d.innerHTML =
     '<div class="tool-header">' +
-      '<span class="tool-icon">' + icon + '</span>' +
-      '<div class="tool-info">' + infoHtml + '</div>' +
+      '<span class="tool-icon"></span>' +
+      '<div class="tool-info"><div class="tool-name"></div></div>' +
       '<span class="tool-expand">&#9656;</span>' +
     '</div>' +
-    '<div class="tool-body">' + bodyHtml + '</div>' +
-    '<div class="tool-hint">' + (bodyHtml ? 'tap to view details' : 'tap to expand') + '</div>';
+    '<div class="tool-body"></div>' +
+    '<div class="tool-hint"></div>';
+  d._toolState = tool;
+  renderToolCard(d);
   d.onclick = () => d.classList.toggle('expanded');
   d.addEventListener('contextmenu', (e) => { e.preventDefault(); copyText(toolCopyText(d)); });
+  return d;
+}
+
+function addToolMsg(tool) {
+  const d = makeToolMsg(tool);
   messagesEl.appendChild(d);
   if (isAtBottom) scrollToBottom();
   return d;
 }
 
-function updateToolInfo(toolEl, name, params, type) {
-  const cleanType = (type || name).replace('mcp__acp__', '');
-  const nameEl = toolEl.querySelector('.tool-name');
-  let titleText = name;
-  if (params && params.description) titleText = params.description;
-  if (nameEl) nameEl.textContent = titleText;
-
-  let subtitle = '';
-  if (params) subtitle = params.file_path || params.path || params.command || '';
-  const pathEl = toolEl.querySelector('.tool-path');
-  if (subtitle) {
-    if (pathEl) {
-      pathEl.textContent = shortPath(subtitle);
-    } else {
-      const infoEl = toolEl.querySelector('.tool-info');
-      if (infoEl) {
-        const p = document.createElement('div');
-        p.className = 'tool-path';
-        p.textContent = shortPath(subtitle);
-        infoEl.appendChild(p);
-      }
-    }
-  }
-
-  // Update body with input details
-  const body = toolEl.querySelector('.tool-body');
-  if (body && !body.innerHTML.trim()) {
-    let bodyHtml = '';
-    if (params && cleanType === 'Edit' && params.old_string) {
-      bodyHtml = renderDiff(params.old_string, params.new_string || '');
-    } else if (params && params.plan) {
-    bodyHtml = '<div class="md">' + renderMarkdown(params.plan) + '</div>';
-  } else if (params && cleanType === 'Write' && params.content) {
-      const preview = params.content.length > 2000
-        ? params.content.slice(0, 2000) + '\n... (truncated)'
-        : params.content;
-      bodyHtml = escHtml(preview);
-    } else if (params) {
-      // Show params summary for other tools
-      const parts = [];
-      for (const [k, v] of Object.entries(params)) {
-        if (k === 'file_path' || k === 'path' || k === 'command' || k === 'description') continue;
-        const s = typeof v === 'string' ? v : JSON.stringify(v);
-        parts.push(k + ': ' + s);
-      }
-      if (parts.length) bodyHtml = escHtml(parts.join('\n'));
-    }
-    if (bodyHtml) {
-      body.innerHTML = bodyHtml;
-      const hint = toolEl.querySelector('.tool-hint');
-      if (hint) hint.textContent = 'tap to view details';
-    }
-  }
-}
-
-function updateToolStatus(toolEl, status, content) {
-  const nameEl = toolEl.querySelector('.tool-name');
-  if (nameEl) {
-    nameEl.className = 'tool-name ' + status;
-    // Update icon
-    const iconEl = toolEl.querySelector('.tool-icon');
-    if (status === 'completed') {
-      iconEl.textContent = '\u2713';
-    } else if (status === 'failed') {
-      iconEl.textContent = '\u2717';
-    }
-  }
-  const body = toolEl.querySelector('.tool-body');
-  const hint = toolEl.querySelector('.tool-hint');
-  if (content) {
-    if (body) {
-      if (body.innerHTML.trim()) {
-        // Body has input params - add separator and append result
-        const sep = document.createElement('hr');
-        sep.style.cssText = 'border:none;border-top:1px solid #333;margin:8px 0';
-        body.appendChild(sep);
-        const out = document.createElement('div');
-        out.textContent = content;
-        body.appendChild(out);
-      } else {
-        body.textContent = content;
-      }
-    }
-    if (hint) hint.textContent = 'tap to view details';
-  } else if (body && body.innerHTML.trim()) {
-    if (hint) hint.textContent = 'tap to view details';
-  }
+function updateToolMsg(toolEl, update) {
+  toolEl._toolState = mergeToolUpdate(toolEl._toolState, update);
+  renderToolCard(toolEl);
 }
 
 function addSystemMsg(text) {
@@ -1813,26 +1859,32 @@ function scheduleReconnect() {
   }, delay);
 }
 
-function toolType(update) {
-  return (update._meta && update._meta.claudeCode && update._meta.claudeCode.toolName) || '';
-}
-
-function toolName(update) {
-  return update.title || toolType(update) || '?';
-}
-
 function toolOutputText(update) {
   if (update.rawOutput) {
     if (Array.isArray(update.rawOutput)) {
       return update.rawOutput.map(c => (c && c.text) || '').filter(Boolean).join('\n');
     }
     if (typeof update.rawOutput === 'string') return update.rawOutput;
+    if (typeof update.rawOutput === 'object') {
+      for (const key of ['formatted_output', 'output', 'text']) {
+        const value = update.rawOutput[key];
+        if (typeof value === 'string' && value) return value;
+        if (value && typeof value === 'object') {
+          try { return JSON.stringify(value, null, 2); } catch (_) { /* continue */ }
+        }
+      }
+      if (update.rawOutput.result !== undefined || update.rawOutput.error !== undefined) {
+        try { return JSON.stringify(update.rawOutput, null, 2); } catch (_) { /* continue */ }
+      }
+    }
   }
   if (Array.isArray(update.content)) {
+    const texts = [];
     for (const c of update.content) {
       const inner = c.content || c;
-      if (inner.text) return inner.text;
+      if (inner.text) texts.push(inner.text);
     }
+    if (texts.length) return texts.join('\n');
   }
   if (typeof update.content === 'string') return update.content;
   if (update.content && update.content.text) return update.content.text;
@@ -1870,16 +1922,14 @@ function renderTurnBatch(turns, prepend) {
         break;
       }
       case 'tool':
-        lastToolEl = addToolMsgTo(fragment, t.toolName, t.toolParams, t.toolType);
-        if (t.toolStatus) updateToolStatus(lastToolEl, t.toolStatus, t.toolContent);
+        lastToolEl = addToolMsgTo(fragment, t.tool);
         // Pending ExitPlanMode: show plan approval buttons (unless a permission card follows)
-        if (t.toolKind === 'switch_mode' && t.toolParams && t.toolParams.plan && !t.toolStatus) {
+        if (t.tool.kind === 'switch_mode' && t.tool.rawInput &&
+            t.tool.rawInput.plan &&
+            t.tool.status !== 'completed' && t.tool.status !== 'failed') {
           const hasPermAfter = turns.slice(_ti + 1).some(t2 => t2.type === 'permission');
           if (!hasPermAfter) addPlanApprovalButtons(lastToolEl);
         }
-        break;
-      case 'tool_update':
-        if (lastToolEl) updateToolStatus(lastToolEl, t.toolStatus, t.toolContent);
         break;
       case 'permission': {
         // Append batch so far, render permission (it appends to messagesEl),
@@ -1911,62 +1961,9 @@ function renderTurnBatch(turns, prepend) {
   }
 }
 
-// Like addToolMsg but appends to a given parent (DocumentFragment)
-function addToolMsgTo(parent, toolName, params, type) {
-  const d = document.createElement('div');
-  d.className = 'msg tool';
-  d.id = 'msg-' + (++msgIdCounter);
-
-  const cleanType = (type || toolName).replace('mcp__acp__', '');
-  let icon = '\u2699';
-  if (cleanType === 'Read') icon = '\uD83D\uDCD6';
-  else if (cleanType === 'Write') icon = '\uD83D\uDCDD';
-  else if (cleanType === 'Edit') icon = '\u270F\uFE0F';
-  else if (cleanType === 'Bash') icon = '\uD83D\uDCBB';
-  else if (cleanType === 'Grep' || cleanType === 'Glob') icon = '\uD83D\uDD0D';
-
-  let subtitle = '';
-  let titleText = toolName;
-  if (params) {
-    subtitle = params.file_path || params.path || params.command || '';
-    if (params.description) titleText = params.description;
-  }
-
-  let infoHtml = '<div class="tool-name completed">' + escHtml(titleText) + '</div>';
-  if (subtitle) {
-    infoHtml += '<div class="tool-path">' + escHtml(shortPath(subtitle)) + '</div>';
-  }
-
-  let bodyHtml = '';
-  if (params && cleanType === 'Edit' && params.old_string) {
-    bodyHtml = renderDiff(params.old_string, params.new_string || '');
-  } else if (params && params.plan) {
-    bodyHtml = '<div class="md">' + renderMarkdown(params.plan) + '</div>';
-  } else if (params && cleanType === 'Write' && params.content) {
-    const preview = params.content.length > 2000
-      ? params.content.slice(0, 2000) + '\n... (truncated)'
-      : params.content;
-    bodyHtml = escHtml(preview);
-  } else if (params) {
-    const parts = [];
-    for (const [k, v] of Object.entries(params)) {
-      if (k === 'file_path' || k === 'path' || k === 'command' || k === 'description') continue;
-      const s = typeof v === 'string' ? v : JSON.stringify(v);
-      parts.push(k + ': ' + s);
-    }
-    if (parts.length) bodyHtml = escHtml(parts.join('\n'));
-  }
-
-  d.innerHTML =
-    '<div class="tool-header">' +
-      '<span class="tool-icon">\u2713</span>' +
-      '<div class="tool-info">' + infoHtml + '</div>' +
-      '<span class="tool-expand">&#9656;</span>' +
-    '</div>' +
-    '<div class="tool-body">' + bodyHtml + '</div>' +
-    '<div class="tool-hint">' + (bodyHtml ? 'tap to view details' : 'tap to expand') + '</div>';
-  d.onclick = () => d.classList.toggle('expanded');
-  d.addEventListener('contextmenu', (e) => { e.preventDefault(); copyText(toolCopyText(d)); });
+// Like addToolMsg but appends to a given parent (DocumentFragment).
+function addToolMsgTo(parent, tool) {
+  const d = makeToolMsg(tool);
   parent.appendChild(d);
   return d;
 }
@@ -2017,7 +2014,7 @@ function flushReplay() {
 
   // First pass: process responses (initialize, session/new, prompt results)
   // and collect notification sequences into assembled turns.
-  const turns = []; // {type, text, toolName, toolParams, toolStatus, toolContent}
+  const turns = []; // message turns; tool turns carry one normalized ACP tool state
   let pendingText = '';
   let replayEnded = false; // true if we saw a stopReason or available_commands_update
 
@@ -2102,9 +2099,7 @@ function flushReplay() {
         if (tcId) {
           for (let j = turns.length - 1; j >= 0; j--) {
             if (turns[j].type === 'tool' && turns[j].toolCallId === tcId) {
-              turns[j].toolName = toolName(update);
-              turns[j].toolType = toolType(update) || turns[j].toolType;
-              turns[j].toolParams = update.rawInput || null;
+              turns[j].tool = mergeToolUpdate(turns[j].tool, update);
               found = true;
               break;
             }
@@ -2115,7 +2110,7 @@ function flushReplay() {
             turns.push({type: 'agent', text: pendingText});
             pendingText = '';
           }
-          turns.push({type: 'tool', toolCallId: tcId, toolName: toolName(update), toolType: toolType(update), toolParams: update.rawInput || null});
+          turns.push({type: 'tool', toolCallId: tcId, tool: mergeToolUpdate(null, update)});
         }
         break;
       }
@@ -2128,24 +2123,16 @@ function flushReplay() {
         if (tcuId) {
           for (let j = turns.length - 1; j >= 0; j--) {
             if (turns[j].type === 'tool' && turns[j].toolCallId === tcuId) {
-              if (update.status) turns[j].toolStatus = update.status;
-              const out = toolOutputText(update);
-              if (out) turns[j].toolContent = out;
-              // Merge rawInput/title/kind from updates (e.g. Bash gets command after initial "Terminal")
-              if (update.rawInput && Object.keys(update.rawInput).length > 0) {
-                turns[j].toolParams = update.rawInput;
-              }
-              if (update.title) turns[j].toolName = update.title;
-              if (toolType(update)) turns[j].toolType = toolType(update);
-              if (update.kind) turns[j].toolKind = update.kind;
+              turns[j].tool = mergeToolUpdate(turns[j].tool, update);
               merged = true;
               break;
             }
           }
         }
         if (!merged) {
-          // Fallback: no matching tool turn found, append as standalone
-          turns.push({type: 'tool_update', toolStatus: update.status || 'completed', toolContent: toolOutputText(update)});
+          // Fallback: no matching initial call survived the replay window.
+          turns.push({type: 'tool', toolCallId: tcuId,
+            tool: mergeToolUpdate(null, update)});
         }
         break;
       }
@@ -2307,10 +2294,10 @@ function handleMessage(msg) {
         // If we already have an element for this toolCallId, update it in place
         const existing = tcId && messagesEl._toolCalls && messagesEl._toolCalls[tcId];
         if (existing) {
-          updateToolInfo(existing, toolName(update), update.rawInput || null, toolType(update));
+          updateToolMsg(existing, update);
           messagesEl._lastTool = existing;
         } else {
-          const el = addToolMsg(toolName(update), update.rawInput || null, toolType(update));
+          const el = addToolMsg(mergeToolUpdate(null, update));
           messagesEl._lastTool = el;
           if (tcId) {
             if (!messagesEl._toolCalls) messagesEl._toolCalls = {};
@@ -2324,10 +2311,7 @@ function handleMessage(msg) {
         const tcuId = update.toolCallId;
         const toolEl = (tcuId && messagesEl._toolCalls && messagesEl._toolCalls[tcuId]) || messagesEl._lastTool;
         if (toolEl) {
-          if (update.title || (update.rawInput && Object.keys(update.rawInput).length > 0)) {
-            updateToolInfo(toolEl, update.title || toolEl.querySelector('.tool-name')?.textContent || '?', update.rawInput || null, toolType(update) || null);
-          }
-          updateToolStatus(toolEl, update.status || 'completed', toolOutputText(update));
+          updateToolMsg(toolEl, update);
         }
         break;
       }
