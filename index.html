@@ -758,6 +758,62 @@ input, textarea, #fbv-content, .msg, .msg * {
   font-family: var(--mono);
 }
 #nav-pins-btn svg { display: block; }
+#nav-history-btn svg { display: block; }
+/* History: browse agent-recall transcripts (mirrors the #pins overlay) */
+#history {
+  position: fixed; inset: 0; z-index: 128; background: var(--bg0);
+  display: none; flex-direction: column;
+}
+#history.visible { display: flex; }
+#history-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+  border-bottom: 1px solid var(--bg2); flex-shrink: 0;
+}
+#history-title {
+  flex: 1; font-size: 12px; font-family: var(--mono); color: var(--fg-mute);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#history-back {
+  background: none; border: none; color: var(--orange);
+  font-size: 20px; line-height: 1; padding: 2px 10px 2px 0; cursor: pointer;
+}
+#history-close {
+  background: none; border: none; color: var(--fg);
+  font-size: 26px; line-height: 1; padding: 2px 6px 2px 10px; cursor: pointer;
+}
+#history-body {
+  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 18px 18px calc(24px + env(safe-area-inset-bottom));
+}
+.hist-card {
+  padding: 12px 16px; margin: 0 -18px; border-bottom: 1px solid var(--bg1);
+  cursor: pointer;
+}
+.hist-card:active { background: var(--bg1); }
+.hist-card .hc-name {
+  font-size: 14px; color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hist-card .hc-meta {
+  font-size: 11px; color: var(--fg-mute); margin-top: 4px;
+  font-family: var(--mono);
+}
+/* Agent badge: color = machine (Claude orange, Codex aqua, other blue) */
+.hc-agent { font-family: var(--mono); font-weight: 600; }
+.hc-agent.claude { color: var(--orange); }
+.hc-agent.codex { color: var(--aqua); }
+.hc-agent.other { color: var(--blue); }
+.hist-empty {
+  color: var(--fg-mute); font-size: 14px; font-family: var(--mono);
+  padding: 32px 16px; text-align: center; line-height: 1.6;
+}
+/* Transcript view: reuse the peek sheet's bubble styles (.pv-msg) */
+#history-body .pv-msg { max-width: none; }
+.hist-note {
+  color: var(--fg-mute); font-size: 11px; font-family: var(--mono);
+  text-align: center; margin-bottom: 12px;
+}
 
 /* Spawn sheet: new convo from the phone */
 #spawn-scrim {
@@ -921,6 +977,7 @@ input, textarea, #fbv-content, .msg, .msg * {
   <div id="nav-header">
     <span class="nav-title" id="nav-title"><span id="nav-title-text">Sessions</span><svg class="nav-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
     <span id="nav-spin"></span>
+    <button class="nav-btn" id="nav-history-btn" aria-label="Chat history"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button>
     <button class="nav-btn" id="nav-pins-btn" aria-label="Pinned messages"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg></button>
     <button class="nav-btn" id="spawn-btn">+</button>
   </div>
@@ -982,6 +1039,14 @@ input, textarea, #fbv-content, .msg, .msg * {
 <div id="chat-menu">
   <button id="cm-pinned">Pinned</button>
   <button id="cm-kill" style="color:var(--red)">Kill session</button>
+</div>
+<div id="history">
+  <div id="history-head">
+    <button id="history-back" aria-label="Back" style="display:none">&larr;</button>
+    <span id="history-title">History</span>
+    <button id="history-close" aria-label="Close">&times;</button>
+  </div>
+  <div id="history-body"></div>
 </div>
 <div id="pins">
   <div id="pins-head">
@@ -3529,6 +3594,123 @@ function renderAllPins() {
     pinsBody.appendChild(card);
   }
 }
+// --- History: browse agent-recall transcripts ---
+const historyEl = document.getElementById('history');
+const historyBody = document.getElementById('history-body');
+const historyTitle = document.getElementById('history-title');
+const historyBackBtn = document.getElementById('history-back');
+let historyBackFn = null;
+
+function setHistoryView(title, backFn) {
+  historyTitle.textContent = title;
+  historyBackFn = backFn;
+  historyBackBtn.style.display = backFn ? '' : 'none';
+  historyBody.scrollTop = 0;
+}
+
+// "2026-08-23-16-18-27" -> "Aug 23 16:18"
+function fmtHistTs(ts) {
+  const p = (ts || '').split('-');
+  if (p.length < 5) return ts || '';
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const m = months[parseInt(p[1], 10) - 1] || p[1];
+  const d = new Date();
+  const year = p[0] === String(d.getFullYear()) ? '' : ' ' + p[0];
+  return m + ' ' + parseInt(p[2], 10) + year + ' ' + p[3] + ':' + p[4];
+}
+
+function agentBadge(agent) {
+  const a = (agent || '?').toLowerCase();
+  const cls = a === 'claude' ? 'claude' : a === 'codex' ? 'codex' : 'other';
+  return '<span class="hc-agent ' + cls + '">' + escHtml(agent || '?') + '</span>';
+}
+
+async function loadHistory() {
+  setHistoryView('History', null);
+  historyBody.innerHTML = '<div class="hist-empty">loading…</div>';
+  let list;
+  try {
+    const resp = await fetch(basePath + '/api/transcripts', { method: 'POST' });
+    if (!resp.ok) throw new Error(await resp.text());
+    list = await resp.json();
+  } catch (err) {
+    historyBody.innerHTML = '<div class="hist-empty">history failed: ' + escHtml(err.message) + '</div>';
+    return;
+  }
+  historyBody.innerHTML = '';
+  if (!list || !list.length) {
+    historyBody.innerHTML = '<div class="hist-empty">No transcripts indexed yet.</div>';
+    return;
+  }
+  for (const t of list) {
+    const card = document.createElement('div');
+    card.className = 'hist-card';
+    card.innerHTML =
+      '<div class="hc-name">' + escHtml(t.preview || '(empty)') + '</div>' +
+      '<div class="hc-meta">' + agentBadge(t.agent) + ' &middot; ' +
+        escHtml(t.project) + ' &middot; ' + escHtml(fmtHistTs(t.timestamp)) + '</div>';
+    card.addEventListener('click', () => openTranscript(t));
+    historyBody.appendChild(card);
+  }
+}
+
+// Split a transcript's markdown into role sections.  Tool-call blocks
+// (###) stay inside the owning agent section; the file header (before
+// the first ---) is dropped.
+function parseTranscript(md) {
+  const bodyStart = md.indexOf('\n---\n');
+  const body = bodyStart >= 0 ? md.slice(bodyStart + 5) : md;
+  const parts = body.split(/^## (User|Agent|Agent's Thoughts) \(([^)]*)\)\s*$/m);
+  const sections = [];
+  for (let i = 1; i + 2 < parts.length; i += 3) {
+    const role = parts[i];
+    const text = (parts[i + 2] || '').trim();
+    if (!text || role === "Agent's Thoughts") continue;
+    sections.push({ role: role === 'User' ? 'user' : 'agent', text });
+  }
+  return sections;
+}
+
+async function openTranscript(t) {
+  const listView = () => loadHistory();
+  setHistoryView((t.agent || '?') + ' · ' + t.project + ' · ' + fmtHistTs(t.timestamp), listView);
+  historyBody.innerHTML = '<div class="hist-empty">loading…</div>';
+  let content;
+  try {
+    const resp = await fetch(basePath + '/api/transcript?file=' + encodeURIComponent(t.file), { method: 'POST' });
+    if (!resp.ok) throw new Error(await resp.text());
+    content = (await resp.json()).content;
+  } catch (err) {
+    historyBody.innerHTML = '<div class="hist-empty">transcript failed: ' + escHtml(err.message) + '</div>';
+    return;
+  }
+  const sections = parseTranscript(content);
+  historyBody.innerHTML = '';
+  const CAP = 200;
+  if (sections.length > CAP) {
+    const note = document.createElement('div');
+    note.className = 'hist-note';
+    note.textContent = 'showing last ' + CAP + ' of ' + sections.length + ' messages';
+    historyBody.appendChild(note);
+  }
+  for (const s of sections.slice(-CAP)) {
+    const d = document.createElement('div');
+    d.className = 'pv-msg ' + s.role;
+    if (s.role === 'agent') d.innerHTML = '<div class="md">' + renderMarkdown(s.text) + '</div>';
+    else d.textContent = s.text;
+    historyBody.appendChild(d);
+  }
+  if (!sections.length) historyBody.innerHTML = '<div class="hist-empty">(empty transcript)</div>';
+}
+
+document.getElementById('nav-history-btn').addEventListener('click', () => {
+  loadHistory();
+  historyEl.classList.add('visible');
+});
+historyBackBtn.addEventListener('click', () => { if (historyBackFn) historyBackFn(); });
+document.getElementById('history-close').addEventListener('click', () =>
+  historyEl.classList.remove('visible'));
+
 document.getElementById('nav-pins-btn').addEventListener('click', () => {
   renderAllPins();
   pinsEl.classList.add('visible');
@@ -3561,6 +3743,9 @@ document.addEventListener('keydown', (e) => {
   else if (msgMenu.classList.contains('visible')) closeMsgMenu();
   else if (chatMenu.classList.contains('visible')) closeChatMenu();
   else if (pinsEl.classList.contains('visible')) pinsEl.classList.remove('visible');
+  else if (historyEl.classList.contains('visible')) {
+    if (historyBackFn) historyBackFn(); else historyEl.classList.remove('visible');
+  }
 });
 
 // Start: try loading sessions (discover mode), fall back to direct connect

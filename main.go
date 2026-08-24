@@ -862,25 +862,18 @@ func handlePreview(w http.ResponseWriter, r *http.Request) {
 
 // --- Transcript history (syzygy-recall) ---
 
-// unquoteElispString strips the quotes from a prin1-printed elisp string.
-// prin1 only escapes `"` and `\` — JSON payloads from json-serialize
-// contain no raw control characters, so pass other escapes through.
-func unquoteElispString(s string) (string, error) {
+// unquoteElispBase64 strips the quotes from a prin1-printed elisp string
+// and base64-decodes the body.  The elisp side ASCII-armors its JSON
+// because emacsclient octal-escapes non-ASCII in printed strings.
+func unquoteElispBase64(s string) (string, error) {
 	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
 		return "", fmt.Errorf("not an elisp string: %.40s", s)
 	}
-	body := s[1 : len(s)-1]
-	var b strings.Builder
-	b.Grow(len(body))
-	for i := 0; i < len(body); i++ {
-		if body[i] == '\\' && i+1 < len(body) {
-			i++
-			b.WriteByte(body[i])
-			continue
-		}
-		b.WriteByte(body[i])
+	data, err := base64.StdEncoding.DecodeString(s[1 : len(s)-1])
+	if err != nil {
+		return "", err
 	}
-	return b.String(), nil
+	return string(data), nil
 }
 
 func handleTranscripts(w http.ResponseWriter, r *http.Request) {
@@ -894,7 +887,7 @@ func handleTranscripts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, strings.TrimSpace(string(out)), http.StatusInternalServerError)
 		return
 	}
-	jsonStr, err := unquoteElispString(strings.TrimSpace(string(out)))
+	jsonStr, err := unquoteElispBase64(strings.TrimSpace(string(out)))
 	if err != nil {
 		log.Printf("transcripts: %v", err)
 		http.Error(w, "unexpected emacs output", http.StatusBadGateway)
