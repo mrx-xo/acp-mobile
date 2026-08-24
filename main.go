@@ -294,6 +294,8 @@ func main() {
 	mux.HandleFunc("/api/kill", handleKill)
 	mux.HandleFunc("/api/label", handleLabel)
 	mux.HandleFunc("/api/preview", handlePreview)
+	mux.HandleFunc("/api/transcripts", handleTranscripts)
+	mux.HandleFunc("/api/transcript", handleTranscript)
 	mux.HandleFunc("/files/list", handleFileList)
 	mux.HandleFunc("/files/read", handleFileRead)
 
@@ -856,6 +858,85 @@ func handlePreview(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"messages": msgs})
+}
+
+// --- Transcript history (syzygy-recall) ---
+
+// unquoteElispString strips the quotes from a prin1-printed elisp string.
+// prin1 only escapes `"` and `\` — JSON payloads from json-serialize
+// contain no raw control characters, so pass other escapes through.
+func unquoteElispString(s string) (string, error) {
+	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+		return "", fmt.Errorf("not an elisp string: %.40s", s)
+	}
+	body := s[1 : len(s)-1]
+	var b strings.Builder
+	b.Grow(len(body))
+	for i := 0; i < len(body); i++ {
+		if body[i] == '\\' && i+1 < len(body) {
+			i++
+			b.WriteByte(body[i])
+			continue
+		}
+		b.WriteByte(body[i])
+	}
+	return b.String(), nil
+}
+
+func handleTranscripts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	out, err := evalEmacs("emacsclient", "--eval", "(syzygy-recall-transcripts-json 100)")
+	if err != nil {
+		log.Printf("transcripts: %v: %s", err, out)
+		http.Error(w, strings.TrimSpace(string(out)), http.StatusInternalServerError)
+		return
+	}
+	jsonStr, err := unquoteElispString(strings.TrimSpace(string(out)))
+	if err != nil {
+		log.Printf("transcripts: %v", err)
+		http.Error(w, "unexpected emacs output", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	io.WriteString(w, jsonStr)
+}
+
+func handleTranscript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	file := r.URL.Query().Get("file")
+	clean := filepath.Clean(file)
+	home, err := os.UserHomeDir()
+	// Unlike /files/read, not limited to live-session cwds: history
+	// spans dead sessions. The transcript-shaped path is the grant.
+	if err != nil || !filepath.IsAbs(clean) ||
+		!strings.HasPrefix(clean, home+string(filepath.Separator)) ||
+		!strings.Contains(clean, string(filepath.Separator)+".agent-shell"+string(filepath.Separator)+"transcripts"+string(filepath.Separator)) ||
+		!strings.HasSuffix(clean, ".md") {
+		http.Error(w, "path not allowed", http.StatusForbidden)
+		return
+	}
+	info, err := os.Stat(clean)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if info.Size() > 8*1024*1024 {
+		http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	data, err := os.ReadFile(clean)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"content": string(data)})
 }
 
 // handleLabel sets/clears a convo label via the Emacs daemon — same
