@@ -15,6 +15,71 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+func TestCurrentStatusesMergesPhoneTurns(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".acp-mobile"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	sidecar := []byte(`{"idle-session":"idle","permission-session":"permission"}`)
+	if err := os.WriteFile(filepath.Join(home, ".acp-mobile", "status.json"), sidecar, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	phoneTurns.mu.Lock()
+	previous := phoneTurns.m
+	phoneTurns.m = map[string]int{
+		"phone-session":      1,
+		"permission-session": 1,
+	}
+	phoneTurns.mu.Unlock()
+	t.Cleanup(func() {
+		phoneTurns.mu.Lock()
+		phoneTurns.m = previous
+		phoneTurns.mu.Unlock()
+	})
+
+	statuses := currentStatuses()
+	if got := statuses["idle-session"]; got != "idle" {
+		t.Fatalf("idle sidecar status = %q, want idle", got)
+	}
+	if got := statuses["phone-session"]; got != "busy" {
+		t.Fatalf("phone turn status = %q, want busy", got)
+	}
+	if got := statuses["permission-session"]; got != "permission" {
+		t.Fatalf("permission status = %q, want permission precedence", got)
+	}
+}
+
+func TestHandleStatusesIsUncached(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/statuses", nil)
+	w := httptest.NewRecorder()
+	handleStatuses(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", w.Code)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	var payload struct {
+		Statuses map[string]string `json:"statuses"`
+		Version  string            `json:"version"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Statuses == nil {
+		t.Fatal("statuses should be an empty object, not null")
+	}
+	if payload.Version != buildID {
+		t.Fatalf("version = %q, want %q", payload.Version, buildID)
+	}
+}
+
 // TestToolReplayIntegration verifies that tool_call and tool_call_update messages
 // are correctly relayed through the WebSocket bridge, with proper title, _meta,
 // rawInput, and content fields preserved.

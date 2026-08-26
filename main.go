@@ -290,6 +290,7 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/sessions", handleSessions)
+	mux.HandleFunc("/api/statuses", handleStatuses)
 	mux.HandleFunc("/api/spawn", handleSpawn)
 	mux.HandleFunc("/api/kill", handleKill)
 	mux.HandleFunc("/api/label", handleLabel)
@@ -573,6 +574,40 @@ func loadLabels() map[string]string {
 	return labels
 }
 
+// currentStatuses returns the latest session status snapshot.  Emacs owns
+// rig-driven turn state; phoneTurns fills the one gap for prompts submitted
+// through this process.  Keeping this separate from session discovery lets
+// the navigator refresh status frequently without probing every socket.
+func currentStatuses() map[string]string {
+	statuses := loadSidecar("status.json")
+	if statuses == nil {
+		statuses = make(map[string]string)
+	}
+
+	phoneTurns.mu.Lock()
+	defer phoneTurns.mu.Unlock()
+	for sessionID, count := range phoneTurns.m {
+		if count > 0 && statuses[sessionID] != "permission" {
+			statuses[sessionID] = "busy"
+		}
+	}
+	return statuses
+}
+
+func handleStatuses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"statuses": currentStatuses(),
+		"version":  buildID,
+	})
+}
+
 // probeCache: identity fields from the last successful probe of each pid.
 // /api/sessions probes race a 3s budget; under load a slow probe used to
 // return a bare {pid} card with no bufferName/sessionId.
@@ -690,7 +725,7 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 	sessions = deduped
 
 	labels := loadLabels()
-	statuses := loadSidecar("status.json")
+	statuses := currentStatuses()
 	for i := range sessions {
 		if l, ok := labels[sessions[i].SessionID]; ok {
 			sessions[i].Label = l
@@ -699,14 +734,8 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 			sessions[i].Status = st
 		}
 	}
-	phoneTurns.mu.Lock()
-	for i := range sessions {
-		if phoneTurns.m[sessions[i].SessionID] > 0 && sessions[i].Status != "permission" {
-			sessions[i].Status = "busy"
-		}
-	}
-	phoneTurns.mu.Unlock()
 
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"sessions": sessions, "version": buildID})
 }

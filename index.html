@@ -341,6 +341,34 @@ body {
   color: var(--fg); font-size: 14px; line-height: 21px;
   font-family: var(--mono);
 }
+.msg.user .text:empty { display: none; }
+.sent-refs {
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 6px; margin: 2px 0 8px;
+}
+.sent-ref { max-width: 100%; }
+.ref-pill {
+  max-width: 100%; min-height: 32px; padding: 5px 9px;
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg-hard); border: 1px solid var(--bg2);
+  border-radius: 8px; color: var(--yellow); font-family: var(--mono);
+  font-size: 12px; font-weight: 700; cursor: pointer; text-align: left;
+  touch-action: manipulation;
+}
+.ref-pill .ref-pill-text {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ref-pill .ref-pill-arrow {
+  color: var(--fg-mute); flex-shrink: 0; display: inline-block;
+}
+.ref-pill[aria-expanded="true"] .ref-pill-arrow { transform: rotate(90deg); }
+.sent-ref-detail {
+  margin-top: 5px; padding: 8px 10px; max-width: 100%;
+  border-left: 2px solid var(--bg2); color: var(--fg-dim);
+  font-size: 12px; line-height: 1.5; white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sent-ref-detail[hidden] { display: none; }
 .msg.user .meta {
   display: flex; justify-content: flex-end; align-items: center;
   gap: 4px; margin-top: 6px;
@@ -691,6 +719,8 @@ input, textarea, #fbv-content, .msg, .msg * {
 /* Keep the cloned bubble read-only: text selects, but links/buttons in
    the clone stay inert (no navigating out of the reader). */
 #reader-body .msg a, #reader-body .msg button { pointer-events: none; }
+#reader-body .msg button.code-copy,
+#reader-body .msg button.ref-pill { pointer-events: auto; }
 /* Chat children pin their own px sizes (.text 14px, code 13px, h1-h3
    16/15/14...) which override the bubble's size — inside the reader,
    re-scale them relative to --reader-fs so A−/A+ moves everything. */
@@ -886,9 +916,9 @@ input, textarea, #fbv-content, .msg, .msg * {
 #sp-go:active { transform: scale(0.97); }
 #sp-go:disabled { background: var(--bg1); color: var(--fg-mute); }
 
-/* Attachments: thumb chips above the composer, + button beside it */
+/* Attachments: image thumbs + quote chips above the composer. */
 #attach-row {
-  display: none; gap: 10px; padding: 10px 12px 0;
+  display: none; gap: 10px; padding: 10px 12px 0; align-items: center;
   background: var(--bg0); border-top: 1px solid var(--bg2);
   overflow-x: auto; -webkit-overflow-scrolling: touch;
 }
@@ -899,6 +929,16 @@ input, textarea, #fbv-content, .msg, .msg * {
   width: 56px; height: 56px; object-fit: cover; display: block;
   border-radius: 8px; border: 1px solid var(--bg2);
 }
+.attach-chip.ref-chip {
+  display: flex; align-items: center; gap: 7px;
+  min-height: 44px; max-width: 220px; padding: 8px 30px 8px 10px;
+  background: var(--bg-hard); border: 1px solid var(--bg2);
+  border-radius: 9px; color: var(--yellow);
+}
+.ref-chip .ref-chip-text {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--fg-dim); font-size: 12px;
+}
 .attach-chip .chip-x {
   position: absolute; top: -6px; right: -6px; width: 20px; height: 20px;
   border-radius: 10px; background: var(--red); color: var(--bg-hard);
@@ -906,12 +946,25 @@ input, textarea, #fbv-content, .msg, .msg * {
   cursor: pointer; padding: 0;
 }
 #attach-btn {
-  background: var(--bg1); border: none; border-radius: 12px;
+  background: var(--bg1); border: 1px solid transparent; border-radius: 12px;
   color: var(--orange); font-size: 24px; font-weight: 400;
   min-width: 44px; min-height: 44px; cursor: pointer; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease,
+    border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
 #attach-btn:active { opacity: 0.7; }
+#attach-btn.ref-ready {
+  background: var(--orange); border-color: var(--orange); color: var(--bg-hard);
+  font-size: 20px; font-weight: 700;
+  box-shadow: 0 0 0 3px rgba(254, 128, 25, 0.2);
+  animation: ref-ready-pop 0.2s cubic-bezier(0.18, 1.25, 0.4, 1);
+}
+#attach-btn.ref-ready:active { opacity: 1; transform: scale(0.94); }
+@keyframes ref-ready-pop {
+  from { transform: scale(0.82); }
+  to { transform: scale(1); }
+}
 #attach-input { display: none; }
 
 /* New outgoing messages spring up from the composer instead of popping.
@@ -943,11 +996,28 @@ input, textarea, #fbv-content, .msg, .msg * {
 #stop-btn:active { background: #cc241d; }
 
 /* Markdown in agent messages */
+:is(.msg.agent, .pv-msg.agent) .md .code-block {
+  margin: 6px 0;
+}
+.code-actions {
+  display: flex; justify-content: flex-end; margin-bottom: 4px;
+}
 :is(.msg.agent, .pv-msg.agent) .md pre {
   background: var(--bg-hard); border: 1px solid var(--bg1);
-  border-radius: 6px; padding: 10px; margin: 6px 0;
+  border-radius: 6px; padding: 10px; margin: 0;
   overflow-x: auto; font-size: 13px; line-height: 1.4;
+  -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
 }
+.code-copy {
+  min-width: 48px; height: 28px; padding: 0 7px;
+  border: 1px solid var(--bg2); border-radius: 6px;
+  background: var(--bg1); color: var(--fg-dim);
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  cursor: pointer; touch-action: manipulation;
+  -webkit-user-select: none; user-select: none;
+}
+.code-copy:active { color: var(--fg); }
+.code-copy.copied { color: var(--green); border-color: var(--green); }
 :is(.msg.agent, .pv-msg.agent) .md code {
   font-family: var(--mono);
 }
@@ -1248,7 +1318,9 @@ function renderMarkdown(text) {
 
   // Fenced code blocks
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
-    '<pre><code>' + code.trimEnd() + '</code></pre>');
+    '<div class="code-block"><div class="code-actions">' +
+    '<button class="code-copy" type="button" aria-label="Copy code">copy</button>' +
+    '</div><pre><code>' + code.trimEnd() + '</code></pre></div>');
 
   // Inline code
   html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
@@ -1316,17 +1388,99 @@ function formatTime(d) {
 
 // --- Message display ---
 
+const REF_CONTEXT_OPEN = '<referenced-context>\n';
+const REF_CONTEXT_CLOSE = '\n</referenced-context>\n\n';
+
+function quoteReferencedText(text) {
+  return '> ' + text.replace(/\n/g, '\n> ');
+}
+
+function formatReferencedPrompt(text, refs) {
+  if (!refs || refs.length === 0) return text;
+  return REF_CONTEXT_OPEN + refs.map(quoteReferencedText).join('\n\n') +
+    REF_CONTEXT_CLOSE + text;
+}
+
+function decodeReferencedRef(raw) {
+  if (raw.startsWith('Attached image: ')) {
+    return { icon: '\uD83D\uDDBC', text: raw.slice('Attached image: '.length), detail: raw };
+  }
+  const lines = raw.split('\n');
+  if (lines[0].startsWith('From ') && lines.length > 1) {
+    const source = lines.shift();
+    const quoted = lines.map(line => line.startsWith('> ') ? line.slice(2) :
+      (line === '>' ? '' : line)).join('\n');
+    return { icon: '\uD83D\uDCC4', text: quoted || source, detail: source + (quoted ? '\n' + quoted : '') };
+  }
+  const text = lines.map(line => line.startsWith('> ') ? line.slice(2) :
+    (line === '>' ? '' : line)).join('\n');
+  return { icon: '\u275D', text, detail: text };
+}
+
+function parseReferencedPrompt(text) {
+  // Intentionally consumed only by addUserMsg (the live path) in phase 1.
+  // Replay, history and preview keep their existing renderers for phase 2.
+  if (!text.startsWith(REF_CONTEXT_OPEN)) return { refs: [], text };
+  const closeAt = text.indexOf(REF_CONTEXT_CLOSE, REF_CONTEXT_OPEN.length);
+  if (closeAt < 0) return { refs: [], text };
+  const body = text.slice(REF_CONTEXT_OPEN.length, closeAt);
+  const refs = body ? body.split('\n\n').map(decodeReferencedRef) : [];
+  return { refs, text: text.slice(closeAt + REF_CONTEXT_CLOSE.length) };
+}
+
+function refSnippet(text, maxLen) {
+  const clean = text.replace(/[\n\r\t ]+/g, ' ').trim();
+  return clean.length <= maxLen ? clean : clean.slice(0, maxLen - 1) + '\u2026';
+}
+
+function makeSentRefs(refs) {
+  const row = document.createElement('div');
+  row.className = 'sent-refs';
+  for (const ref of refs) {
+    const wrap = document.createElement('div');
+    wrap.className = 'sent-ref';
+    const pill = document.createElement('button');
+    pill.type = 'button';
+    pill.className = 'ref-pill';
+    pill.setAttribute('aria-expanded', 'false');
+    const icon = document.createElement('span');
+    icon.textContent = ref.icon;
+    const label = document.createElement('span');
+    label.className = 'ref-pill-text';
+    label.textContent = refSnippet(ref.text, 34) || 'referenced context';
+    const arrow = document.createElement('span');
+    arrow.className = 'ref-pill-arrow';
+    arrow.textContent = '\u25B8';
+    const detail = document.createElement('div');
+    detail.className = 'sent-ref-detail';
+    detail.textContent = ref.detail;
+    detail.hidden = true;
+    pill.append(icon, label, arrow);
+    wrap.append(pill, detail);
+    row.appendChild(wrap);
+  }
+  return row;
+}
+
 function addUserMsg(text, status) {
   const d = document.createElement('div');
   d.className = 'msg user';
   d.id = 'msg-' + (++msgIdCounter);
   const time = formatTime(new Date());
   const deliveryIcon = status === 'queued' ? '&#9201;' : status === 'sending' ? '&#9675;' : '&#10003;';
-  d.innerHTML =
-    '<span class="role">You</span>' +
-    '<div class="text">' + escHtml(text) + '</div>' +
-    '<div class="meta"><span class="time">' + time + '</span>' +
-    '<span class="delivery">' + deliveryIcon + '</span></div>';
+  const parsed = parseReferencedPrompt(text);
+  d.innerHTML = '<span class="role">You</span>';
+  if (parsed.refs.length) d.appendChild(makeSentRefs(parsed.refs));
+  const textEl = document.createElement('div');
+  textEl.className = 'text';
+  textEl.textContent = parsed.text;
+  d.appendChild(textEl);
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.innerHTML = '<span class="time">' + time + '</span>' +
+    '<span class="delivery">' + deliveryIcon + '</span>';
+  d.appendChild(meta);
+  d._text = text;
   d.addEventListener('contextmenu', (e) => { e.preventDefault(); copyText(text); });
   const live = status === 'sending' || status === 'queued';
   if (live) d.classList.add('msg-in');
@@ -1741,12 +1895,11 @@ function copyText(text) {
   // The phone reaches this over plain HTTP, where it's undefined — fall back
   // to a temporary textarea + execCommand (the iOS-safe Range selection dance).
   if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text)
-      .then(() => showToast('Copied to clipboard'))
+    return navigator.clipboard.writeText(text)
+      .then(() => { showToast('Copied to clipboard'); return true; })
       .catch(() => legacyCopy(text));
-    return;
   }
-  legacyCopy(text);
+  return Promise.resolve(legacyCopy(text));
 }
 
 function legacyCopy(text) {
@@ -1767,7 +1920,42 @@ function legacyCopy(text) {
   try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
   document.body.removeChild(ta);
   showToast(ok ? 'Copied to clipboard' : 'Copy failed — long-press to select');
+  return ok;
 }
+
+document.addEventListener('click', (e) => {
+  const target = e.target instanceof Element ? e.target : e.target.parentElement;
+  const copy = target && target.closest('.code-copy');
+  if (copy) {
+    e.preventDefault();
+    e.stopPropagation();
+    // New blocks keep the action row outside the scrolling <pre>.
+    // parentElement fallback keeps copy working for old pinned HTML.
+    const block = copy.closest('.code-block') || copy.parentElement;
+    const code = block && block.querySelector('code');
+    if (!code) return;
+    Promise.resolve(copyText(code.textContent)).then((ok) => {
+      if (!ok) return;
+      copy.textContent = 'copied';
+      copy.classList.add('copied');
+      clearTimeout(copy._resetTimer);
+      copy._resetTimer = setTimeout(() => {
+        copy.textContent = 'copy';
+        copy.classList.remove('copied');
+      }, 900);
+    });
+    return;
+  }
+  const pill = target && target.closest('.ref-pill');
+  if (pill) {
+    e.preventDefault();
+    e.stopPropagation();
+    const detail = pill.parentElement.querySelector('.sent-ref-detail');
+    const expanded = pill.getAttribute('aria-expanded') === 'true';
+    pill.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+    detail.hidden = expanded;
+  }
+});
 
 function showToast(msg) {
   let t = document.getElementById('toast');
@@ -2116,7 +2304,9 @@ function flushReplay() {
   // and collect notification sequences into assembled turns.
   const turns = []; // message turns; tool turns carry one normalized ACP tool state
   let pendingText = '';
-  let replayEnded = false; // true if we saw a stopReason or available_commands_update
+  // Track the *latest* turn boundary in replay order.  A historical
+  // turn_complete must not make a newer, still-running turn look idle.
+  let replayBusy = false;
 
   for (const msg of msgs) {
     // Responses: handle silently for state (sessionId, modes, etc.)
@@ -2151,7 +2341,7 @@ function flushReplay() {
         }
       }
       if (msg.result && msg.result.stopReason) {
-        replayEnded = true;
+        replayBusy = false;
         // Flush pending agent text as a turn
         if (pendingText) {
           turns.push({type: 'agent', text: pendingText});
@@ -2190,9 +2380,11 @@ function flushReplay() {
 
     switch (kind) {
       case 'agent_message_chunk':
+        replayBusy = true;
         pendingText += text;
         break;
       case 'tool_call': {
+        replayBusy = true;
         const tcId = update.toolCallId;
         // Check if we already have a turn for this toolCallId — update it instead of adding duplicate
         let found = false;
@@ -2215,6 +2407,7 @@ function flushReplay() {
         break;
       }
       case 'tool_call_update': {
+        replayBusy = true;
         // Merge into the parent tool turn instead of creating a separate turn.
         // This prevents orphaned tool_updates when the INITIAL_TURNS window
         // or load-more batches split a tool from its update.
@@ -2237,6 +2430,7 @@ function flushReplay() {
         break;
       }
       case 'user_message_chunk':
+        replayBusy = true;
         if (pendingText) {
           turns.push({type: 'agent', text: pendingText});
           pendingText = '';
@@ -2244,13 +2438,11 @@ function flushReplay() {
         if (text) turns.push({type: 'user', text});
         break;
       case 'turn_complete':
-        replayEnded = true;
-        setProcessing(false);
+        replayBusy = false;
         break;
       case 'available_commands_update':
-        replayEnded = true;
+        replayBusy = false;
         if (sessionId) sendBtn.disabled = false;
-        setProcessing(false);
         break;
       case 'current_mode_update':
         if (update.currentModeId) {
@@ -2265,11 +2457,10 @@ function flushReplay() {
     turns.push({type: 'agent', text: pendingText});
   }
 
-  // Detect if agent is still processing at end of replay
-  // (no stopReason response and no available_commands_update seen at the end)
-  if (!replayEnded) {
-    setProcessing(true);
-  }
+  // The last lifecycle marker in the ordered replay is authoritative.
+  // Empty/new sessions remain idle; a trailing user/tool/message update
+  // without turn_complete means the turn is still running.
+  setProcessing(replayBusy);
 
   // If there's a pending permission in replay, mark it interactive.
   // The cache only stores a permission while it's unanswered, so any
@@ -2471,10 +2662,32 @@ const attachBtn = document.getElementById('attach-btn');
 const attachInput = document.getElementById('attach-input');
 const attachRow = document.getElementById('attach-row');
 let pendingImages = []; // {data, mimeType, thumb}
+let pendingRefs = [];   // selected quote strings
+let activeSelectionText = '';
+let selectionHideTimer = null;
+let suppressImagePickerUntil = 0;
 
 function renderAttachRow() {
   attachRow.innerHTML = '';
-  attachRow.classList.toggle('has-items', pendingImages.length > 0);
+  attachRow.classList.toggle('has-items', pendingImages.length > 0 || pendingRefs.length > 0);
+  pendingRefs.forEach((ref, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'attach-chip ref-chip';
+    const icon = document.createElement('span');
+    icon.textContent = '\u275D';
+    const label = document.createElement('span');
+    label.className = 'ref-chip-text';
+    label.textContent = refSnippet(ref, 38) || 'referenced context';
+    label.title = ref;
+    const x = document.createElement('button');
+    x.className = 'chip-x';
+    x.type = 'button';
+    x.setAttribute('aria-label', 'Remove referenced context');
+    x.textContent = '\u00d7';
+    x.onclick = () => { pendingRefs.splice(i, 1); renderAttachRow(); };
+    chip.append(icon, label, x);
+    attachRow.appendChild(chip);
+  });
   pendingImages.forEach((img, i) => {
     const chip = document.createElement('div');
     chip.className = 'attach-chip';
@@ -2488,6 +2701,60 @@ function renderAttachRow() {
     attachRow.appendChild(chip);
   });
 }
+
+function selectionMessage(node) {
+  const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
+  return el && el.closest ? el.closest('.msg') : null;
+}
+
+function setAttachButtonReferenceMode(ready) {
+  attachBtn.classList.toggle('ref-ready', ready);
+  attachBtn.textContent = ready ? '\u275D' : '+';
+  attachBtn.setAttribute('aria-label', ready ? 'Attach selected text' : 'Attach image');
+}
+
+function clearSelectionCapture() {
+  activeSelectionText = '';
+  setAttachButtonReferenceMode(false);
+}
+
+function refreshSelectionCapture() {
+  const selection = window.getSelection();
+  const startMsg = selection && selectionMessage(selection.anchorNode);
+  const endMsg = selection && selectionMessage(selection.focusNode);
+  const text = selection && !selection.isCollapsed ? selection.toString() : '';
+  if (text.trim() && startMsg && startMsg === endMsg && messagesEl.contains(startMsg)) {
+    clearTimeout(selectionHideTimer);
+    activeSelectionText = text;
+    setAttachButtonReferenceMode(true);
+    return;
+  }
+  clearTimeout(selectionHideTimer);
+  selectionHideTimer = setTimeout(clearSelectionCapture, 220);
+}
+
+function attachCurrentSelection() {
+  if (!activeSelectionText || !activeSelectionText.trim()) return;
+  pendingRefs.push(activeSelectionText);
+  activeSelectionText = '';
+  clearTimeout(selectionHideTimer);
+  setAttachButtonReferenceMode(false);
+  const selection = window.getSelection();
+  if (selection) selection.removeAllRanges();
+  renderAttachRow();
+  showToast('Selection attached');
+  try { promptEl.focus({ preventScroll: true }); } catch (_) { promptEl.focus(); }
+}
+
+document.addEventListener('selectionchange', refreshSelectionCapture);
+attachBtn.addEventListener('pointerdown', (e) => {
+  if (!activeSelectionText || !activeSelectionText.trim()) return;
+  // Capture on pointerdown before iOS collapses the native selection.
+  // Suppress the synthetic click so it cannot open the image picker too.
+  e.preventDefault();
+  suppressImagePickerUntil = Date.now() + 600;
+  attachCurrentSelection();
+});
 
 async function loadImageFromFile(file) {
   try {
@@ -2529,7 +2796,20 @@ async function addAttachment(file) {
   }
 }
 
-attachBtn.addEventListener('click', () => attachInput.click());
+attachBtn.addEventListener('click', (e) => {
+  if (Date.now() < suppressImagePickerUntil) {
+    e.preventDefault();
+    return;
+  }
+  // Keyboard/assistive activation has no pointerdown; honor the cached
+  // selection here as a fallback before reverting to the image picker.
+  if (activeSelectionText && activeSelectionText.trim()) {
+    e.preventDefault();
+    attachCurrentSelection();
+    return;
+  }
+  attachInput.click();
+});
 attachInput.addEventListener('change', async (e) => {
   for (const f of e.target.files) await addAttachment(f);
   attachInput.value = '';
@@ -2537,16 +2817,19 @@ attachInput.addEventListener('change', async (e) => {
 
 function sendPrompt() {
   const text = promptEl.value.trim();
-  if ((!text && pendingImages.length === 0) || !sessionId) return;
+  if ((!text && pendingImages.length === 0 && pendingRefs.length === 0) || !sessionId) return;
+
+  const refs = pendingRefs.splice(0);
+  renderAttachRow();
 
   promptEl.value = '';
   promptEl.style.height = 'auto';
 
   if (processing) {
-    // Queue is text-only; images ride the next idle send
-    if (text) {
-      messageQueue.push(text);
-      addUserMsg(text, 'queued');
+    // Images keep waiting in the composer; text refs belong to this queued turn.
+    if (text || refs.length) {
+      messageQueue.push({ text, refs });
+      addUserMsg(formatReferencedPrompt(text, refs), 'queued');
     }
     if (pendingImages.length) {
       addSystemMsg('Agent is busy \u2014 attachments will send with your next message once it finishes.');
@@ -2554,21 +2837,22 @@ function sendPrompt() {
     return;
   }
 
-  sendPromptText(text);
+  sendPromptText(text, refs);
 }
 
-function sendPromptText(text) {
+function sendPromptText(text, refs) {
   currentAgentMsg = null;
   const imgs = pendingImages.splice(0);
   renderAttachRow();
-  const shown = text + (imgs.length
+  const payloadText = formatReferencedPrompt(text, refs || []);
+  const shownText = text + (imgs.length
     ? (text ? '\n' : '') + '[' + imgs.length + ' image' + (imgs.length > 1 ? 's' : '') + ' attached]'
     : '');
-  lastSentMsg = addUserMsg(shown, 'sending');
+  lastSentMsg = addUserMsg(formatReferencedPrompt(shownText, refs || []), 'sending');
   setProcessing(true);
 
   const blocks = imgs.map(i => ({ type: 'image', data: i.data, mimeType: i.mimeType }));
-  if (text) blocks.push({ type: 'text', text });
+  if (payloadText) blocks.push({ type: 'text', text: payloadText });
 
   ws.send(JSON.stringify({
     jsonrpc: '2.0',
@@ -2580,7 +2864,8 @@ function sendPromptText(text) {
 
 function flushMessageQueue() {
   if (messageQueue.length > 0) {
-    const text = messageQueue.shift();
+    const queued = messageQueue.shift();
+    const payloadText = formatReferencedPrompt(queued.text, queued.refs);
     // Message was already displayed when queued, just send it
     currentAgentMsg = null;
     setProcessing(true);
@@ -2588,7 +2873,7 @@ function flushMessageQueue() {
       jsonrpc: '2.0',
       id: nextId++,
       method: 'session/prompt',
-      params: { sessionId, prompt: [{ type: 'text', text }] }
+      params: { sessionId, prompt: [{ type: 'text', text: payloadText }] }
     }));
   }
 }
@@ -2809,11 +3094,13 @@ function timeAgo(ts) {
 }
 
 let lastSessionsJson = '';
+let sessionsLoadSerial = 0;
+let statusRequestSerial = 0;
+let statusAppliedSerial = 0;
+let latestStatuses = null;
 
-// All loading states live in the header: #nav-spin shows braille
-// frames while any fetch is in flight (empty when idle — the refresh
-// button is gone, pull-to-refresh is the manual path). The list never
-// flashes a "Loading" placeholder.
+// Explicit loads live in the header.  Silent background refreshes do not
+// flash a spinner; they only repaint the list when data actually changes.
 const navSpinEl = document.getElementById('nav-spin');
 const NAV_FRAMES = ['\u280b','\u2819','\u2839','\u2838','\u283c','\u2834','\u2826','\u2827','\u2807','\u280f'];
 let navSpinCount = 0, navSpinT = null, navSpinI = 0;
@@ -2834,9 +3121,16 @@ function navSpinStop() {
 // silent=true: background poll — no re-render unless the data actually
 // changed, scroll position preserved.
 async function loadSessions(silent) {
-  navSpinStart();
+  const requestSerial = ++sessionsLoadSerial;
+  const statusSerial = ++statusRequestSerial;
+  if (!silent) navSpinStart();
   try {
-    const resp = await fetch(basePath + '/api/sessions', { method: 'POST' });
+    const resp = await fetch(basePath + '/api/sessions', {
+      method: 'POST', cache: 'no-store'
+    });
+    // A pull/resume/back navigation can overtake a slow background poll.
+    // Only the newest full-list request is allowed to replace the cards.
+    if (requestSerial !== sessionsLoadSerial) return;
     if (!resp.ok) {
       // Not in discover mode -- single socket, go straight to chat
       discoverMode = false;
@@ -2849,9 +3143,17 @@ async function loadSessions(silent) {
       location.reload();
       return;
     }
-    const sessions = data.sessions || [];
+    let sessions = data.sessions || [];
+    const snapshot = {};
+    for (const s of sessions) {
+      if (s.sessionId) snapshot[s.sessionId] = s.status || '';
+    }
+    acceptStatusSnapshot(snapshot, statusSerial);
+    sessions = applyLatestStatuses(sessions);
     if (sessions.length === 0) {
-      lastSessionsJson = '';
+      discoverMode = true;
+      lastSessions = [];
+      lastSessionsJson = '[]';
       navListEl.innerHTML = '<div id="nav-empty">No active sessions</div>';
       return;
     }
@@ -2863,15 +3165,60 @@ async function loadSessions(silent) {
     renderSessions(sessions);
     navListEl.scrollTop = st;
   } catch (err) {
-    if (!silent) {
+    if (!silent && requestSerial === sessionsLoadSerial) {
       // /api/sessions not available -- single socket mode
       discoverMode = false;
       showChat();
       connect();
     }
   } finally {
-    navSpinStop();
+    if (!silent) navSpinStop();
   }
+}
+
+function acceptStatusSnapshot(statuses, serial) {
+  if (serial < statusAppliedSerial) return false;
+  statusAppliedSerial = serial;
+  latestStatuses = statuses || {};
+  return true;
+}
+
+function applyLatestStatuses(sessions) {
+  if (!latestStatuses) return sessions;
+  return sessions.map(s => {
+    if (!s.sessionId) return s;
+    const next = Object.prototype.hasOwnProperty.call(latestStatuses, s.sessionId)
+      ? latestStatuses[s.sessionId] : '';
+    return (s.status || '') === next ? s : {...s, status: next};
+  });
+}
+
+// Statuses change much more often than session identity.  This endpoint only
+// reads the tiny sidecar/in-memory turn map, so it can run frequently without
+// reconnecting to every multiplex socket and replaying conversation history.
+async function loadStatuses() {
+  if (!discoverMode || navigatorEl.classList.contains('hidden')
+      || document.visibilityState !== 'visible') return;
+  const serial = ++statusRequestSerial;
+  try {
+    const resp = await fetch(basePath + '/api/statuses', {
+      method: 'POST', cache: 'no-store'
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.version && BUILD_ID.indexOf('__') !== 0 && data.version !== BUILD_ID) {
+      location.reload();
+      return;
+    }
+    if (!acceptStatusSnapshot(data.statuses || {}, serial)) return;
+    const sessions = applyLatestStatuses(lastSessions);
+    const j = JSON.stringify(sessions);
+    if (j === lastSessionsJson) return;
+    lastSessionsJson = j;
+    const st = navListEl.scrollTop;
+    renderSessions(sessions);
+    navListEl.scrollTop = st;
+  } catch (_) { /* transient/offline: keep the last known status */ }
 }
 
 function renderSessions(sessions) {
@@ -3366,13 +3713,37 @@ document.getElementById('spawn-btn').addEventListener('click', spawnAgent);
   place();
 })();
 
-// Keep session statuses fresh while the list is on screen
+function navigatorIsVisible() {
+  return discoverMode && !navigatorEl.classList.contains('hidden')
+    && document.visibilityState === 'visible';
+}
+
+// Full discovery stays on a relaxed clock; status-only refreshes are cheap
+// enough to keep generating/finished transitions close to real time.
 setInterval(() => {
-  if (discoverMode && !navigatorEl.classList.contains('hidden')
-      && document.visibilityState === 'visible') {
+  if (navigatorIsVisible()) {
     loadSessions(true);
   }
 }, 12000);
+setInterval(() => {
+  if (navigatorIsVisible()) loadStatuses();
+}, 3000);
+
+// iOS can freeze a home-screen web app without letting its intervals catch
+// up.  Refresh immediately when the page becomes visible again.  Debounce
+// pageshow/focus/visibilitychange because Safari commonly fires all three.
+let navigatorResumeTimer = null;
+function refreshNavigatorOnResume() {
+  if (!navigatorIsVisible()) return;
+  clearTimeout(navigatorResumeTimer);
+  navigatorResumeTimer = setTimeout(() => {
+    loadSessions(true);
+    loadStatuses();
+  }, 60);
+}
+document.addEventListener('visibilitychange', refreshNavigatorOnResume);
+window.addEventListener('pageshow', refreshNavigatorOnResume);
+window.addEventListener('focus', refreshNavigatorOnResume);
 document.getElementById('back-btn').addEventListener('click', navigateBack);
 document.getElementById('mode-btn').addEventListener('click', cycleMode);
 document.getElementById('files-btn').addEventListener('click', openFileBrowser);
@@ -3470,6 +3841,13 @@ function closeReader() { readerEl.classList.remove('visible'); }
 // Swipe-left on a message → action menu. Long-press is left to iOS for
 // native text selection/copy; a clear horizontal left drag opens the menu.
 messagesEl.addEventListener('touchstart', (e) => {
+  // A horizontal drag inside fenced code belongs to that code scroller,
+  // never to the message's swipe-left action menu.  Include bare <pre>
+  // for pinned/legacy rendered HTML from before .code-block existed.
+  if (e.target.closest('.code-block, pre')) {
+    swMsg = null; swStart = null; swDone = false;
+    return;
+  }
   const msg = e.target.closest('.msg');
   swMsg = msg; swDone = false;
   swStart = msg ? {x: e.touches[0].clientX, y: e.touches[0].clientY} : null;
