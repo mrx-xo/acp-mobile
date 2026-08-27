@@ -950,6 +950,14 @@ input, textarea, #fbv-content, .msg, .msg * {
   background: none; border: none; color: var(--orange);
   font-size: 20px; line-height: 1; padding: 2px 10px 2px 0; cursor: pointer;
 }
+#history-resume {
+  background: var(--orange); border: none; border-radius: 5px;
+  color: var(--bg0); cursor: pointer; font-family: var(--mono);
+  font-size: 11px; font-weight: 700; margin-left: 10px; padding: 6px 9px;
+}
+#history-resume:disabled {
+  background: var(--bg2); color: var(--fg-mute); cursor: default;
+}
 #history-close {
   background: none; border: none; color: var(--fg);
   font-size: 26px; line-height: 1; padding: 2px 6px 2px 10px; cursor: pointer;
@@ -1336,6 +1344,7 @@ input, textarea, #fbv-content, .msg, .msg * {
   <div id="history-head">
     <button id="history-back" aria-label="Back" style="display:none">&larr;</button>
     <span id="history-title">History</span>
+    <button id="history-resume" style="display:none">resume</button>
     <button id="history-close" aria-label="Close">&times;</button>
   </div>
   <div id="history-body"></div>
@@ -4958,10 +4967,12 @@ const historyEl = document.getElementById('history');
 const historyBody = document.getElementById('history-body');
 const historyTitle = document.getElementById('history-title');
 const historyBackBtn = document.getElementById('history-back');
+const historyResumeBtn = document.getElementById('history-resume');
 const historyDock = document.getElementById('history-dock');
 const historySearchForm = document.getElementById('history-search-form');
 const historySearchInput = document.getElementById('history-search-input');
 let historyBackFn = null;
+let historyResumeTarget = null;
 let historyRequestSerial = 0;
 let historyRootState = {
   mode: 'recent', query: '', list: null, truncated: false, scrollTop: 0
@@ -4974,10 +4985,17 @@ function syncHistoryDock() {
   historyDock.classList.toggle('visible', !hidden);
 }
 
-function setHistoryView(title, backFn, resetScroll = true) {
+function setHistoryView(title, backFn, resetScroll = true, resumeTarget = null) {
   historyTitle.textContent = title;
   historyBackFn = backFn;
   historyBackBtn.style.display = backFn ? '' : 'none';
+  historyResumeTarget = resumeTarget;
+  historyResumeBtn.style.display = resumeTarget ? '' : 'none';
+  historyResumeBtn.disabled = !resumeTarget || !resumeTarget.resumable;
+  historyResumeBtn.textContent = 'resume';
+  historyResumeBtn.title = resumeTarget && !resumeTarget.resumable
+    ? (resumeTarget.resumeReason || 'This conversation cannot be resumed.')
+    : 'Resume this conversation';
   if (resetScroll) historyBody.scrollTop = 0;
 }
 
@@ -5155,7 +5173,7 @@ async function openTranscript(t, query = '') {
     ++historyRequestSerial;
     renderHistoryRoot();
   };
-  setHistoryView((t.agent || '?') + ' · ' + t.project + ' · ' + fmtHistTs(t.timestamp), listView);
+  setHistoryView((t.agent || '?') + ' · ' + t.project + ' · ' + fmtHistTs(t.timestamp), listView, true, t);
   historyBody.innerHTML = '<div class="hist-empty">loading…</div>';
   let content;
   try {
@@ -5171,6 +5189,13 @@ async function openTranscript(t, query = '') {
   const sections = parseTranscript(content);
   historyBody.innerHTML = '';
   const CAP = 200;
+  if (!t.resumable) {
+    const unavailable = document.createElement('div');
+    unavailable.className = 'hist-note';
+    unavailable.textContent = 'resume unavailable · ' +
+      (t.resumeReason || 'this transcript has no resumable session');
+    historyBody.appendChild(unavailable);
+  }
   const needle = query.toLocaleLowerCase();
   const matchLine = Number(t.matchLine) || 0;
   const lineMatchIndex = matchLine
@@ -5207,8 +5232,68 @@ async function openTranscript(t, query = '') {
     }
     historyBody.appendChild(d);
   }
-  if (!sections.length) historyBody.innerHTML = '<div class="hist-empty">(empty transcript)</div>';
+  if (!sections.length) {
+    const empty = document.createElement('div');
+    empty.className = 'hist-empty';
+    empty.textContent = '(empty transcript)';
+    historyBody.appendChild(empty);
+  }
   if (matchedBubble) requestAnimationFrame(() => matchedBubble.scrollIntoView({block: 'center'}));
+}
+
+async function resumeTranscript(t) {
+  if (!t || !t.resumable) return;
+  const serial = historyRequestSerial;
+  const current = () => serial === historyRequestSerial;
+  historyResumeBtn.disabled = true;
+  historyResumeBtn.textContent = 'resuming…';
+  try {
+    const resp = await fetch(basePath + '/api/resume-transcript', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({file: t.file})
+    });
+    if (!current()) return;
+    const text = await resp.text();
+    if (!current()) return;
+    let data = {};
+    try { data = JSON.parse(text); } catch (_) { /* handled below */ }
+    if (!resp.ok || !data.ok) {
+      throw new Error(data.error || text.trim() || 'Conversation could not be resumed.');
+    }
+    if (!data.bufferName) throw new Error('Emacs did not return a session buffer.');
+
+    // Reusing an active conversation can match immediately.  A restored one
+    // needs a moment for acp-multiplex to publish its socket.  Buffer name is
+    // the stable identity across provider-specific session-ID forks.
+    let target = lastSessions.find(s => s.bufferName === data.bufferName);
+    for (let i = 0; !target && i < 20; i++) {
+      await new Promise(resolve => setTimeout(resolve, 750));
+      if (!current()) return;
+      await loadSessions(true);
+      if (!current()) return;
+      target = lastSessions.find(s => s.bufferName === data.bufferName);
+    }
+    if (target && current()) {
+      closeHistory();
+      selectSession(target);
+      return;
+    }
+    throw new Error('The restored session did not appear in Syzygy.');
+  } catch (err) {
+    if (current()) alert('Resume failed: ' + err.message);
+  } finally {
+    if (current()) {
+      historyResumeBtn.disabled = false;
+      historyResumeBtn.textContent = 'resume';
+    }
+  }
+}
+
+function closeHistory() {
+  ++historyRequestSerial;
+  historyEl.classList.remove('visible');
+  historySearchInput.blur();
 }
 
 document.getElementById('nav-history-btn').addEventListener('click', () => {
@@ -5243,11 +5328,8 @@ historySearchInput.addEventListener('search', () => {
   if (!historySearchInput.value.trim() && historyEl.classList.contains('visible')) loadHistory();
 });
 historyBackBtn.addEventListener('click', () => { if (historyBackFn) historyBackFn(); });
-document.getElementById('history-close').addEventListener('click', () => {
-  ++historyRequestSerial;
-  historyEl.classList.remove('visible');
-  historySearchInput.blur();
-});
+historyResumeBtn.addEventListener('click', () => resumeTranscript(historyResumeTarget));
+document.getElementById('history-close').addEventListener('click', closeHistory);
 
 document.getElementById('nav-pins-btn').addEventListener('click', () => {
   renderAllPins();
@@ -5288,7 +5370,7 @@ document.addEventListener('keydown', (e) => {
     syncHistoryDock();
   }
   else if (historyEl.classList.contains('visible')) {
-    if (historyBackFn) historyBackFn(); else historyEl.classList.remove('visible');
+    if (historyBackFn) historyBackFn(); else closeHistory();
   }
 });
 

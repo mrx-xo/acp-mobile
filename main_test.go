@@ -5,13 +5,16 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +22,246 @@ import (
 	"golang.org/x/net/html"
 	"golang.org/x/net/websocket"
 )
+
+func installFakeEmacsclient(t *testing.T, output string) string {
+	t.Helper()
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" > \"$FAKE_EMACSCLIENT_ARGS\"\n" +
+		"printf '%s\\n' \"$FAKE_EMACSCLIENT_OUTPUT\"\n"
+	path := filepath.Join(dir, "emacsclient")
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_EMACSCLIENT_ARGS", argsFile)
+	t.Setenv("FAKE_EMACSCLIENT_OUTPUT", output)
+	previousConfig := appConfig
+	appConfig = config{}
+	t.Cleanup(func() { appConfig = previousConfig })
+	return argsFile
+}
+
+func installPollingFakeEmacsclient(t *testing.T, startOutput, statusOutput string) string {
+	t.Helper()
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$@\" >> \"$FAKE_EMACSCLIENT_ARGS\"\n" +
+		"case \"$2\" in\n" +
+		"  *syzygy-recall-resume-status-json*) printf '%s\\n' \"$FAKE_EMACSCLIENT_STATUS_OUTPUT\" ;;\n" +
+		"  *) printf '%s\\n' \"$FAKE_EMACSCLIENT_START_OUTPUT\" ;;\n" +
+		"esac\n"
+	path := filepath.Join(dir, "emacsclient")
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_EMACSCLIENT_ARGS", argsFile)
+	t.Setenv("FAKE_EMACSCLIENT_START_OUTPUT", startOutput)
+	t.Setenv("FAKE_EMACSCLIENT_STATUS_OUTPUT", statusOutput)
+	previousConfig := appConfig
+	appConfig = config{}
+	t.Cleanup(func() { appConfig = previousConfig })
+	return argsFile
+}
+
+func installBlockingFakeEmacsclient(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "emacsclient")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nwhile :; do :; done\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	previousConfig := appConfig
+	appConfig = config{}
+	t.Cleanup(func() { appConfig = previousConfig })
+}
+
+func installBlockingStatusFakeEmacsclient(t *testing.T, startOutput string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"case \"$2\" in\n" +
+		"  *syzygy-recall-resume-status-json*) while :; do :; done ;;\n" +
+		"  *) printf '%s\\n' \"$FAKE_EMACSCLIENT_START_OUTPUT\" ;;\n" +
+		"esac\n"
+	path := filepath.Join(dir, "emacsclient")
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_EMACSCLIENT_START_OUTPUT", startOutput)
+	previousConfig := appConfig
+	appConfig = config{}
+	t.Cleanup(func() { appConfig = previousConfig })
+}
+
+func encodedElispJSON(value string) string {
+	return `"` + base64.StdEncoding.EncodeToString([]byte(value)) + `"`
+}
+
+func TestEvalEmacsContextHonorsDeadline(t *testing.T) {
+	installBlockingFakeEmacsclient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+
+	_, err := evalEmacsContext(ctx, "emacsclient", "--eval", "(+ 1 1)")
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("context-bound emacsclient returned after %s, want under 1s", elapsed)
+	}
+}
+
+func TestHandleResumeTranscriptStartsValidatedHistoryEntry(t *testing.T) {
+	wantJSON := `{"ok":true,"status":"ready","bufferName":"*Claude Agent @ demo*","sessionId":"session-123","existing":false}`
+	argsFile := installFakeEmacsclient(t, encodedElispJSON(wantJSON))
+	file := `/Users/demo/.agent-shell/transcripts/a "quoted" conversation.md`
+	body := strings.NewReader(`{"file":` + fmt.Sprintf("%q", file) + `}`)
+
+	w := httptest.NewRecorder()
+	handleResumeTranscript(w, httptest.NewRequest(http.MethodPost, "/api/resume-transcript", body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := strings.TrimSpace(w.Body.String()); got != wantJSON {
+		t.Fatalf("response = %s, want %s", got, wantJSON)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantArgs := []string{
+		"--eval",
+		fmt.Sprintf(`(syzygy-recall-resume-json "%s")`,
+			base64.StdEncoding.EncodeToString([]byte(file))),
+	}
+	if got := strings.Split(strings.TrimSpace(string(args)), "\n"); !reflect.DeepEqual(got, wantArgs) {
+		t.Fatalf("emacsclient args = %#v, want %#v", got, wantArgs)
+	}
+}
+
+func TestHandleResumeTranscriptPollsUntilEmacsConfirmsSession(t *testing.T) {
+	startJSON := `{"ok":true,"status":"pending","operation":"resume-op-123","bufferName":"*Claude Agent @ demo*","sessionId":"session-123","existing":false}`
+	wantJSON := `{"ok":true,"status":"ready","bufferName":"*Claude Agent @ demo*","sessionId":"session-123","existing":false}`
+	argsFile := installPollingFakeEmacsclient(
+		t, encodedElispJSON(startJSON), encodedElispJSON(wantJSON))
+	previousInterval := resumeTranscriptPollInterval
+	resumeTranscriptPollInterval = time.Millisecond
+	t.Cleanup(func() { resumeTranscriptPollInterval = previousInterval })
+
+	w := httptest.NewRecorder()
+	body := strings.NewReader(`{"file":"/Users/demo/.agent-shell/transcripts/old.md"}`)
+	handleResumeTranscript(w, httptest.NewRequest(http.MethodPost, "/api/resume-transcript", body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := strings.TrimSpace(w.Body.String()); got != wantJSON {
+		t.Fatalf("response = %s, want final confirmation %s", got, wantJSON)
+	}
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStatusExpr := fmt.Sprintf(`(syzygy-recall-resume-status-json "%s")`,
+		base64.StdEncoding.EncodeToString([]byte("resume-op-123")))
+	if !strings.Contains(string(args), wantStatusExpr) {
+		t.Fatalf("emacsclient calls did not include status poll %q:\n%s", wantStatusExpr, args)
+	}
+}
+
+func TestHandleResumeTranscriptBoundsBlockedStatusPoll(t *testing.T) {
+	startJSON := `{"ok":true,"status":"pending","operation":"resume-op-hung","bufferName":"*Claude Agent @ demo*","sessionId":"session-123","existing":false}`
+	installBlockingStatusFakeEmacsclient(t, encodedElispJSON(startJSON))
+	previousInterval := resumeTranscriptPollInterval
+	previousTimeout := resumeTranscriptPollTimeout
+	resumeTranscriptPollInterval = time.Millisecond
+	resumeTranscriptPollTimeout = 30 * time.Millisecond
+	t.Cleanup(func() {
+		resumeTranscriptPollInterval = previousInterval
+		resumeTranscriptPollTimeout = previousTimeout
+	})
+
+	w := httptest.NewRecorder()
+	body := strings.NewReader(`{"file":"/Users/demo/.agent-shell/transcripts/old.md"}`)
+	started := time.Now()
+	handleResumeTranscript(w, httptest.NewRequest(http.MethodPost, "/api/resume-transcript", body))
+
+	if w.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status code = %d, want 504; body=%s", w.Code, w.Body.String())
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("blocked status poll returned after %s, want under 1s", elapsed)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := payload["error"]; got != "Timed out waiting for Emacs to resume the conversation." {
+		t.Fatalf("error = %v, want bounded resume timeout", got)
+	}
+}
+
+func TestHandleResumeTranscriptReportsUnresumableEntry(t *testing.T) {
+	installFakeEmacsclient(t, encodedElispJSON(
+		`{"ok":false,"error":"No matching agent config is available."}`))
+	body := strings.NewReader(`{"file":"/Users/demo/.agent-shell/transcripts/old.md"}`)
+
+	w := httptest.NewRecorder()
+	handleResumeTranscript(w, httptest.NewRequest(http.MethodPost, "/api/resume-transcript", body))
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status code = %d, want 409; body=%s", w.Code, w.Body.String())
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := payload["error"]; got != "No matching agent config is available." {
+		t.Fatalf("error = %v, want provider config reason", got)
+	}
+}
+
+func TestHandleResumeTranscriptValidatesRequest(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		body   string
+		status int
+	}{
+		{name: "method", method: http.MethodGet, body: `{}`, status: http.StatusMethodNotAllowed},
+		{name: "malformed JSON", method: http.MethodPost, body: `{`, status: http.StatusBadRequest},
+		{name: "missing file", method: http.MethodPost, body: `{}`, status: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			handleResumeTranscript(w, httptest.NewRequest(tt.method, "/api/resume-transcript", strings.NewReader(tt.body)))
+			if w.Code != tt.status {
+				t.Fatalf("status code = %d, want %d", w.Code, tt.status)
+			}
+		})
+	}
+}
+
+func TestHistoryResumeClient(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is required for the browser-client behavior test")
+	}
+	cmd := exec.Command(node, "--test", "index_test.mjs")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("history client test failed: %v\n%s", err, output)
+	}
+}
 
 func TestCurrentStatusesMergesPhoneTurns(t *testing.T) {
 	home := t.TempDir()

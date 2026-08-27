@@ -327,6 +327,7 @@ func main() {
 	mux.HandleFunc("/api/transcripts", handleTranscripts)
 	mux.HandleFunc("/api/transcript-search", handleTranscriptSearch)
 	mux.HandleFunc("/api/transcript", handleTranscript)
+	mux.HandleFunc("/api/resume-transcript", handleResumeTranscript)
 	mux.HandleFunc("/files/list", handleFileList)
 	mux.HandleFunc("/files/read", handleFileRead)
 
@@ -1545,6 +1546,133 @@ func newTranscriptHandler(load transcriptIndexLoader) http.Handler {
 
 func handleTranscript(w http.ResponseWriter, r *http.Request) {
 	newTranscriptHandler(loadTranscriptIndex).ServeHTTP(w, r)
+}
+
+var (
+	resumeTranscriptPollInterval = 100 * time.Millisecond
+	resumeTranscriptPollTimeout  = 35 * time.Second
+)
+
+type resumeTranscriptResult struct {
+	OK         bool   `json:"ok"`
+	Status     string `json:"status"`
+	Operation  string `json:"operation"`
+	BufferName string `json:"bufferName"`
+	Error      string `json:"error"`
+}
+
+func handleResumeTranscript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		File string `json:"file"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.File == "" || len(req.File) > 16*1024 {
+		http.Error(w, "file is required", http.StatusBadRequest)
+		return
+	}
+
+	// Only base64's ASCII alphabet crosses the Elisp expression boundary.
+	// The daemon then validates the decoded path against agent-recall's index.
+	encodedFile := base64.StdEncoding.EncodeToString([]byte(req.File))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	resumeContext, cancelResume := context.WithTimeout(
+		r.Context(), resumeTranscriptPollTimeout)
+	defer cancelResume()
+
+	writeTimeout := func() {
+		w.WriteHeader(http.StatusGatewayTimeout)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":     false,
+			"status": "failed",
+			"error":  "Timed out waiting for Emacs to resume the conversation.",
+		})
+	}
+
+	evaluate := func(expr string) (resumeTranscriptResult, string, bool) {
+		var result resumeTranscriptResult
+		out, err := evalEmacsContext(
+			resumeContext, "emacsclient", "--eval", expr)
+		if err != nil {
+			if resumeContext.Err() != nil {
+				if r.Context().Err() == nil {
+					writeTimeout()
+				}
+				return result, "", false
+			}
+			log.Printf("resume transcript: %v: %s", err, out)
+			http.Error(w, strings.TrimSpace(string(out)), http.StatusInternalServerError)
+			return result, "", false
+		}
+		jsonStr, err := unquoteElispBase64(strings.TrimSpace(string(out)))
+		if err != nil {
+			log.Printf("resume transcript: %v", err)
+			http.Error(w, "unexpected emacs output", http.StatusBadGateway)
+			return result, "", false
+		}
+		if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+			log.Printf("resume transcript: invalid JSON: %v", err)
+			http.Error(w, "unexpected emacs output", http.StatusBadGateway)
+			return result, "", false
+		}
+		return result, jsonStr, true
+	}
+
+	expr := fmt.Sprintf(`(syzygy-recall-resume-json "%s")`, encodedFile)
+	result, jsonStr, ok := evaluate(expr)
+	if !ok {
+		return
+	}
+
+	if result.OK && result.Status == "pending" {
+		for result.OK && result.Status == "pending" {
+			if result.Operation == "" || len(result.Operation) > 4096 {
+				http.Error(w, "unexpected emacs output", http.StatusBadGateway)
+				return
+			}
+			select {
+			case <-resumeContext.Done():
+				// Emacs owns timeout/cleanup for the asynchronous operation.
+				if r.Context().Err() == nil {
+					writeTimeout()
+				}
+				return
+			case <-time.After(resumeTranscriptPollInterval):
+			}
+			encodedOperation := base64.StdEncoding.EncodeToString(
+				[]byte(result.Operation))
+			statusExpr := fmt.Sprintf(
+				`(syzygy-recall-resume-status-json "%s")`, encodedOperation)
+			result, jsonStr, ok = evaluate(statusExpr)
+			if !ok {
+				return
+			}
+		}
+	}
+
+	if !result.OK {
+		if result.Error == "" {
+			result.Error = "Conversation could not be resumed."
+			jsonStr = fmt.Sprintf(
+				`{"ok":false,"status":"failed","error":%q}`, result.Error)
+		}
+		w.WriteHeader(http.StatusConflict)
+		io.WriteString(w, jsonStr)
+		return
+	}
+	if (result.Status != "" && result.Status != "ready") || result.BufferName == "" {
+		http.Error(w, "unexpected emacs output", http.StatusBadGateway)
+		return
+	}
+	io.WriteString(w, jsonStr)
 }
 
 // handleLabel sets/clears a convo label via the Emacs daemon — same
