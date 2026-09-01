@@ -758,3 +758,54 @@ func TestPermissionReplayInteractive(t *testing.T) {
 
 	_ = fmt.Sprintf // avoid unused import
 }
+
+// A resumed convo (session/load or session/resume) never replays a
+// session/new response, so the id only appears on session/update
+// notifications.  The probe must still recover it — labels.json and
+// status.json are keyed by session id.
+func TestProbeSocketSessionIDFromResumedReplay(t *testing.T) {
+	// Short dir: macOS caps unix socket paths at 104 bytes; t.TempDir() overflows.
+	tmpDir, err := os.MkdirTemp("/tmp", "probe")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	sockPath := filepath.Join(tmpDir, "77777.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	messages := [][]byte{
+		[]byte(`{"jsonrpc":"2.0","method":"acp-multiplex/meta","params":{"name":"Claude Agent @ home-lab"}}`),
+		[]byte(`{"id":0,"jsonrpc":"2.0","result":{"protocolVersion":1,"agentInfo":{"name":"claude-agent-acp","title":"Claude Agent"}}}`),
+		[]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"resumed-abc-123","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hello"}}}}`),
+	}
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for _, m := range messages {
+			conn.Write(m)
+			conn.Write([]byte("\n"))
+		}
+		buf := make([]byte, 4096)
+		for {
+			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if _, err := conn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	info := probeSocket(sockPath, 77777)
+	if info.SessionID != "resumed-abc-123" {
+		t.Fatalf("SessionID = %q, want %q (from session/update params)", info.SessionID, "resumed-abc-123")
+	}
+	if info.BufferName != "Claude Agent @ home-lab" {
+		t.Fatalf("BufferName = %q", info.BufferName)
+	}
+}

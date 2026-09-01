@@ -1140,26 +1140,38 @@ func probeSocket(sockPath string, pid int) sessionInfo {
 					continue
 				}
 
-				// First user message in the replay becomes the card
-				// headline (replay coalesces chunks, so one notification
-				// ≈ one full prompt).
-				if info.Preview == "" && msg.Method == "session/update" && msg.Params != nil {
+				if msg.Method == "session/update" && msg.Params != nil {
 					var upd struct {
-						Update struct {
+						SessionID string `json:"sessionId"`
+						Update    struct {
 							SessionUpdate string `json:"sessionUpdate"`
 							Content       struct {
 								Text string `json:"text"`
 							} `json:"content"`
 						} `json:"update"`
 					}
-					if json.Unmarshal(msg.Params, &upd) == nil &&
-						upd.Update.SessionUpdate == "user_message_chunk" &&
-						upd.Update.Content.Text != "" {
-						preview := strings.Join(strings.Fields(upd.Update.Content.Text), " ")
-						if len(preview) > 120 {
-							preview = preview[:120]
+					if json.Unmarshal(msg.Params, &upd) == nil {
+						// Resumed convos (session/load, session/resume) never
+						// replay a session/new response — acp-multiplex only
+						// caches initialize + session/new — so the id only
+						// rides on notifications.  Without it, labels.json and
+						// status.json (both keyed by session id) never match.
+						if !gotSessionID && upd.SessionID != "" {
+							info.SessionID = upd.SessionID
+							gotSessionID = true
 						}
-						info.Preview = preview
+						// First user message in the replay becomes the card
+						// headline (replay coalesces chunks, so one
+						// notification ≈ one full prompt).
+						if info.Preview == "" &&
+							upd.Update.SessionUpdate == "user_message_chunk" &&
+							upd.Update.Content.Text != "" {
+							preview := strings.Join(strings.Fields(upd.Update.Content.Text), " ")
+							if len(preview) > 120 {
+								preview = preview[:120]
+							}
+							info.Preview = preview
+						}
 					}
 					continue
 				}
