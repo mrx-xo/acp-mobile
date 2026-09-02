@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,11 +22,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"golang.org/x/net/websocket"
 )
@@ -74,6 +78,17 @@ func loadConfig() config {
 // command creates an exec.Cmd with extra PATH directories from config.
 func command(name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
+	configureCommandEnv(cmd)
+	return cmd
+}
+
+func commandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	configureCommandEnv(cmd)
+	return cmd
+}
+
+func configureCommandEnv(cmd *exec.Cmd) {
 	if len(appConfig.ExtraPath) > 0 {
 		env := os.Environ()
 		extra := strings.Join(appConfig.ExtraPath, ":")
@@ -90,7 +105,6 @@ func command(name string, args ...string) *exec.Cmd {
 		}
 		cmd.Env = env
 	}
-	return cmd
 }
 
 type tailscaleInfo struct {
@@ -296,6 +310,7 @@ func main() {
 	mux.HandleFunc("/api/label", handleLabel)
 	mux.HandleFunc("/api/preview", handlePreview)
 	mux.HandleFunc("/api/transcripts", handleTranscripts)
+	mux.HandleFunc("/api/transcript-search", handleTranscriptSearch)
 	mux.HandleFunc("/api/transcript", handleTranscript)
 	mux.HandleFunc("/files/list", handleFileList)
 	mux.HandleFunc("/files/read", handleFileRead)
@@ -891,6 +906,434 @@ func handlePreview(w http.ResponseWriter, r *http.Request) {
 
 // --- Transcript history (syzygy-recall) ---
 
+type transcriptInfo struct {
+	File      string `json:"file"`
+	Project   string `json:"project"`
+	Timestamp string `json:"timestamp"`
+	Agent     string `json:"agent"`
+	Preview   string `json:"preview"`
+	SessionID string `json:"sessionId"`
+	Label     string `json:"label,omitempty"`
+}
+
+type transcriptSearchResult struct {
+	transcriptInfo
+	Snippet    string `json:"snippet"`
+	MatchField string `json:"matchField"`
+	MatchCount int    `json:"matchCount"`
+	MatchLine  int    `json:"matchLine,omitempty"`
+}
+
+const transcriptSearchLimit = 40
+
+type transcriptBodyMatch struct {
+	snippet string
+	count   int
+	line    int
+}
+
+// mergeTranscriptLabels overlays the immediate labels.json sidecar onto
+// agent-recall's durable metadata.  The copy keeps cached index responses
+// immutable between requests.
+func mergeTranscriptLabels(transcripts []transcriptInfo, live map[string]string) []transcriptInfo {
+	merged := append([]transcriptInfo(nil), transcripts...)
+	for i := range merged {
+		if label, ok := live[merged[i].SessionID]; ok {
+			merged[i].Label = label
+		}
+	}
+	return merged
+}
+
+func searchTranscriptRecords(ctx context.Context, query string, transcripts []transcriptInfo) ([]transcriptSearchResult, bool, error) {
+	needle := strings.ToLower(strings.TrimSpace(query))
+	if needle == "" {
+		return []transcriptSearchResult{}, false, nil
+	}
+	transcripts, err := eligibleTranscriptRecords(transcripts)
+	if err != nil {
+		return nil, false, err
+	}
+	bodyMatches, err := searchTranscriptBodies(ctx, query, transcripts)
+	if err != nil {
+		return nil, false, err
+	}
+	type rankedResult struct {
+		transcriptSearchResult
+		rank int
+	}
+	ranked := make([]rankedResult, 0)
+	for _, transcript := range transcripts {
+		fields := []struct {
+			name  string
+			value string
+			rank  int
+		}{
+			{"label", transcript.Label, 0},
+			{"preview", transcript.Preview, 1},
+			{"project", transcript.Project, 2},
+			{"agent", transcript.Agent, 3},
+		}
+		bestRank := len(fields) + 1
+		bestField := ""
+		bestSnippet := ""
+		matches := 0
+		for _, field := range fields {
+			count := strings.Count(strings.ToLower(field.value), needle)
+			if count == 0 {
+				continue
+			}
+			matches += count
+			if field.rank < bestRank {
+				bestRank = field.rank
+				bestField = field.name
+				bestSnippet = field.value
+			}
+		}
+		body, bodyMatched := bodyMatches[filepath.Clean(transcript.File)]
+		if bodyMatched {
+			matches += body.count
+			if bestField == "" {
+				bestRank = 4
+				bestField = "body"
+				bestSnippet = body.snippet
+			}
+		}
+		if bestField == "" {
+			continue
+		}
+		ranked = append(ranked, rankedResult{
+			transcriptSearchResult: transcriptSearchResult{
+				transcriptInfo: transcript,
+				Snippet:        bestSnippet,
+				MatchField:     bestField,
+				MatchCount:     matches,
+				MatchLine:      body.line,
+			},
+			rank: bestRank,
+		})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].rank != ranked[j].rank {
+			return ranked[i].rank < ranked[j].rank
+		}
+		if ranked[i].Timestamp != ranked[j].Timestamp {
+			return ranked[i].Timestamp > ranked[j].Timestamp
+		}
+		return ranked[i].SessionID < ranked[j].SessionID
+	})
+	truncated := len(ranked) > transcriptSearchLimit
+	if truncated {
+		ranked = ranked[:transcriptSearchLimit]
+	}
+	results := make([]transcriptSearchResult, len(ranked))
+	for i := range ranked {
+		results[i] = ranked[i].transcriptSearchResult
+	}
+	return results, truncated, nil
+}
+
+func searchTranscriptBodies(ctx context.Context, query string, transcripts []transcriptInfo) (map[string]transcriptBodyMatch, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]bool)
+	dirSet := make(map[string]bool)
+	for _, transcript := range transcripts {
+		clean := filepath.Clean(transcript.File)
+		if !allowedTranscriptPath(clean, home) {
+			continue
+		}
+		info, err := os.Stat(clean)
+		if err != nil || info.Size() > 8*1024*1024 {
+			continue
+		}
+		allowed[clean] = true
+		dirSet[filepath.Dir(clean)] = true
+	}
+	if len(dirSet) == 0 {
+		return map[string]transcriptBodyMatch{}, nil
+	}
+	dirs := make([]string, 0, len(dirSet))
+	for dir := range dirSet {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	args := append([]string{
+		"--files-with-matches", "--null", "--fixed-strings", "--ignore-case",
+		"--no-messages", "--glob", "*.md", "--max-filesize", "8M", "--",
+		strings.TrimSpace(query),
+	}, dirs...)
+	out, err := matchingTranscriptFiles(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	matches := make(map[string]transcriptBodyMatch)
+	for _, rawPath := range bytes.Split(out, []byte{0}) {
+		if len(rawPath) == 0 {
+			continue
+		}
+		path := filepath.Clean(string(rawPath))
+		if !allowed[path] {
+			continue
+		}
+		match, err := visibleTranscriptMatches(ctx, path, query)
+		if err != nil {
+			return nil, err
+		}
+		if match.count > 0 {
+			matches[path] = match
+		}
+	}
+	return matches, nil
+}
+
+const (
+	transcriptSearchMaxPathOutput = 4 * 1024 * 1024
+	// Files are already capped at 8 MiB. Reading one line from one file at a
+	// time preserves complete literal matching without rg's JSON amplification.
+	transcriptSearchMaxLine = 8 * 1024 * 1024
+)
+
+var errTranscriptSearchOutputTooLarge = errors.New("transcript search output too large")
+
+var transcriptRoleHeading = regexp.MustCompile(`^## (User|Agent|Agent's Thoughts) \([^)]*\)\r?$`)
+
+func matchingTranscriptFiles(ctx context.Context, args []string) ([]byte, error) {
+	childCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := commandContext(childCtx, "rg", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	out, readErr := io.ReadAll(io.LimitReader(stdout, transcriptSearchMaxPathOutput+1))
+	if readErr != nil {
+		cancel()
+		_ = cmd.Wait()
+		return nil, readErr
+	}
+	if len(out) > transcriptSearchMaxPathOutput {
+		cancel()
+		_ = cmd.Wait()
+		return nil, errTranscriptSearchOutputTooLarge
+	}
+	waitErr := cmd.Wait()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if waitErr != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 1 {
+			return nil, waitErr
+		}
+	}
+	return out, nil
+}
+
+func visibleTranscriptMatches(ctx context.Context, path, query string) (transcriptBodyMatch, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return transcriptBodyMatch{}, err
+	}
+	defer file.Close()
+	reader := bufio.NewReaderSize(file, 64*1024)
+	needle := strings.ToLower(strings.TrimSpace(query))
+	visible := false
+	lineNumber := 0
+	match := transcriptBodyMatch{}
+	for {
+		line, tooLong, err := readBoundedTranscriptLine(reader, transcriptSearchMaxLine)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return transcriptBodyMatch{}, err
+		}
+		lineNumber++
+		if err := ctx.Err(); err != nil {
+			return transcriptBodyMatch{}, err
+		}
+		if tooLong {
+			continue
+		}
+		text := string(line)
+		if heading := transcriptRoleHeading.FindStringSubmatch(text); heading != nil {
+			visible = heading[1] != "Agent's Thoughts"
+			continue
+		}
+		if !visible {
+			continue
+		}
+		count := strings.Count(strings.ToLower(text), needle)
+		if count == 0 {
+			continue
+		}
+		if match.snippet == "" {
+			match.snippet = compactTranscriptSnippet(text, query)
+			match.line = lineNumber
+		}
+		match.count += count
+	}
+	return match, nil
+}
+
+func readBoundedTranscriptLine(reader *bufio.Reader, maxBytes int) ([]byte, bool, error) {
+	var line []byte
+	tooLong := false
+	for {
+		fragment, more, err := reader.ReadLine()
+		if err != nil {
+			return nil, tooLong, err
+		}
+		if !tooLong {
+			if len(line)+len(fragment) > maxBytes {
+				line = nil
+				tooLong = true
+			} else {
+				line = append(line, fragment...)
+			}
+		}
+		if !more {
+			return line, tooLong, nil
+		}
+	}
+}
+
+func compactTranscriptSnippet(s, query string) string {
+	s = strings.TrimSpace(s)
+	runes := []rune(s)
+	const limit = 240
+	if len(runes) <= limit {
+		return s
+	}
+	lower := strings.ToLower(s)
+	matchByte := strings.Index(lower, strings.ToLower(strings.TrimSpace(query)))
+	matchRune := 0
+	if matchByte >= 0 {
+		matchRune = len([]rune(lower[:matchByte]))
+	}
+	queryRunes := len([]rune(strings.TrimSpace(query)))
+	start := matchRune - (limit-queryRunes)/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + limit
+	if end > len(runes) {
+		end = len(runes)
+		start = end - limit
+	}
+	prefix, suffix := "", ""
+	if start > 0 {
+		prefix = "…"
+	}
+	if end < len(runes) {
+		suffix = "…"
+	}
+	return prefix + strings.TrimSpace(string(runes[start:end])) + suffix
+}
+
+func allowedTranscriptPath(path, home string) bool {
+	clean := filepath.Clean(path)
+	sep := string(filepath.Separator)
+	return filepath.IsAbs(clean) &&
+		strings.HasPrefix(clean, filepath.Clean(home)+sep) &&
+		strings.Contains(clean, sep+".agent-shell"+sep+"transcripts"+sep) &&
+		strings.HasSuffix(clean, ".md")
+}
+
+func eligibleTranscriptRecords(transcripts []transcriptInfo) ([]transcriptInfo, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	realHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return nil, err
+	}
+	eligible := make([]transcriptInfo, 0, len(transcripts))
+	for _, transcript := range transcripts {
+		clean := filepath.Clean(transcript.File)
+		if !allowedTranscriptPath(clean, home) && !allowedTranscriptPath(clean, realHome) {
+			continue
+		}
+		realPath, err := filepath.EvalSymlinks(clean)
+		if err != nil || !allowedTranscriptPath(realPath, realHome) {
+			continue
+		}
+		info, err := os.Stat(realPath)
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 8*1024*1024 {
+			continue
+		}
+		transcript.File = realPath
+		eligible = append(eligible, transcript)
+	}
+	return eligible, nil
+}
+
+type transcriptIndexLoader func(ctx context.Context, limit int) ([]transcriptInfo, error)
+
+func newTranscriptSearchHandler(load transcriptIndexLoader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json")
+		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		var req struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		query := strings.TrimSpace(req.Query)
+		queryLen := len([]rune(query))
+		if queryLen < 2 || queryLen > 200 || strings.IndexFunc(query, unicode.IsControl) >= 0 {
+			http.Error(w, "query must be between 2 and 200 printable characters", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		transcripts, err := load(ctx, 0)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				http.Error(w, "search timed out", http.StatusGatewayTimeout)
+				return
+			}
+			http.Error(w, "transcript index unavailable", http.StatusBadGateway)
+			return
+		}
+		transcripts = mergeTranscriptLabels(transcripts, loadLabels())
+		results, truncated, err := searchTranscriptRecords(ctx, query, transcripts)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				http.Error(w, "search timed out", http.StatusGatewayTimeout)
+				return
+			}
+			log.Printf("transcript search: %v", err)
+			http.Error(w, "search failed", http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"query":     query,
+			"results":   results,
+			"truncated": truncated,
+		})
+	})
+}
+
 // unquoteElispBase64 strips the quotes from a prin1-printed elisp string
 // and base64-decodes the body.  The elisp side ASCII-armors its JSON
 // because emacsclient octal-escapes non-ASCII in printed strings.
@@ -905,60 +1348,122 @@ func unquoteElispBase64(s string) (string, error) {
 	return string(data), nil
 }
 
+func decodeTranscriptIndexOutputContext(ctx context.Context, out []byte) ([]transcriptInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	jsonString, err := unquoteElispBase64(strings.TrimSpace(string(out)))
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var transcripts []transcriptInfo
+	if err := json.Unmarshal([]byte(jsonString), &transcripts); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return transcripts, nil
+}
+
+func decodeTranscriptIndexOutput(out []byte) ([]transcriptInfo, error) {
+	return decodeTranscriptIndexOutputContext(context.Background(), out)
+}
+
+func loadTranscriptIndex(ctx context.Context, limit int) ([]transcriptInfo, error) {
+	expr := fmt.Sprintf("(syzygy-recall-transcripts-json %d)", limit)
+	out, err := evalEmacsContext(ctx, "emacsclient", "--eval", expr)
+	if err != nil {
+		return nil, fmt.Errorf("emacsclient: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return decodeTranscriptIndexOutputContext(ctx, out)
+}
+
+func handleTranscriptSearch(w http.ResponseWriter, r *http.Request) {
+	newTranscriptSearchHandler(loadTranscriptIndex).ServeHTTP(w, r)
+}
+
+func newTranscriptsHandler(load transcriptIndexLoader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		transcripts, err := load(r.Context(), 100)
+		if err != nil {
+			log.Printf("transcripts: %v", err)
+			http.Error(w, "history unavailable", http.StatusBadGateway)
+			return
+		}
+		transcripts = mergeTranscriptLabels(transcripts, loadLabels())
+		transcripts, err = eligibleTranscriptRecords(transcripts)
+		if err != nil {
+			log.Printf("transcripts: %v", err)
+			http.Error(w, "history unavailable", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(transcripts)
+	})
+}
+
 func handleTranscripts(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	out, err := evalEmacs("emacsclient", "--eval", "(syzygy-recall-transcripts-json 100)")
-	if err != nil {
-		log.Printf("transcripts: %v: %s", err, out)
-		http.Error(w, strings.TrimSpace(string(out)), http.StatusInternalServerError)
-		return
-	}
-	jsonStr, err := unquoteElispBase64(strings.TrimSpace(string(out)))
-	if err != nil {
-		log.Printf("transcripts: %v", err)
-		http.Error(w, "unexpected emacs output", http.StatusBadGateway)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	io.WriteString(w, jsonStr)
+	newTranscriptsHandler(loadTranscriptIndex).ServeHTTP(w, r)
+}
+
+func newTranscriptHandler(load transcriptIndexLoader) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		transcripts, err := load(ctx, 0)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				http.Error(w, "transcript lookup timed out", http.StatusGatewayTimeout)
+				return
+			}
+			http.Error(w, "transcript index unavailable", http.StatusBadGateway)
+			return
+		}
+		indexed, err := eligibleTranscriptRecords(transcripts)
+		if err != nil {
+			http.Error(w, "transcript index unavailable", http.StatusBadGateway)
+			return
+		}
+		requested, err := eligibleTranscriptRecords([]transcriptInfo{{File: r.URL.Query().Get("file")}})
+		if err != nil || len(requested) != 1 {
+			http.Error(w, "path not allowed", http.StatusForbidden)
+			return
+		}
+		allowed := false
+		for _, transcript := range indexed {
+			if transcript.File == requested[0].File {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			http.Error(w, "path not allowed", http.StatusForbidden)
+			return
+		}
+		data, err := os.ReadFile(requested[0].File)
+		if err != nil {
+			http.Error(w, "transcript unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"content": string(data)})
+	})
 }
 
 func handleTranscript(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	file := r.URL.Query().Get("file")
-	clean := filepath.Clean(file)
-	home, err := os.UserHomeDir()
-	// Unlike /files/read, not limited to live-session cwds: history
-	// spans dead sessions. The transcript-shaped path is the grant.
-	if err != nil || !filepath.IsAbs(clean) ||
-		!strings.HasPrefix(clean, home+string(filepath.Separator)) ||
-		!strings.Contains(clean, string(filepath.Separator)+".agent-shell"+string(filepath.Separator)+"transcripts"+string(filepath.Separator)) ||
-		!strings.HasSuffix(clean, ".md") {
-		http.Error(w, "path not allowed", http.StatusForbidden)
-		return
-	}
-	info, err := os.Stat(clean)
-	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	if info.Size() > 8*1024*1024 {
-		http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-	data, err := os.ReadFile(clean)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"content": string(data)})
+	newTranscriptHandler(loadTranscriptIndex).ServeHTTP(w, r)
 }
 
 // handleLabel sets/clears a convo label via the Emacs daemon — same
@@ -1017,14 +1522,25 @@ func handleLabel(w http.ResponseWriter, r *http.Request) {
 // is mid-flight — server evals from this bridge included — and a beat
 // later the daemon is fine again.
 func evalEmacs(name string, args ...string) ([]byte, error) {
+	return evalEmacsContext(context.Background(), name, args...)
+}
+
+func evalEmacsContext(ctx context.Context, name string, args ...string) ([]byte, error) {
 	var out []byte
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		out, err = command(name, args...).CombinedOutput()
+		out, err = commandContext(ctx, name, args...).CombinedOutput()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return out, ctxErr
+		}
 		if err == nil || !bytes.Contains(out, []byte("*ERROR*: Quit")) {
 			return out, err
 		}
-		time.Sleep(300 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return out, ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
 	}
 	return out, err
 }

@@ -89,8 +89,38 @@ body {
 #nav-list {
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
+  padding-bottom: calc(82px + env(safe-area-inset-bottom));
 }
 #navigator { position: relative; }
+#history-dock {
+  display: none; position: fixed; z-index: 130;
+  left: 12px; right: 12px; bottom: max(10px, env(safe-area-inset-bottom));
+  align-items: center; gap: 10px;
+}
+#history-dock.visible { display: flex; }
+#history-search-form {
+  min-width: 0; flex: 1; height: 48px; border-radius: 24px;
+  display: flex; align-items: center; gap: 9px; padding: 0 16px;
+  color: var(--fg-mute); background: var(--bg1);
+  border: 1px solid var(--bg2);
+  box-shadow: 0 4px 18px rgba(0,0,0,0.28);
+}
+#history-search-form:focus-within { border-color: var(--orange); }
+#history-search-form svg { width: 18px; height: 18px; flex-shrink: 0; }
+#history-search-input {
+  min-width: 0; width: 100%; border: none; outline: none; background: transparent;
+  color: var(--fg); font: 16px var(--mono); line-height: 1;
+  -webkit-appearance: none; appearance: none;
+}
+#history-search-input::placeholder { color: var(--fg-mute); opacity: 1; }
+#spawn-btn {
+  width: 48px; height: 48px; flex: 0 0 48px; border-radius: 50%;
+  display: grid; place-items: center; border: none; cursor: pointer;
+  color: var(--bg-hard); background: var(--orange);
+  box-shadow: 0 4px 18px rgba(0,0,0,0.34);
+}
+#spawn-btn:active { transform: scale(0.94); }
+#spawn-btn svg { display: block; }
 #ptr {
   position: absolute; left: 0; right: 0; text-align: center;
   height: 40px; line-height: 40px; pointer-events: none;
@@ -829,7 +859,7 @@ input, textarea, #fbv-content, .msg, .msg * {
 }
 #history-body {
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: 18px 18px calc(24px + env(safe-area-inset-bottom));
+  padding: 18px 18px calc(92px + env(safe-area-inset-bottom));
 }
 .hist-card {
   padding: 12px 16px; margin: 0 -18px; border-bottom: 1px solid var(--bg1);
@@ -845,6 +875,11 @@ input, textarea, #fbv-content, .msg, .msg * {
   font-size: 11px; color: var(--fg-mute); margin-top: 4px;
   font-family: var(--mono);
 }
+.hist-card .hc-snippet {
+  font-size: 12px; color: var(--fg-dim); margin: 5px 0 0 24px;
+  line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden;
+}
 /* Provider logo + agent badge: same identity treatment as agent-recall. */
 .hc-agent { font-family: var(--mono); font-weight: 600; }
 .hc-agent.claude { color: var(--orange); }
@@ -856,6 +891,13 @@ input, textarea, #fbv-content, .msg, .msg * {
 }
 /* Transcript view: reuse the peek sheet's bubble styles (.pv-msg) */
 #history-body .pv-msg { max-width: none; }
+#history-body .pv-msg.hist-match {
+  outline: 2px solid var(--orange); outline-offset: 3px;
+}
+#history-body mark {
+  color: var(--bg-hard); background: var(--yellow); border-radius: 2px;
+  padding: 0 1px;
+}
 .hist-note {
   color: var(--fg-mute); font-size: 11px; font-family: var(--mono);
   text-align: center; margin-bottom: 12px;
@@ -864,11 +906,11 @@ input, textarea, #fbv-content, .msg, .msg * {
 /* Spawn sheet: new convo from the phone */
 #spawn-scrim {
   position: fixed; inset: 0; background: rgba(0,0,0,0.55);
-  display: none; z-index: 119;
+  display: none; z-index: 139;
 }
 #spawn-scrim.visible { display: block; }
 #spawn-sheet {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 120;
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 140;
   background: var(--bg0); border-top: 1px solid var(--bg2);
   border-radius: 16px 16px 0 0; max-height: 80dvh;
   display: none; flex-direction: column;
@@ -1102,10 +1144,16 @@ input, textarea, #fbv-content, .msg, .msg * {
     <span id="nav-spin"></span>
     <button class="nav-btn" id="nav-history-btn" aria-label="Chat history"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button>
     <button class="nav-btn" id="nav-pins-btn" aria-label="Pinned messages"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg></button>
-    <button class="nav-btn" id="spawn-btn">+</button>
   </div>
   <div id="ptr">↻</div>
   <div id="nav-list"></div>
+</div>
+<div id="history-dock" class="visible">
+  <form id="history-search-form" role="search">
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+    <input id="history-search-input" type="search" placeholder="Search" aria-label="Search conversations" enterkeyhint="search" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+  </form>
+  <button id="spawn-btn" type="button" aria-label="New chat"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
 </div>
 <div id="chat-view">
 <div id="header">
@@ -1258,6 +1306,8 @@ if (window.visualViewport) {
     // only shrinks the VISUAL one — lift them above it and cap their
     // height so the focused input and the action button stay reachable.
     const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    const dock = document.getElementById('history-dock');
+    if (dock) dock.style.bottom = kb > 0 ? (kb + 10) + 'px' : '';
     for (const id of ['spawn-sheet', 'preview-sheet']) {
       const el = document.getElementById(id);
       if (!el) continue;
@@ -3390,6 +3440,9 @@ function selectSession(session) {
 function showChat() {
   navigatorEl.classList.add('hidden');
   chatViewEl.classList.add('visible');
+  document.getElementById('history').classList.remove('visible');
+  document.getElementById('pins').classList.remove('visible');
+  syncHistoryDock();
   if (discoverMode) {
     backBtn.style.display = 'block';
   }
@@ -3398,6 +3451,7 @@ function showChat() {
 function showNavigator() {
   chatViewEl.classList.remove('visible');
   navigatorEl.classList.remove('hidden');
+  syncHistoryDock();
   // Disconnect current websocket
   if (ws) {
     ws.onclose = null; // prevent reconnect
@@ -3474,11 +3528,13 @@ function openSpawnSheet(cwd) {
   spGo.disabled = false; spGo.textContent = 'spawn';
   spScrim.classList.add('visible');
   spSheet.classList.add('visible');
+  syncHistoryDock();
 }
 
 function hideSpawnSheet() {
   spScrim.classList.remove('visible');
   spSheet.classList.remove('visible');
+  syncHistoryDock();
 }
 
 spScrim.addEventListener('click', hideSpawnSheet);
@@ -3651,6 +3707,7 @@ async function showPreview(s, name) {
   pvBody.innerHTML = '<div class="pv-msg agent">loading\u2026</div>';
   pvScrim.classList.add('visible');
   pvSheet.classList.add('visible');
+  syncHistoryDock();
   try {
     const resp = await fetch(basePath + '/api/preview?pid=' + s.pid);
     const data = await resp.json();
@@ -3669,6 +3726,7 @@ async function showPreview(s, name) {
 function hidePreview() {
   pvScrim.classList.remove('visible');
   pvSheet.classList.remove('visible');
+  syncHistoryDock();
 }
 
 pvScrim.addEventListener('click', hidePreview);
@@ -4061,13 +4119,27 @@ const historyEl = document.getElementById('history');
 const historyBody = document.getElementById('history-body');
 const historyTitle = document.getElementById('history-title');
 const historyBackBtn = document.getElementById('history-back');
+const historyDock = document.getElementById('history-dock');
+const historySearchForm = document.getElementById('history-search-form');
+const historySearchInput = document.getElementById('history-search-input');
 let historyBackFn = null;
+let historyRequestSerial = 0;
+let historyRootState = {
+  mode: 'recent', query: '', list: null, truncated: false, scrollTop: 0
+};
 
-function setHistoryView(title, backFn) {
+function syncHistoryDock() {
+  const hidden = navigatorEl.classList.contains('hidden') ||
+    pinsEl.classList.contains('visible') || spSheet.classList.contains('visible') ||
+    pvSheet.classList.contains('visible');
+  historyDock.classList.toggle('visible', !hidden);
+}
+
+function setHistoryView(title, backFn, resetScroll = true) {
   historyTitle.textContent = title;
   historyBackFn = backFn;
   historyBackBtn.style.display = backFn ? '' : 'none';
-  historyBody.scrollTop = 0;
+  if (resetScroll) historyBody.scrollTop = 0;
 }
 
 // "2026-08-23-16-18-27" -> "Aug 23 16:18"
@@ -4087,7 +4159,53 @@ function agentBadge(agent) {
   return '<span class="hc-agent ' + cls + '">' + escHtml(agent || '?') + '</span>';
 }
 
-async function loadHistory() {
+function renderHistoryRoot() {
+  setHistoryView('History', null);
+  const list = historyRootState.list;
+  historyBody.innerHTML = '';
+  if (!list || !list.length) {
+    historyBody.innerHTML = '<div class="hist-empty">' +
+      (historyRootState.mode === 'search' ? 'No matching conversations.' : 'No transcripts indexed yet.') +
+      '</div>';
+    return;
+  }
+  for (const t of list) {
+    const card = document.createElement('div');
+    card.className = 'hist-card';
+    const name = t.label || t.preview || '(empty)';
+    const detail = historyRootState.mode === 'search'
+      ? (t.snippet || (t.label ? t.preview : ''))
+      : (t.label ? t.preview : '');
+    const count = t.matchCount
+      ? ' &middot; ' + t.matchCount + (t.matchCount === 1 ? ' match' : ' matches') : '';
+    card.innerHTML =
+      '<div class="hc-title">' + providerIcon(t.agent) +
+        '<div class="hc-name">' + escHtml(name) + '</div>' +
+      '</div>' +
+      (detail && detail !== name
+        ? '<div class="hc-snippet">' + escHtml(detail) + '</div>' : '') +
+      '<div class="hc-meta">' + agentBadge(t.agent) + ' &middot; ' +
+        escHtml(t.project) + ' &middot; ' + escHtml(fmtHistTs(t.timestamp)) + count + '</div>';
+    card.addEventListener('click', () => {
+      historyRootState.scrollTop = historyBody.scrollTop;
+      openTranscript(t, historyRootState.query);
+    });
+    historyBody.appendChild(card);
+  }
+  if (historyRootState.truncated) {
+    const note = document.createElement('div');
+    note.className = 'hist-note';
+    note.textContent = 'showing the first 40 conversations';
+    historyBody.appendChild(note);
+  }
+  const restore = historyRootState.scrollTop;
+  requestAnimationFrame(() => { historyBody.scrollTop = restore; });
+}
+
+async function loadHistory(clearQuery = false) {
+  const serial = ++historyRequestSerial;
+  if (clearQuery) historySearchInput.value = '';
+  historyRootState = { mode: 'recent', query: '', list: null, truncated: false, scrollTop: 0 };
   setHistoryView('History', null);
   historyBody.innerHTML = '<div class="hist-empty">loading…</div>';
   let list;
@@ -4096,47 +4214,108 @@ async function loadHistory() {
     if (!resp.ok) throw new Error(await resp.text());
     list = await resp.json();
   } catch (err) {
+    if (serial !== historyRequestSerial) return;
     historyBody.innerHTML = '<div class="hist-empty">history failed: ' + escHtml(err.message) + '</div>';
     return;
   }
-  historyBody.innerHTML = '';
-  if (!list || !list.length) {
-    historyBody.innerHTML = '<div class="hist-empty">No transcripts indexed yet.</div>';
+  if (serial !== historyRequestSerial) return;
+  historyRootState.list = list || [];
+  renderHistoryRoot();
+}
+
+async function searchHistory(query) {
+  const serial = ++historyRequestSerial;
+  historyRootState = { mode: 'search', query, list: null, truncated: false, scrollTop: 0 };
+  setHistoryView('History', null);
+  historyBody.innerHTML = '<div class="hist-empty">searching…</div>';
+  let payload;
+  try {
+    const resp = await fetch(basePath + '/api/transcript-search', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query})
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    payload = await resp.json();
+  } catch (err) {
+    if (serial !== historyRequestSerial) return;
+    historyBody.innerHTML = '<div class="hist-empty">search failed: ' + escHtml(err.message) + '</div>';
     return;
   }
-  for (const t of list) {
-    const card = document.createElement('div');
-    card.className = 'hist-card';
-    card.innerHTML =
-      '<div class="hc-title">' + providerIcon(t.agent) +
-        '<div class="hc-name">' + escHtml(t.preview || '(empty)') + '</div>' +
-      '</div>' +
-      '<div class="hc-meta">' + agentBadge(t.agent) + ' &middot; ' +
-        escHtml(t.project) + ' &middot; ' + escHtml(fmtHistTs(t.timestamp)) + '</div>';
-    card.addEventListener('click', () => openTranscript(t));
-    historyBody.appendChild(card);
-  }
+  if (serial !== historyRequestSerial) return;
+  historyRootState.list = payload.results || [];
+  historyRootState.truncated = !!payload.truncated;
+  renderHistoryRoot();
 }
 
 // Split a transcript's markdown into role sections.  Tool-call blocks
 // (###) stay inside the owning agent section; the file header (before
 // the first ---) is dropped.
 function parseTranscript(md) {
-  const bodyStart = md.indexOf('\n---\n');
-  const body = bodyStart >= 0 ? md.slice(bodyStart + 5) : md;
-  const parts = body.split(/^## (User|Agent|Agent's Thoughts) \(([^)]*)\)\s*$/m);
+  const lines = md.split('\n');
   const sections = [];
-  for (let i = 1; i + 2 < parts.length; i += 3) {
-    const role = parts[i];
-    const text = (parts[i + 2] || '').trim();
-    if (!text || role === "Agent's Thoughts") continue;
-    sections.push({ role: role === 'User' ? 'user' : 'agent', text });
+  let current = null;
+  const finish = (endLine) => {
+    if (!current) return;
+    const text = current.lines.join('\n').trim();
+    if (text && current.role !== "Agent's Thoughts") {
+      sections.push({
+        role: current.role === 'User' ? 'user' : 'agent',
+        text,
+        sourceStart: current.headingLine + 1,
+        sourceEnd: endLine
+      });
+    }
+  };
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index].replace(/\r$/, '');
+    const heading = line.match(/^## (User|Agent|Agent's Thoughts) \(([^)]*)\)\s*$/);
+    if (heading) {
+      finish(index);
+      current = {role: heading[1], headingLine: index + 1, lines: []};
+    } else if (current) {
+      current.lines.push(lines[index]);
+    }
   }
+  finish(lines.length);
   return sections;
 }
 
-async function openTranscript(t) {
-  const listView = () => loadHistory();
+function highlightHistoryMatch(root, query) {
+  const needle = (query || '').toLocaleLowerCase();
+  if (!needle) return false;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  let found = false;
+  for (const node of nodes) {
+    const text = node.nodeValue || '';
+    const lower = text.toLocaleLowerCase();
+    let at = lower.indexOf(needle);
+    if (at < 0) continue;
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    while (at >= 0) {
+      fragment.appendChild(document.createTextNode(text.slice(cursor, at)));
+      const mark = document.createElement('mark');
+      mark.textContent = text.slice(at, at + needle.length);
+      fragment.appendChild(mark);
+      cursor = at + needle.length;
+      at = lower.indexOf(needle, cursor);
+    }
+    fragment.appendChild(document.createTextNode(text.slice(cursor)));
+    node.replaceWith(fragment);
+    found = true;
+  }
+  return found;
+}
+
+async function openTranscript(t, query = '') {
+  const serial = ++historyRequestSerial;
+  const listView = () => {
+    ++historyRequestSerial;
+    renderHistoryRoot();
+  };
   setHistoryView((t.agent || '?') + ' · ' + t.project + ' · ' + fmtHistTs(t.timestamp), listView);
   historyBody.innerHTML = '<div class="hist-empty">loading…</div>';
   let content;
@@ -4145,43 +4324,102 @@ async function openTranscript(t) {
     if (!resp.ok) throw new Error(await resp.text());
     content = (await resp.json()).content;
   } catch (err) {
+    if (serial !== historyRequestSerial) return;
     historyBody.innerHTML = '<div class="hist-empty">transcript failed: ' + escHtml(err.message) + '</div>';
     return;
   }
+  if (serial !== historyRequestSerial) return;
   const sections = parseTranscript(content);
   historyBody.innerHTML = '';
   const CAP = 200;
-  if (sections.length > CAP) {
+  const needle = query.toLocaleLowerCase();
+  const matchLine = Number(t.matchLine) || 0;
+  const lineMatchIndex = matchLine
+    ? sections.findIndex(section => matchLine >= section.sourceStart && matchLine <= section.sourceEnd)
+    : -1;
+  const textMatchIndex = needle
+    ? sections.findIndex(section => section.text.toLocaleLowerCase().includes(needle)) : -1;
+  const matchIndex = lineMatchIndex >= 0 ? lineMatchIndex : textMatchIndex;
+  let start = Math.max(0, sections.length - CAP);
+  let end = sections.length;
+  if (matchIndex >= 0) {
+    start = Math.max(0, matchIndex - 25);
+    end = Math.min(sections.length, matchIndex + 26);
+  }
+  if (start > 0 || end < sections.length) {
     const note = document.createElement('div');
     note.className = 'hist-note';
-    note.textContent = 'showing last ' + CAP + ' of ' + sections.length + ' messages';
+    note.textContent = matchIndex >= 0
+      ? 'showing messages ' + (start + 1) + '–' + end + ' of ' + sections.length + ' around match'
+      : 'showing last ' + (end - start) + ' of ' + sections.length + ' messages';
     historyBody.appendChild(note);
   }
-  for (const s of sections.slice(-CAP)) {
+  let matchedBubble = null;
+  for (let index = start; index < end; index++) {
+    const s = sections[index];
     const d = document.createElement('div');
     d.className = 'pv-msg ' + s.role;
     if (s.role === 'agent') d.innerHTML = '<div class="md">' + renderMarkdown(s.text) + '</div>';
     else d.textContent = s.text;
+    if (index === matchIndex) {
+      highlightHistoryMatch(d, query);
+      d.classList.add('hist-match');
+      matchedBubble = d;
+    }
     historyBody.appendChild(d);
   }
   if (!sections.length) historyBody.innerHTML = '<div class="hist-empty">(empty transcript)</div>';
+  if (matchedBubble) requestAnimationFrame(() => matchedBubble.scrollIntoView({block: 'center'}));
 }
 
 document.getElementById('nav-history-btn').addEventListener('click', () => {
-  loadHistory();
   historyEl.classList.add('visible');
+  historySearchInput.blur();
+  loadHistory(true);
+});
+historySearchInput.addEventListener('focus', () => {
+  if (!historyEl.classList.contains('visible')) {
+    historyEl.classList.add('visible');
+    if (historyRootState.list === null) loadHistory();
+    else renderHistoryRoot();
+  }
+});
+historySearchForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  historyEl.classList.add('visible');
+  const query = historySearchInput.value.trim();
+  if (!query) {
+    loadHistory();
+    return;
+  }
+  if ([...query].length < 2) {
+    ++historyRequestSerial;
+    setHistoryView('History', null);
+    historyBody.innerHTML = '<div class="hist-empty">Type at least 2 characters.</div>';
+    return;
+  }
+  searchHistory(query);
+});
+historySearchInput.addEventListener('search', () => {
+  if (!historySearchInput.value.trim() && historyEl.classList.contains('visible')) loadHistory();
 });
 historyBackBtn.addEventListener('click', () => { if (historyBackFn) historyBackFn(); });
-document.getElementById('history-close').addEventListener('click', () =>
-  historyEl.classList.remove('visible'));
+document.getElementById('history-close').addEventListener('click', () => {
+  ++historyRequestSerial;
+  historyEl.classList.remove('visible');
+  historySearchInput.blur();
+});
 
 document.getElementById('nav-pins-btn').addEventListener('click', () => {
   renderAllPins();
   pinsEl.classList.add('visible');
+  syncHistoryDock();
 });
 pinsBack.addEventListener('click', () => { if (pinsBackFn) pinsBackFn(); });
-document.getElementById('pins-close').addEventListener('click', () =>
-  pinsEl.classList.remove('visible'));
+document.getElementById('pins-close').addEventListener('click', () => {
+  pinsEl.classList.remove('visible');
+  syncHistoryDock();
+});
 mmPin.addEventListener('click', () => {
   if (mmTarget) togglePin(mmTarget);
   closeMsgMenu();
@@ -4206,7 +4444,10 @@ document.addEventListener('keydown', (e) => {
   if (readerEl.classList.contains('visible')) closeReader();
   else if (msgMenu.classList.contains('visible')) closeMsgMenu();
   else if (chatMenu.classList.contains('visible')) closeChatMenu();
-  else if (pinsEl.classList.contains('visible')) pinsEl.classList.remove('visible');
+  else if (pinsEl.classList.contains('visible')) {
+    pinsEl.classList.remove('visible');
+    syncHistoryDock();
+  }
   else if (historyEl.classList.contains('visible')) {
     if (historyBackFn) historyBackFn(); else historyEl.classList.remove('visible');
   }

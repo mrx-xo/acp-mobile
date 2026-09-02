@@ -1,17 +1,22 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"golang.org/x/net/html"
 	"golang.org/x/net/websocket"
 )
 
@@ -808,4 +813,529 @@ func TestProbeSocketSessionIDFromResumedReplay(t *testing.T) {
 	if info.BufferName != "Claude Agent @ home-lab" {
 		t.Fatalf("BufferName = %q", info.BufferName)
 	}
+}
+
+func TestMergeTranscriptLabelsPrefersLiveSidecar(t *testing.T) {
+	transcripts := []transcriptInfo{
+		{SessionID: "session-1", Label: "Durable label"},
+		{SessionID: "session-2", Label: "Archive only"},
+		{SessionID: "session-3", Label: "Cleared durable label"},
+	}
+
+	got := mergeTranscriptLabels(transcripts, map[string]string{
+		"session-1": "Fresh label",
+		"session-3": "",
+	})
+
+	if got[0].Label != "Fresh label" {
+		t.Fatalf("live label = %q, want Fresh label", got[0].Label)
+	}
+	if got[1].Label != "Archive only" {
+		t.Fatalf("durable fallback = %q, want Archive only", got[1].Label)
+	}
+	if got[2].Label != "" {
+		t.Fatalf("cleared label = %q, want empty live tombstone", got[2].Label)
+	}
+}
+
+func TestSearchTranscriptRecordsRanksLabelsBeforeOtherMetadata(t *testing.T) {
+	file := makeEligibleTranscriptFile(t, "ranking.md", "no body match\n")
+	transcripts := []transcriptInfo{
+		{File: file, SessionID: "preview", Preview: "Orbit migration", Timestamp: "2026-09-01-12-00-04"},
+		{File: file, SessionID: "agent", Agent: "Orbit", Timestamp: "2026-09-01-12-00-03"},
+		{File: file, SessionID: "label", Label: "Orbit control", Timestamp: "2026-08-01-12-00-00"},
+		{File: file, SessionID: "project", Project: "orbit", Timestamp: "2026-09-01-12-00-02"},
+	}
+
+	results, truncated, err := searchTranscriptRecords(context.Background(), "ORBIT", transcripts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Fatal("four matches should not be truncated")
+	}
+	wantSessions := []string{"label", "preview", "project", "agent"}
+	wantFields := []string{"label", "preview", "project", "agent"}
+	if len(results) != len(wantSessions) {
+		t.Fatalf("got %d results, want %d", len(results), len(wantSessions))
+	}
+	for i := range wantSessions {
+		if results[i].SessionID != wantSessions[i] || results[i].MatchField != wantFields[i] {
+			t.Fatalf("result %d = session %q field %q, want session %q field %q",
+				i, results[i].SessionID, results[i].MatchField, wantSessions[i], wantFields[i])
+		}
+	}
+}
+
+func TestSearchTranscriptRecordsFindsLiteralBodyMatchesOnlyInIndexedFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "project", ".agent-shell", "transcripts")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	literalFile := filepath.Join(dir, "literal.md")
+	regexLikeFile := filepath.Join(dir, "regex-like.md")
+	unindexedFile := filepath.Join(dir, "unindexed.md")
+	if err := os.WriteFile(literalFile, []byte("header\n---\n\n## User (2026-09-01 12:00)\nVersion a.b shipped\nA.B follow-up\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(regexLikeFile, []byte("header\n---\n\n## User (2026-09-01 12:00)\naxb is not a literal match\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unindexedFile, []byte("header\n---\n\n## User (2026-09-01 12:00)\na.b must stay outside results\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	transcripts := []transcriptInfo{
+		{File: literalFile, SessionID: "literal", Timestamp: "2026-09-01-12-00-00"},
+		{File: regexLikeFile, SessionID: "regex-like", Timestamp: "2026-09-01-12-00-01"},
+	}
+
+	results, truncated, err := searchTranscriptRecords(context.Background(), "a.b", transcripts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Fatal("one body result should not be truncated")
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want one indexed literal match: %#v", len(results), results)
+	}
+	got := results[0]
+	if got.SessionID != "literal" || got.MatchField != "body" {
+		t.Fatalf("match = session %q field %q, want literal/body", got.SessionID, got.MatchField)
+	}
+	if got.MatchCount != 2 {
+		t.Fatalf("matchCount = %d, want 2 case-insensitive literal matches", got.MatchCount)
+	}
+	if !strings.Contains(got.Snippet, "Version a.b shipped") {
+		t.Fatalf("snippet = %q, want first matching line", got.Snippet)
+	}
+}
+
+func TestSearchTranscriptRecordsIgnoresHeaderAndThoughtOnlyMatches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "project", ".agent-shell", "transcripts")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"header":   "Header orbit only\n---\n\n## User (2026-09-01 12:00)\nordinary text\n",
+		"thoughts": "Header\n---\n\n## Agent's Thoughts (2026-09-01 12:00)\nprivate orbit thought\n\n## Agent (2026-09-01 12:01)\nordinary answer\n",
+		"visible":  "Header\n---\n\n## User (2026-09-01 12:00)\nvisible orbit request\n",
+	}
+	transcripts := make([]transcriptInfo, 0, len(files))
+	for sessionID, content := range files {
+		file := filepath.Join(dir, sessionID+".md")
+		if err := os.WriteFile(file, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		transcripts = append(transcripts, transcriptInfo{File: file, SessionID: sessionID})
+	}
+
+	results, _, err := searchTranscriptRecords(context.Background(), "orbit", transcripts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SessionID != "visible" || results[0].MatchLine != 5 {
+		t.Fatalf("results = %#v, want only the renderable line-5 match", results)
+	}
+}
+
+func TestSearchTranscriptRecordsCentersSnippetOnLateColumnMatch(t *testing.T) {
+	content := "Header\n---\n\n## User (2026-09-01 12:00)\n" + strings.Repeat("prefix ", 80) + "orbit decision\n"
+	file := makeEligibleTranscriptFile(t, "late-column.md", content)
+
+	results, _, err := searchTranscriptRecords(context.Background(), "orbit", []transcriptInfo{{File: file, SessionID: "late"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || !strings.Contains(results[0].Snippet, "orbit decision") {
+		t.Fatalf("results = %#v, want snippet centered around late-column match", results)
+	}
+}
+
+func TestSearchTranscriptRecordsSearchesLongLineWithinFileCap(t *testing.T) {
+	content := "Header\n---\n\n## User (2026-09-01 12:00)\n" +
+		strings.Repeat("x", 300*1024) + "orbit\nvisible orbit fallback\n"
+	file := makeEligibleTranscriptFile(t, "long-line.md", content)
+
+	results, _, err := searchTranscriptRecords(context.Background(), "orbit", []transcriptInfo{{File: file, SessionID: "bounded"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].MatchCount != 2 || !strings.Contains(results[0].Snippet, "orbit") {
+		t.Fatalf("results = %#v, want both matches and a centered long-line snippet", results)
+	}
+}
+
+func TestTranscriptSearchHandlerReturnsLiveLabelResult(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".acp-mobile"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(home, ".acp-mobile", "labels.json"),
+		[]byte(`{"session-1":"Fresh Orbit label"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	transcriptDir := filepath.Join(home, "project", ".agent-shell", "transcripts")
+	if err := os.MkdirAll(transcriptDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	transcriptFile := filepath.Join(transcriptDir, "one.md")
+	if err := os.WriteFile(transcriptFile, []byte("nothing in the body\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loader := func(_ context.Context, _ int) ([]transcriptInfo, error) {
+		return []transcriptInfo{{
+			File: transcriptFile, SessionID: "session-1", Label: "Old label",
+			Project: "syzygy", Agent: "Codex", Timestamp: "2026-09-01-12-00-00",
+		}}, nil
+	}
+	body := strings.NewReader(`{"query":"orbit"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/transcript-search", body)
+	w := httptest.NewRecorder()
+
+	newTranscriptSearchHandler(loader).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	var payload struct {
+		Query     string                   `json:"query"`
+		Results   []transcriptSearchResult `json:"results"`
+		Truncated bool                     `json:"truncated"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Query != "orbit" || payload.Truncated || len(payload.Results) != 1 {
+		t.Fatalf("unexpected response: %#v", payload)
+	}
+	result := payload.Results[0]
+	if result.Label != "Fresh Orbit label" || result.MatchField != "label" {
+		t.Fatalf("result label/field = %q/%q, want live label/label", result.Label, result.MatchField)
+	}
+}
+
+func TestSearchTranscriptRecordsCapsGlobalResults(t *testing.T) {
+	file := makeEligibleTranscriptFile(t, "cap.md", "no body match\n")
+	transcripts := make([]transcriptInfo, 41)
+	for i := range transcripts {
+		transcripts[i] = transcriptInfo{
+			File:      file,
+			SessionID: fmt.Sprintf("session-%02d", i),
+			Label:     "shared needle",
+			Timestamp: fmt.Sprintf("2026-09-01-12-00-%02d", i),
+		}
+	}
+
+	results, truncated, err := searchTranscriptRecords(context.Background(), "needle", transcripts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated {
+		t.Fatal("41 matching conversations should report truncation")
+	}
+	if len(results) != 40 {
+		t.Fatalf("got %d results, want global cap of 40", len(results))
+	}
+	if results[0].SessionID != "session-40" {
+		t.Fatalf("first session = %q, want newest session-40", results[0].SessionID)
+	}
+}
+
+func TestSearchTranscriptRecordsRejectsIneligibleMetadataMatches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	transcriptDir := filepath.Join(home, "project", ".agent-shell", "transcripts")
+	if err := os.MkdirAll(transcriptDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	valid := filepath.Join(transcriptDir, "valid.md")
+	if err := os.WriteFile(valid, []byte("ordinary transcript\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	extraFormat := filepath.Join(home, "project", "notes.md")
+	if err := os.WriteFile(extraFormat, []byte("ordinary notes\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oversized := filepath.Join(transcriptDir, "oversized.md")
+	if err := os.WriteFile(oversized, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(oversized, 8*1024*1024+1); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, "outside.md")
+	if err := os.WriteFile(outside, []byte("outside\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(transcriptDir, "symlink.md")
+	if err := os.Symlink(outside, symlink); err != nil {
+		t.Fatal(err)
+	}
+	transcripts := []transcriptInfo{
+		{File: valid, SessionID: "valid", Label: "orbit"},
+		{File: extraFormat, SessionID: "extra-format", Label: "orbit"},
+		{File: oversized, SessionID: "oversized", Label: "orbit"},
+		{File: symlink, SessionID: "symlink", Label: "orbit"},
+	}
+
+	results, _, err := searchTranscriptRecords(context.Background(), "orbit", transcripts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SessionID != "valid" {
+		t.Fatalf("results = %#v, want only the eligible indexed transcript", results)
+	}
+}
+
+func makeEligibleTranscriptFile(t *testing.T, name, content string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "project", ".agent-shell", "transcripts")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, name)
+	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+func TestTranscriptSearchHandlerRejectsQueriesOutsideBounds(t *testing.T) {
+	loader := func(_ context.Context, _ int) ([]transcriptInfo, error) { return []transcriptInfo{}, nil }
+	for name, query := range map[string]string{
+		"one character":     "x",
+		"too long":          strings.Repeat("界", 201),
+		"control character": "two\nlines",
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := strings.NewReader(`{"query":` + fmt.Sprintf("%q", query) + `}`)
+			req := httptest.NewRequest(http.MethodPost, "/api/transcript-search", body)
+			w := httptest.NewRecorder()
+
+			newTranscriptSearchHandler(loader).ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestTranscriptSearchTimeoutIncludesIndexLoad(t *testing.T) {
+	loader := func(ctx context.Context, _ int) ([]transcriptInfo, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/api/transcript-search", strings.NewReader(`{"query":"orbit"}`)).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	newTranscriptSearchHandler(loader).ServeHTTP(w, req)
+
+	if w.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want 504 for index timeout: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDecodeTranscriptIndexOutputPreservesDurableMetadata(t *testing.T) {
+	raw := `[{"file":"/tmp/one.md","project":"syzygy","timestamp":"2026-09-01-12-00-00","agent":"Codex","preview":"Search it","sessionId":"session-1","label":"Recall UX"}]`
+	armored := `"` + base64.StdEncoding.EncodeToString([]byte(raw)) + `"`
+
+	got, err := decodeTranscriptIndexOutput([]byte(armored))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d transcripts, want 1", len(got))
+	}
+	if got[0].SessionID != "session-1" || got[0].Label != "Recall UX" {
+		t.Fatalf("decoded transcript = %#v", got[0])
+	}
+}
+
+func TestTranscriptsHandlerUsesSameLiveLabelAsSearch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".acp-mobile"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(home, ".acp-mobile", "labels.json"),
+		[]byte(`{"session-1":"Fresh label"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	transcriptDir := filepath.Join(home, "project", ".agent-shell", "transcripts")
+	if err := os.MkdirAll(transcriptDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	transcriptFile := filepath.Join(transcriptDir, "one.md")
+	if err := os.WriteFile(transcriptFile, []byte("transcript\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loader := func(_ context.Context, limit int) ([]transcriptInfo, error) {
+		if limit != 100 {
+			t.Fatalf("limit = %d, want 100", limit)
+		}
+		return []transcriptInfo{{File: transcriptFile, SessionID: "session-1", Label: "Durable label"}}, nil
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/transcripts", nil)
+	w := httptest.NewRecorder()
+
+	newTranscriptsHandler(loader).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var got []transcriptInfo
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Label != "Fresh label" {
+		t.Fatalf("recent transcripts = %#v, want live label", got)
+	}
+}
+
+func TestTranscriptHandlerRequiresIndexedEligibleFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "project", ".agent-shell", "transcripts")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	indexed := filepath.Join(dir, "indexed.md")
+	unindexed := filepath.Join(dir, "unindexed.md")
+	outside := filepath.Join(home, "outside.md")
+	for file, content := range map[string]string{
+		indexed: "indexed content", unindexed: "unindexed content", outside: "outside content",
+	} {
+		if err := os.WriteFile(file, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	symlink := filepath.Join(dir, "escape.md")
+	if err := os.Symlink(outside, symlink); err != nil {
+		t.Fatal(err)
+	}
+	loader := func(_ context.Context, limit int) ([]transcriptInfo, error) {
+		if limit != 0 {
+			t.Fatalf("limit = %d, want full index", limit)
+		}
+		return []transcriptInfo{{File: indexed}, {File: symlink}}, nil
+	}
+	handler := newTranscriptHandler(loader)
+	canonicalIndexed, err := filepath.EvalSymlinks(indexed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, test := range map[string]struct {
+		file       string
+		wantStatus int
+	}{
+		"indexed":           {indexed, http.StatusOK},
+		"indexed canonical": {canonicalIndexed, http.StatusOK},
+		"unindexed":         {unindexed, http.StatusForbidden},
+		"symlink":           {symlink, http.StatusForbidden},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/transcript?file="+url.QueryEscape(test.file), nil)
+			w := httptest.NewRecorder()
+
+			handler.ServeHTTP(w, req)
+
+			if w.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", w.Code, test.wantStatus, w.Body.String())
+			}
+			if strings.HasPrefix(name, "indexed") && !strings.Contains(w.Body.String(), "indexed content") {
+				t.Fatalf("body = %q, want indexed transcript content", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHistoryDockOwnsSearchAndNewChatOutsideBothScreens(t *testing.T) {
+	doc, err := html.Parse(bytes.NewReader(indexHTML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := htmlNodeByID(doc, "nav-header")
+	dock := htmlNodeByID(doc, "history-dock")
+	navigator := htmlNodeByID(doc, "navigator")
+	history := htmlNodeByID(doc, "history")
+	if header == nil || dock == nil || navigator == nil || history == nil {
+		t.Fatal("navigator, history, header, and shared dock must all exist")
+	}
+	for _, id := range []string{"nav-history-btn", "nav-pins-btn"} {
+		if !htmlNodeContainsID(header, id) {
+			t.Fatalf("header is missing %s", id)
+		}
+	}
+	if htmlNodeContainsID(header, "spawn-btn") {
+		t.Fatal("new chat must move out of the top header")
+	}
+	for _, id := range []string{"history-search-form", "history-search-input", "spawn-btn"} {
+		if !htmlNodeContainsID(dock, id) {
+			t.Fatalf("shared dock is missing %s", id)
+		}
+	}
+	if htmlNodeContainsID(navigator, "history-dock") || htmlNodeContainsID(history, "history-dock") {
+		t.Fatal("dock must be a shared sibling, not owned by Sessions or History")
+	}
+	spawn := htmlNodeByID(dock, "spawn-btn")
+	if spawn == nil || htmlAttr(spawn, "aria-label") == "" || htmlText(spawn) != "" {
+		t.Fatal("new chat control must be icon-only with an accessible label")
+	}
+}
+
+func htmlNodeByID(root *html.Node, id string) *html.Node {
+	if root.Type == html.ElementNode && htmlAttr(root, "id") == id {
+		return root
+	}
+	for child := root.FirstChild; child != nil; child = child.NextSibling {
+		if found := htmlNodeByID(child, id); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func htmlNodeContainsID(root *html.Node, id string) bool {
+	return htmlNodeByID(root, id) != nil
+}
+
+func htmlAttr(node *html.Node, name string) string {
+	for _, attr := range node.Attr {
+		if attr.Key == name {
+			return attr.Val
+		}
+	}
+	return ""
+}
+
+func htmlText(root *html.Node) string {
+	var b strings.Builder
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node.Type == html.TextNode {
+			b.WriteString(node.Data)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(root)
+	return strings.TrimSpace(b.String())
 }
