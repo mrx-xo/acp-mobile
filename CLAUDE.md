@@ -21,6 +21,19 @@ To test replay scenarios, use a fake socket server that sends crafted messages:
 3. acp-mobile discovers sockets by PID, so the socket filename must match the server's PID
 4. Connect via WebSocket: `ws://127.0.0.1:18091/ws?sock=<pid>`
 
+For the deterministic thought-rendering fixture, run these from the repository in two
+terminals:
+
+```bash
+go run ./testdata/thought-fixture-server.go
+go run . --test-mode 18091
+```
+
+Open the authenticated URL printed by `acp-mobile`, select `TEST: Thought Rendering`,
+watch the split progress records stream in, and reload the page to exercise completed
+replay. The fixture uses fixed IDs and payloads from `testdata/thought-replay.jsonl`; it
+does not contact a live agent or external API.
+
 ### Connecting to replay via WebSocket
 
 ```python

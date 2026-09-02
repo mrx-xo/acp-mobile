@@ -415,8 +415,48 @@ body {
 
 /* Thought messages */
 .msg.thought {
-  background: transparent; color: var(--fg-mute); font-style: italic;
-  font-size: 13px; padding: 4px 16px; max-width: 100%;
+  background: transparent; color: var(--fg-mute); font-style: normal;
+  font-size: 13px; padding: 4px 16px; max-width: 100%; width: 100%;
+  box-sizing: border-box; align-self: flex-start;
+}
+.msg.thought .md {
+  color: var(--fg-mute); font-size: 13px; line-height: 18px;
+  max-width: 100%; min-width: 0; overflow-wrap: anywhere;
+}
+.msg.thought .md p { margin: 2px 0; }
+.msg.thought .md strong { color: var(--fg); font-weight: 700; }
+.msg.thought .md em { font-style: italic; }
+.msg.thought .md a { color: var(--purple); text-decoration: underline; }
+.msg.thought .md code { font-family: var(--mono); }
+.msg.thought .md code:not(pre code) {
+  background: var(--bg-hard); padding: 1px 4px; border-radius: 3px;
+  color: var(--aqua); font-size: 12px;
+}
+.msg.thought .md .code-block {
+  margin: 4px 0; overflow: hidden;
+  background: var(--bg-hard); border: 1px solid var(--bg1); border-radius: 6px;
+}
+.msg.thought .md pre {
+  background: transparent; border: 0; padding: 8px; margin: 0;
+  overflow-x: auto; font-size: 12px; line-height: 1.35;
+}
+.msg.thought .md ul, .msg.thought .md ol {
+  margin: 2px 0; padding-left: 18px;
+}
+.msg.thought .md li { margin: 1px 0; }
+.msg.thought .md h1, .msg.thought .md h2, .msg.thought .md h3 {
+  margin: 5px 0 2px; color: var(--fg-dim); font-family: var(--mono);
+  font-weight: 700; line-height: 1.3;
+}
+.msg.thought .md h1 { font-size: 13px; }
+.msg.thought .md h2 { font-size: 12.5px; }
+.msg.thought .md h3 { font-size: 12px; }
+.msg.thought .md blockquote {
+  border-left: 2px solid var(--bg2); padding-left: 8px;
+  color: var(--fg-mute); margin: 3px 0;
+}
+.msg.thought .md hr {
+  border: none; border-top: 1px solid var(--bg1); margin: 4px 0;
 }
 
 /* System messages */
@@ -1346,6 +1386,8 @@ const BUILD_ID = '__BUILD_ID__';
 
 let ws, nextId = 100, sessionId = null;
 let currentAgentMsg = null;
+let thoughtMsgsById = new Map();
+let currentAnonymousThought = null;
 let processing = false;
 let reconnectAttempts = 0;
 let waitForSessionAttempts = 0;
@@ -1544,6 +1586,7 @@ function makeSentRefs(refs) {
 }
 
 function addUserMsg(text, status) {
+  endAnonymousThoughtRun();
   const d = document.createElement('div');
   d.className = 'msg user';
   d.id = 'msg-' + (++msgIdCounter);
@@ -1598,6 +1641,75 @@ function updateAgentMsg(el, text) {
   el._text = text;
   el.querySelector('.md').innerHTML = renderMarkdown(text);
   if (isAtBottom) scrollToBottom();
+}
+
+function thoughtMessageId(update) {
+  return typeof update.messageId === 'string' && update.messageId !== ''
+    ? update.messageId : null;
+}
+
+function thoughtChunkText(update) {
+  const content = update && update.content;
+  if (content && content.type !== undefined && content.type !== 'text') return null;
+  if (content && typeof content.text === 'string') return content.text;
+  if (!content && typeof update.text === 'string') return update.text;
+  return null;
+}
+
+function makeThoughtMsg(text, messageId) {
+  const d = document.createElement('div');
+  d.className = 'msg thought';
+  d.id = 'msg-' + (++msgIdCounter);
+  if (messageId) d.dataset.messageId = messageId;
+  const md = document.createElement('div');
+  md.className = 'md';
+  d.appendChild(md);
+  d._text = typeof text === 'string' ? text : '';
+  md.innerHTML = renderMarkdown(d._text);
+  d.addEventListener('contextmenu', (e) => { e.preventDefault(); copyText(d._text); });
+  return d;
+}
+
+function addThoughtMsg(text, messageId, parent = messagesEl) {
+  const d = makeThoughtMsg(text, messageId);
+  parent.appendChild(d);
+  if (messageId) thoughtMsgsById.set(messageId, d);
+  if (parent === messagesEl && isAtBottom) scrollToBottom();
+  return d;
+}
+
+function updateThoughtMsg(el, text) {
+  el._text = text;
+  el.querySelector('.md').innerHTML = renderMarkdown(text);
+  if (isAtBottom) scrollToBottom();
+}
+
+function resetThoughtState() {
+  thoughtMsgsById.clear();
+  currentAnonymousThought = null;
+}
+
+function endAnonymousThoughtRun() {
+  currentAnonymousThought = null;
+}
+
+function appendThoughtDelta(update, text) {
+  const messageId = thoughtMessageId(update);
+  let thought;
+  currentAgentMsg = null;
+  if (messageId) {
+    endAnonymousThoughtRun();
+    thought = thoughtMsgsById.get(messageId);
+    if (!thought || !thought.isConnected) {
+      thought = addThoughtMsg('', messageId);
+    }
+  } else {
+    if (!currentAnonymousThought || !currentAnonymousThought.isConnected) {
+      currentAnonymousThought = addThoughtMsg('', null);
+    }
+    thought = currentAnonymousThought;
+  }
+  updateThoughtMsg(thought, thought._text + text);
 }
 
 const TOOL_KIND_ICONS = {
@@ -1798,6 +1910,7 @@ function updateToolMsg(toolEl, update) {
 }
 
 function addSystemMsg(text) {
+  endAnonymousThoughtRun();
   const d = document.createElement('div');
   d.className = 'msg system';
   d.innerHTML = '<span class="text">' + escHtml(text) + '</span>';
@@ -2125,6 +2238,7 @@ function cycleMode() {
 // --- WebSocket & ACP protocol ---
 
 function connect(pid) {
+  resetThoughtState();
   replayMode = true;
   replayBuffer = [];
   clearTimeout(replayTimer);
@@ -2178,6 +2292,7 @@ function scheduleReconnect() {
     reconnectTimer = null;
     messagesEl.innerHTML = '';
     currentAgentMsg = null;
+    resetThoughtState();
     sessionId = null;
     allReplayTurns = [];
     pendingPermissions = [];
@@ -2290,6 +2405,9 @@ function renderTurnBatch(turns, prepend) {
         fragment.appendChild(d);
         break;
       }
+      case 'thought':
+        addThoughtMsg(t.text, t.messageId, fragment);
+        break;
       case 'tool':
         lastToolEl = addToolMsgTo(fragment, t.tool);
         // Pending ExitPlanMode: show plan approval buttons (unless a permission card follows)
@@ -2385,6 +2503,13 @@ function flushReplay() {
   // and collect notification sequences into assembled turns.
   const turns = []; // message turns; tool turns carry one normalized ACP tool state
   let pendingText = '';
+  const thoughtTurnsById = new Map();
+  let currentAnonymousThoughtTurn = null;
+  const flushPendingAgent = () => {
+    if (!pendingText) return;
+    turns.push({type: 'agent', text: pendingText});
+    pendingText = '';
+  };
   // Track the *latest* turn boundary in replay order.  A historical
   // turn_complete must not make a newer, still-running turn look idle.
   let replayBusy = false;
@@ -2393,6 +2518,8 @@ function flushReplay() {
     // Responses: handle silently for state (sessionId, modes, etc.)
     if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
       if (msg.error) {
+        currentAnonymousThoughtTurn = null;
+        flushPendingAgent();
         let errText = msg.error.message || 'Unknown error';
         if (msg.error.data && msg.error.data.details) {
           errText += ': ' + msg.error.data.details;
@@ -2423,11 +2550,8 @@ function flushReplay() {
       }
       if (msg.result && msg.result.stopReason) {
         replayBusy = false;
-        // Flush pending agent text as a turn
-        if (pendingText) {
-          turns.push({type: 'agent', text: pendingText});
-          pendingText = '';
-        }
+        currentAnonymousThoughtTurn = null;
+        flushPendingAgent();
       }
       continue;
     }
@@ -2441,10 +2565,8 @@ function flushReplay() {
     }
     // Permission requests from agent (reverse calls)
     if (msg.method === 'session/request_permission' && msg.id !== undefined) {
-      if (pendingText) {
-        turns.push({type: 'agent', text: pendingText});
-        pendingText = '';
-      }
+      currentAnonymousThoughtTurn = null;
+      flushPendingAgent();
       turns.push({type: 'permission', msg: msg});
       continue;
     }
@@ -2458,12 +2580,40 @@ function flushReplay() {
 
     const kind = update.sessionUpdate;
     const text = (update.content && update.content.text) || update.text || '';
+    if (kind !== 'agent_thought_chunk') currentAnonymousThoughtTurn = null;
 
     switch (kind) {
       case 'agent_message_chunk':
         replayBusy = true;
         pendingText += text;
         break;
+      case 'agent_thought_chunk': {
+        const thoughtText = thoughtChunkText(update);
+        if (thoughtText === null) {
+          currentAnonymousThoughtTurn = null;
+          break;
+        }
+        flushPendingAgent();
+        const messageId = thoughtMessageId(update);
+        let thoughtTurn;
+        if (messageId) {
+          currentAnonymousThoughtTurn = null;
+          thoughtTurn = thoughtTurnsById.get(messageId);
+          if (!thoughtTurn) {
+            thoughtTurn = {type: 'thought', messageId, text: ''};
+            thoughtTurnsById.set(messageId, thoughtTurn);
+            turns.push(thoughtTurn);
+          }
+        } else {
+          if (!currentAnonymousThoughtTurn) {
+            currentAnonymousThoughtTurn = {type: 'thought', messageId: null, text: ''};
+            turns.push(currentAnonymousThoughtTurn);
+          }
+          thoughtTurn = currentAnonymousThoughtTurn;
+        }
+        thoughtTurn.text += thoughtText;
+        break;
+      }
       case 'tool_call': {
         replayBusy = true;
         const tcId = update.toolCallId;
@@ -2479,10 +2629,7 @@ function flushReplay() {
           }
         }
         if (!found) {
-          if (pendingText) {
-            turns.push({type: 'agent', text: pendingText});
-            pendingText = '';
-          }
+          flushPendingAgent();
           turns.push({type: 'tool', toolCallId: tcId, tool: mergeToolUpdate(null, update)});
         }
         break;
@@ -2512,10 +2659,7 @@ function flushReplay() {
       }
       case 'user_message_chunk':
         replayBusy = true;
-        if (pendingText) {
-          turns.push({type: 'agent', text: pendingText});
-          pendingText = '';
-        }
+        flushPendingAgent();
         if (text) turns.push({type: 'user', text});
         break;
       case 'turn_complete':
@@ -2534,9 +2678,7 @@ function flushReplay() {
     }
   }
   // Flush any remaining agent text
-  if (pendingText) {
-    turns.push({type: 'agent', text: pendingText});
-  }
+  flushPendingAgent();
 
   // The last lifecycle marker in the ordered replay is authoritative.
   // Empty/new sessions remain idle; a trailing user/tool/message update
@@ -2562,6 +2704,18 @@ function flushReplay() {
 
   renderTurnBatch(renderTurns, false);
 
+  // If replay ends mid-way through an anonymous thought, let the first live
+  // chunk continue the row that was just rendered. Any intervening replay
+  // boundary clears currentAnonymousThoughtTurn above.
+  currentAnonymousThought = null;
+  if (currentAnonymousThoughtTurn) {
+    const replayTail = messagesEl.lastElementChild;
+    if (replayTail && replayTail.classList.contains('thought') &&
+        !replayTail.dataset.messageId) {
+      currentAnonymousThought = replayTail;
+    }
+  }
+
   // Show "load more" hint if there's older history
   if (renderedTurnStart > 0) {
     showLoadMoreHint();
@@ -2574,6 +2728,7 @@ function handleMessage(msg) {
   // Response
   if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
     if (msg.error) {
+      endAnonymousThoughtRun();
       let errText = msg.error.message || 'Unknown error';
       if (msg.error.data && msg.error.data.details) {
         errText += ': ' + msg.error.data.details;
@@ -2611,6 +2766,7 @@ function handleMessage(msg) {
 
     if (msg.result && msg.result.stopReason) {
       currentAgentMsg = null;
+      endAnonymousThoughtRun();
       setProcessing(false);
       // Mark last sent user message as delivered
       if (lastSentMsg) { markSent(lastSentMsg); lastSentMsg = null; }
@@ -2639,6 +2795,7 @@ function handleMessage(msg) {
 
     const kind = update.sessionUpdate;
     const text = (update.content && update.content.text) || update.text || '';
+    if (kind !== 'agent_thought_chunk') endAnonymousThoughtRun();
 
     switch (kind) {
       case 'agent_message_chunk':
@@ -2651,11 +2808,13 @@ function handleMessage(msg) {
         break;
 
       case 'agent_thought_chunk': {
-        const d = document.createElement('div');
-        d.className = 'msg thought';
-        d.textContent = text;
-        messagesEl.appendChild(d);
-        if (isAtBottom) scrollToBottom();
+        const thoughtText = thoughtChunkText(update);
+        if (thoughtText === null) {
+          endAnonymousThoughtRun();
+          break;
+        }
+        setProcessing(true);
+        appendThoughtDelta(update, thoughtText);
         break;
       }
 
@@ -2718,10 +2877,14 @@ function handleMessage(msg) {
 
   // Reverse call from agent
   if (msg.method === 'session/request_permission' && msg.id !== undefined) {
+    currentAgentMsg = null;
+    endAnonymousThoughtRun();
     addPermissionMsg(msg, true);
     return;
   }
   if (msg.method && msg.id !== undefined) {
+    currentAgentMsg = null;
+    endAnonymousThoughtRun();
     // Unknown reverse call — respond with error so agent doesn't hang
     ws.send(JSON.stringify({
       jsonrpc: '2.0', id: msg.id,
@@ -3428,6 +3591,7 @@ function selectSession(session) {
   currentSessionKey = sKey(session);
   messagesEl.innerHTML = '';
   currentAgentMsg = null;
+  resetThoughtState();
   sessionId = null;
   projectCwd = session.cwd || null;
   currentBufferName = session.bufferName || null;
@@ -3458,6 +3622,7 @@ function showChat() {
 function showNavigator() {
   chatViewEl.classList.remove('visible');
   navigatorEl.classList.remove('hidden');
+  resetThoughtState();
   syncHistoryDock();
   // Disconnect current websocket
   if (ws) {

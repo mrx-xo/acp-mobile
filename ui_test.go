@@ -19,6 +19,344 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
+	messages := loadThoughtReplayFixture(t)
+	const replayPrefix = 4
+	const anonymousReplay = `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"thought-session-1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"cached anonymous "}}}}`
+	const anonymousLive = `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"thought-session-1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"continuation"}}}}`
+
+	var connectionMu sync.Mutex
+	connectionCount := 0
+	liveRelease := make(chan struct{})
+	anonymousRelease := make(chan struct{})
+	var liveReleaseOnce sync.Once
+	var anonymousReleaseOnce sync.Once
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexHTML)
+	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"sessions": []map[string]interface{}{{
+				"pid": 4242, "sessionId": "thought-session-1",
+				"cwd": "/tmp/syzygy", "project": "syzygy",
+				"title": "Fixture Agent", "bufferName": "TEST: Thought Rendering",
+			}},
+		})
+	})
+	mux.HandleFunc("/api/statuses", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"statuses": map[string]string{}})
+	})
+	mux.Handle("/ws", &websocket.Server{
+		Handler: func(ws *websocket.Conn) {
+			connectionMu.Lock()
+			connectionCount++
+			connection := connectionCount
+			connectionMu.Unlock()
+
+			switch connection {
+			case 1:
+				for _, message := range messages[:replayPrefix] {
+					if err := websocket.Message.Send(ws, message); err != nil {
+						return
+					}
+				}
+				// The test releases this only after observing replayMode=false,
+				// so every remaining frame is guaranteed to use handleMessage.
+				<-liveRelease
+				for _, message := range messages[replayPrefix:] {
+					if err := websocket.Message.Send(ws, message); err != nil {
+						return
+					}
+				}
+			case 2:
+				// Reload connections receive the completed sequence as one replay.
+				for _, message := range messages {
+					if err := websocket.Message.Send(ws, message); err != nil {
+						return
+					}
+				}
+			case 3:
+				// This reload ends its replay with an anonymous thought, then
+				// continues that same logical thought through the live path.
+				for _, message := range append(messages, anonymousReplay) {
+					if err := websocket.Message.Send(ws, message); err != nil {
+						return
+					}
+				}
+				<-anonymousRelease
+				if err := websocket.Message.Send(ws, anonymousLive); err != nil {
+					return
+				}
+			default:
+				for _, message := range messages {
+					if err := websocket.Message.Send(ws, message); err != nil {
+						return
+					}
+				}
+			}
+
+			var ignored string
+			for websocket.Message.Receive(ws, &ignored) == nil {
+			}
+		},
+		Handshake: func(*websocket.Config, *http.Request) error { return nil },
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	defer liveReleaseOnce.Do(func() { close(liveRelease) })
+	defer anonymousReleaseOnce.Do(func() { close(anonymousRelease) })
+
+	page := openChromePage(t, server.URL)
+	page.call(t, "Emulation.setDeviceMetricsOverride", map[string]interface{}{
+		"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": true,
+	})
+	page.call(t, "Page.reload", map[string]interface{}{})
+	openThoughtFixtureSession(t, page)
+	page.waitFor(t, `replayMode === false`)
+	liveReleaseOnce.Do(func() { close(liveRelease) })
+	page.waitFor(t, `document.querySelector('.msg.agent') && document.querySelector('.msg.agent').textContent.includes('Done.')`)
+	live := thoughtProgressState(t, page)
+	assertThoughtProgressState(t, live)
+
+	page.call(t, "Page.reload", map[string]interface{}{})
+	openThoughtFixtureSession(t, page)
+	page.waitFor(t, `document.querySelector('.msg.agent') && document.querySelector('.msg.agent').textContent.includes('Done.')`)
+	replayed := thoughtProgressState(t, page)
+	assertThoughtProgressState(t, replayed)
+	if replayed["signature"] != live["signature"] {
+		t.Fatalf("replay signature = %v, want live signature %v", replayed["signature"], live["signature"])
+	}
+	if replayed["order"] != live["order"] {
+		t.Fatalf("replay order = %v, want live order %v", replayed["order"], live["order"])
+	}
+
+	handoff := page.evalObject(t, `(() => {
+		const before = document.querySelector('.msg.thought[data-message-id="t1"]');
+		const count = document.querySelectorAll('.msg.thought').length;
+		handleMessage({jsonrpc: '2.0', method: 'session/update', params: {
+			sessionId: 'thought-session-1', update: {
+				sessionUpdate: 'agent_thought_chunk', messageId: 't1',
+				content: {type: 'text', text: '!'}
+			}
+		}});
+		const after = document.querySelector('.msg.thought[data-message-id="t1"]');
+		return {same: before === after, countStable: count === document.querySelectorAll('.msg.thought').length,
+			raw: after && after._text, text: after && after.textContent};
+	})()`)
+	if handoff["same"] != true || handoff["countStable"] != true ||
+		handoff["raw"] != "**Inspecting the renderer**!" || handoff["text"] != "Inspecting the renderer!" {
+		t.Fatalf("replay-to-live handoff state = %#v", handoff)
+	}
+
+	localUserBoundary := page.evalObject(t, `(() => {
+		handleMessage({jsonrpc: '2.0', method: 'session/update', params: {
+			sessionId: 'thought-session-1', update: {
+				sessionUpdate: 'agent_thought_chunk', content: {type: 'text', text: 'before user'}
+			}
+		}});
+		const before = [...document.querySelectorAll('.msg.thought:not([data-message-id])')].at(-1);
+		addUserMsg('Local user boundary', 'sending');
+		handleMessage({jsonrpc: '2.0', method: 'session/update', params: {
+			sessionId: 'thought-session-1', update: {
+				sessionUpdate: 'agent_thought_chunk', content: {type: 'text', text: 'after user'}
+			}
+		}});
+		const anonymous = [...document.querySelectorAll('.msg.thought:not([data-message-id])')];
+		const after = anonymous.at(-1);
+		return {distinct: before !== after, beforeText: before.textContent, afterText: after.textContent,
+			userBetween: before.nextElementSibling && before.nextElementSibling.classList.contains('user') &&
+				before.nextElementSibling.nextElementSibling === after};
+	})()`)
+	if localUserBoundary["distinct"] != true || localUserBoundary["beforeText"] != "before user" ||
+		localUserBoundary["afterText"] != "after user" || localUserBoundary["userBetween"] != true {
+		t.Fatalf("local user thought boundary = %#v", localUserBoundary)
+	}
+
+	localSystemBoundary := page.evalObject(t, `(() => {
+		endAnonymousThoughtRun();
+		handleMessage({jsonrpc: '2.0', method: 'session/update', params: {
+			sessionId: 'thought-session-1', update: {
+				sessionUpdate: 'agent_thought_chunk', content: {type: 'text', text: 'before system'}
+			}
+		}});
+		const before = [...document.querySelectorAll('.msg.thought:not([data-message-id])')].at(-1);
+		addSystemMsg('Local system boundary');
+		handleMessage({jsonrpc: '2.0', method: 'session/update', params: {
+			sessionId: 'thought-session-1', update: {
+				sessionUpdate: 'agent_thought_chunk', content: {type: 'text', text: 'after system'}
+			}
+		}});
+		const anonymous = [...document.querySelectorAll('.msg.thought:not([data-message-id])')];
+		const after = anonymous.at(-1);
+		return {distinct: before !== after, beforeText: before.textContent, afterText: after.textContent,
+			systemBetween: before.nextElementSibling && before.nextElementSibling.classList.contains('system') &&
+				before.nextElementSibling.nextElementSibling === after};
+	})()`)
+	if localSystemBoundary["distinct"] != true || localSystemBoundary["beforeText"] != "before system" ||
+		localSystemBoundary["afterText"] != "after system" || localSystemBoundary["systemBetween"] != true {
+		t.Fatalf("local system thought boundary = %#v", localSystemBoundary)
+	}
+
+	reset := page.evalObject(t, `(() => {
+		showNavigator();
+		return {identified: thoughtMsgsById.size, anonymousCleared: currentAnonymousThought === null};
+	})()`)
+	if reset["identified"] != float64(0) || reset["anonymousCleared"] != true {
+		t.Fatalf("navigator thought reset = %#v", reset)
+	}
+
+	page.call(t, "Page.reload", map[string]interface{}{})
+	openThoughtFixtureSession(t, page)
+	page.waitFor(t, `replayMode === false && [...document.querySelectorAll('.msg.thought:not([data-message-id])')]
+		.some(el => el._text === 'cached anonymous ')`)
+	seed := page.evalObject(t, `(() => {
+		const thought = [...document.querySelectorAll('.msg.thought:not([data-message-id])')]
+			.find(el => el._text === 'cached anonymous ');
+		thought.dataset.replayAnonymous = 'true';
+		return {found: !!thought, raw: thought && thought._text};
+	})()`)
+	if seed["found"] != true || seed["raw"] != "cached anonymous " {
+		t.Fatalf("anonymous replay seed = %#v", seed)
+	}
+	anonymousReleaseOnce.Do(func() { close(anonymousRelease) })
+	page.waitFor(t, `[...document.querySelectorAll('.msg.thought:not([data-message-id])')]
+		.some(el => (el._text || '').includes('continuation'))`)
+	anonymousHandoff := page.evalObject(t, `(() => {
+		const thoughts = [...document.querySelectorAll('.msg.thought:not([data-message-id])')];
+		const replayed = thoughts.find(el => el.dataset.replayAnonymous === 'true');
+		const continuationRows = thoughts.filter(el =>
+			el.dataset.replayAnonymous === 'true' || el._text === 'continuation');
+		return {
+			count: continuationRows.length,
+			raw: replayed && replayed._text,
+			text: replayed && replayed.textContent
+		};
+	})()`)
+	if anonymousHandoff["count"] != float64(1) ||
+		anonymousHandoff["raw"] != "cached anonymous continuation" ||
+		anonymousHandoff["text"] != "cached anonymous continuation" {
+		t.Fatalf("anonymous replay-to-live handoff = %#v", anonymousHandoff)
+	}
+}
+
+func loadThoughtReplayFixture(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile("testdata/thought-replay.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var messages []string
+	for number, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if !json.Valid([]byte(line)) {
+			t.Fatalf("thought replay fixture line %d is invalid JSON", number+1)
+		}
+		messages = append(messages, line)
+	}
+	if len(messages) < 5 {
+		t.Fatalf("thought replay fixture has %d messages, want at least 5", len(messages))
+	}
+	return messages
+}
+
+func openThoughtFixtureSession(t *testing.T, page *chromePage) {
+	t.Helper()
+	page.waitFor(t, `document.querySelector('.session-card') !== null`)
+	page.eval(t, `document.querySelector('.session-card').click()`)
+	page.waitFor(t, `document.getElementById('chat-view').classList.contains('visible')`)
+}
+
+func thoughtProgressState(t *testing.T, page *chromePage) map[string]interface{} {
+	t.Helper()
+	return page.evalObject(t, `(() => {
+		const thoughts = [...document.querySelectorAll('#messages > .msg.thought')];
+		const byId = id => thoughts.find(el => el.dataset.messageId === id);
+		const first = byId('t1');
+		const rich = byId('t3');
+		const safe = byId('safe');
+		const messages = document.getElementById('messages');
+		const overflow = thoughts.some(el => {
+			const rect = el.getBoundingClientRect();
+			const parent = messages.getBoundingClientRect();
+			return rect.left < parent.left - 1 || rect.right > parent.right + 1 ||
+				el.scrollWidth > el.clientWidth + 1;
+		});
+		const order = [...messages.children].filter(el => el.classList.contains('msg')).map(el => {
+			if (el.classList.contains('thought')) return 'thought:' + (el.dataset.messageId || 'anon');
+			if (el.classList.contains('tool')) return 'tool:' + ((el._toolState && el._toolState.id) || '');
+			if (el.classList.contains('user')) return 'user';
+			if (el.classList.contains('agent')) return 'agent';
+			return 'other';
+		}).join('|');
+		return {
+			count: thoughts.length,
+			ids: thoughts.map(el => el.dataset.messageId || '').join('|'),
+			signature: JSON.stringify(thoughts.map(el => ({id: el.dataset.messageId || '', text: el.textContent, html: el.querySelector('.md') && el.querySelector('.md').innerHTML}))),
+			order,
+			firstRaw: first && first._text,
+			firstText: first && first.textContent,
+			firstStrong: first && first.querySelector('strong') && first.querySelector('strong').textContent,
+			firstHasLiteralDelimiter: first && first.textContent.includes('**'),
+			containerFontStyle: first && getComputedStyle(first).fontStyle,
+			containerBackground: first && getComputedStyle(first).backgroundColor,
+			strongWeight: first && Number.parseInt(getComputedStyle(first.querySelector('strong')).fontWeight, 10),
+			richHeading: rich && rich.querySelector('h1') && rich.querySelector('h1').textContent,
+			richHeadingSize: rich && rich.querySelector('h1') && Number.parseFloat(getComputedStyle(rich.querySelector('h1')).fontSize),
+			strongSize: first && first.querySelector('strong') && Number.parseFloat(getComputedStyle(first.querySelector('strong')).fontSize),
+			richParagraphs: rich && rich.querySelectorAll('p').length,
+			richCode: rich && rich.querySelector('code') && rich.querySelector('code').textContent,
+			richEmphasisStyle: rich && rich.querySelector('em') && getComputedStyle(rich.querySelector('em')).fontStyle,
+			hasRoleLabel: thoughts.some(el => el.querySelector('.role')),
+			hasExecutableElement: !!(safe && safe.querySelector('img, script, [onerror]')),
+			hasUnsafeLink: !!(safe && safe.querySelector('a[href^="javascript:"]')),
+			safeLink: safe && safe.querySelector('a') && safe.querySelector('a').href,
+			safeTextContainsHTML: safe && safe.textContent.includes('<img src=x onerror="alert(\'boom\')">'),
+			overflow
+		};
+	})()`)
+}
+
+func assertThoughtProgressState(t *testing.T, state map[string]interface{}) {
+	t.Helper()
+	if state["count"] != float64(6) {
+		t.Fatalf("thought count = %v, want 6: %#v", state["count"], state)
+	}
+	if state["ids"] != "t1|t2|t3|||safe" {
+		t.Fatalf("thought IDs = %v", state["ids"])
+	}
+	wantOrder := "user|thought:t1|tool:tool-read|thought:t2|thought:t3|thought:anon|tool:tool-boundary|thought:anon|thought:safe|agent"
+	if state["order"] != wantOrder {
+		t.Fatalf("message order = %v, want %v", state["order"], wantOrder)
+	}
+	if state["firstRaw"] != "**Inspecting the renderer**" ||
+		state["firstText"] != "Inspecting the renderer" ||
+		state["firstStrong"] != "Inspecting the renderer" || state["firstHasLiteralDelimiter"] != false {
+		t.Fatalf("split Markdown state = %#v", state)
+	}
+	if state["containerFontStyle"] != "normal" || state["containerBackground"] != "rgba(0, 0, 0, 0)" ||
+		state["strongWeight"].(float64) < 600 {
+		t.Fatalf("thought typography state = %#v", state)
+	}
+	if state["richHeading"] != "Layout check" || state["richParagraphs"].(float64) < 2 ||
+		state["richCode"] != "inline code" || state["richEmphasisStyle"] != "italic" {
+		t.Fatalf("rich Markdown state = %#v", state)
+	}
+	if state["richHeadingSize"].(float64) > state["strongSize"].(float64) {
+		t.Fatalf("thought heading size = %v, want no larger than emphasized caption size %v",
+			state["richHeadingSize"], state["strongSize"])
+	}
+	if state["hasRoleLabel"] != false || state["hasExecutableElement"] != false ||
+		state["hasUnsafeLink"] != false || state["safeLink"] != "https://example.test/path" ||
+		state["safeTextContainsHTML"] != true || state["overflow"] != false {
+		t.Fatalf("thought safety/layout state = %#v", state)
+	}
+}
+
 func TestHistorySearchDockOpensSeparateHistoryAndRefines(t *testing.T) {
 	var mu sync.Mutex
 	queries := []string{}
