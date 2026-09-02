@@ -279,6 +279,7 @@ func thoughtProgressState(t *testing.T, page *chromePage) map[string]interface{}
 		const first = byId('t1');
 		const rich = byId('t3');
 		const safe = byId('safe');
+		const toolCard = document.querySelector('#messages > .msg.tool');
 		const messages = document.getElementById('messages');
 		const overflow = thoughts.some(el => {
 			const rect = el.getBoundingClientRect();
@@ -304,6 +305,14 @@ func thoughtProgressState(t *testing.T, page *chromePage) map[string]interface{}
 			firstHasLiteralDelimiter: first && first.textContent.includes('**'),
 			containerFontStyle: first && getComputedStyle(first).fontStyle,
 			containerBackground: first && getComputedStyle(first).backgroundColor,
+			toolBackground: toolCard && getComputedStyle(toolCard).backgroundColor,
+			containerBorderLeft: first && getComputedStyle(first).borderLeft,
+			toolBorderLeft: toolCard && getComputedStyle(toolCard).borderLeft,
+			containerBorderRadius: first && getComputedStyle(first).borderRadius,
+			toolBorderRadius: toolCard && getComputedStyle(toolCard).borderRadius,
+			containerPadding: first && getComputedStyle(first).padding,
+			toolPadding: toolCard && getComputedStyle(toolCard).padding,
+			hasToolAffordance: thoughts.some(el => el.querySelector('.tool-expand, .tool-hint')),
 			strongWeight: first && Number.parseInt(getComputedStyle(first.querySelector('strong')).fontWeight, 10),
 			richHeading: rich && rich.querySelector('h1') && rich.querySelector('h1').textContent,
 			richHeadingSize: rich && rich.querySelector('h1') && Number.parseFloat(getComputedStyle(rich.querySelector('h1')).fontSize),
@@ -338,9 +347,13 @@ func assertThoughtProgressState(t *testing.T, state map[string]interface{}) {
 		state["firstStrong"] != "Inspecting the renderer" || state["firstHasLiteralDelimiter"] != false {
 		t.Fatalf("split Markdown state = %#v", state)
 	}
-	if state["containerFontStyle"] != "normal" || state["containerBackground"] != "rgba(0, 0, 0, 0)" ||
+	if state["containerFontStyle"] != "normal" || state["containerBackground"] == "rgba(0, 0, 0, 0)" ||
+		state["containerBackground"] != state["toolBackground"] ||
+		state["containerBorderLeft"] != state["toolBorderLeft"] ||
+		state["containerBorderRadius"] != state["toolBorderRadius"] ||
+		state["containerPadding"] != state["toolPadding"] || state["hasToolAffordance"] != false ||
 		state["strongWeight"].(float64) < 600 {
-		t.Fatalf("thought typography state = %#v", state)
+		t.Fatalf("thought card/typography state = %#v", state)
 	}
 	if state["richHeading"] != "Layout check" || state["richParagraphs"].(float64) < 2 ||
 		state["richCode"] != "inline code" || state["richEmphasisStyle"] != "italic" {
