@@ -1305,7 +1305,14 @@ if (window.visualViewport) {
     // Bottom sheets are fixed to the LAYOUT viewport, but the keyboard
     // only shrinks the VISUAL one — lift them above it and cap their
     // height so the focused input and the action button stay reachable.
-    const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    const active = document.activeElement;
+    const textEntryFocused = active &&
+      (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+    // iOS standalone briefly reports a shorter visual viewport at launch,
+    // even with no keyboard. Treat the delta as keyboard height only while
+    // an editor is focused; otherwise the dock starts at its CSS safe area.
+    const viewportInset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    const kb = textEntryFocused ? viewportInset : 0;
     const dock = document.getElementById('history-dock');
     if (dock) dock.style.bottom = kb > 0 ? (kb + 10) + 'px' : '';
     for (const id of ['spawn-sheet', 'preview-sheet']) {
