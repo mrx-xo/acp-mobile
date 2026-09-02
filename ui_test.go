@@ -258,10 +258,14 @@ func TestHistorySearchDockOpensSeparateHistoryAndRefines(t *testing.T) {
 		Object.defineProperty(vv, 'height', {configurable: true, value: window.innerHeight - 80});
 		Object.defineProperty(vv, 'offsetTop', {configurable: true, value: 0});
 		vv.dispatchEvent(new Event('resize'));
-		return {supported: true, bottom: document.getElementById('history-dock').style.bottom};
+		return {
+			supported: true,
+			bottom: document.getElementById('history-dock').style.bottom,
+			bodyHeight: document.body.style.height
+		};
 	})()`)
-	if state["supported"] == true && state["bottom"] != "" {
-		t.Fatalf("launch viewport state = %#v, want dock at its CSS safe-area bottom without focused input", state)
+	if state["supported"] == true && (state["bottom"] != "" || state["bodyHeight"] != "") {
+		t.Fatalf("launch viewport state = %#v, want CSS-controlled body and dock without focused input", state)
 	}
 	state = page.evalObject(t, `(() => {
 		const vv = window.visualViewport;
@@ -270,9 +274,13 @@ func TestHistorySearchDockOpensSeparateHistoryAndRefines(t *testing.T) {
 		Object.defineProperty(vv, 'height', {configurable: true, value: window.innerHeight - 200});
 		Object.defineProperty(vv, 'offsetTop', {configurable: true, value: 0});
 		vv.dispatchEvent(new Event('resize'));
-		return {supported: true, bottom: document.getElementById('history-dock').style.bottom};
+		return {
+			supported: true,
+			bottom: document.getElementById('history-dock').style.bottom,
+			bodyHeight: document.body.style.height
+		};
 	})()`)
-	if state["supported"] == true && state["bottom"] == "" {
+	if state["supported"] == true && (state["bottom"] == "" || state["bodyHeight"] == "") {
 		t.Fatalf("keyboard state = %#v, want dock lifted above visual viewport", state)
 	}
 	mu.Lock()

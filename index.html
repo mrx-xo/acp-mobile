@@ -1300,14 +1300,14 @@ if (window.visualViewport) {
   const vv = window.visualViewport;
   const syncViewport = () => {
     const wasAtBottom = isAtBottom;
-    document.body.style.height = vv.height + 'px';
+    const active = document.activeElement;
+    const textEntryFocused = active &&
+      (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+    document.body.style.height = textEntryFocused ? vv.height + 'px' : '';
     window.scrollTo(0, 0);
     // Bottom sheets are fixed to the LAYOUT viewport, but the keyboard
     // only shrinks the VISUAL one — lift them above it and cap their
     // height so the focused input and the action button stay reachable.
-    const active = document.activeElement;
-    const textEntryFocused = active &&
-      (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
     // iOS standalone briefly reports a shorter visual viewport at launch,
     // even with no keyboard. Treat the delta as keyboard height only while
     // an editor is focused; otherwise the dock starts at its CSS safe area.
