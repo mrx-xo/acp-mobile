@@ -372,6 +372,21 @@ body {
   font-family: var(--mono);
 }
 .msg.user .text:empty { display: none; }
+.msg.user.has-images { width: 85%; }
+.sent-images {
+  display: grid; grid-template-columns: 1fr; gap: 6px; margin: 2px 0 8px;
+}
+.sent-images.multiple { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.sent-images img {
+  display: block; width: 100%; height: auto; max-height: 320px;
+  object-fit: contain; border-radius: 8px; background: var(--bg-hard);
+  cursor: zoom-in; touch-action: manipulation;
+}
+.sent-images.multiple img { aspect-ratio: 1; object-fit: cover; }
+.sent-image-omitted {
+  margin: 2px 0 8px; padding: 8px 10px; border: 1px solid var(--bg1);
+  border-radius: 8px; color: var(--fg-mute); font-size: 12px;
+}
 .sent-refs {
   display: flex; flex-direction: column; align-items: flex-start;
   gap: 6px; margin: 2px 0 8px;
@@ -805,6 +820,11 @@ input, textarea, #fbv-content, .msg, .msg * {
 #reader-body .msg .md h1 { font-size: 1.25em; }
 #reader-body .msg .md h2 { font-size: 1.15em; }
 #reader-body .msg .md h3 { font-size: 1.05em; }
+#reader-body .msg.user.has-images { width: auto; }
+#reader-body .sent-images { grid-template-columns: 1fr; }
+#reader-body .sent-images img {
+  max-height: none; aspect-ratio: auto; object-fit: contain; cursor: default;
+}
 
 /* Pinned messages: header pin → full-screen per-convo list, view-only.
    Sits below the reader (131) so tapping a pin opens the reader on top. */
@@ -1387,6 +1407,7 @@ const BUILD_ID = '__BUILD_ID__';
 
 let ws, nextId = 100, sessionId = null;
 let currentAgentMsg = null;
+let currentUserMsg = null;
 let thoughtMsgsById = new Map();
 let currentAnonymousThought = null;
 let processing = false;
@@ -1408,6 +1429,8 @@ let currentMode = 'default';
 let availableModes = [];
 let replayMode = false;
 let replayBuffer = [];
+let replayBufferedImageChars = 0;
+let replayBufferedImages = [];
 let replayTimer = null;
 let allReplayTurns = [];  // Full history from replay
 let renderedTurnStart = 0; // Index into allReplayTurns of first rendered turn
@@ -1586,37 +1609,227 @@ function makeSentRefs(refs) {
   return row;
 }
 
-function addUserMsg(text, status) {
-  endAnonymousThoughtRun();
+const INLINE_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg', 'image/png', 'image/webp', 'image/gif'
+]);
+const MAX_INLINE_IMAGE_BASE64_CHARS = 8 * 1024 * 1024;
+const MAX_REPLAY_IMAGE_BASE64_CHARS = 24 * 1024 * 1024;
+const MAX_RENDERED_IMAGE_BASE64_CHARS = 24 * 1024 * 1024;
+
+function normalizeUserContentBlock(content) {
+  if (!content) return null;
+  if ((content.type === undefined || content.type === 'text') &&
+      typeof content.text === 'string' && content.text.length > 0) {
+    return {type: 'text', text: content.text};
+  }
+  if (content.type === 'image' && INLINE_IMAGE_MIME_TYPES.has(content.mimeType) &&
+      typeof content.data === 'string' && content.data.length > 0) {
+    if (content.data.length > MAX_INLINE_IMAGE_BASE64_CHARS) {
+      return {type: 'image_omitted', reason: 'too-large'};
+    }
+    return {type: 'image', data: content.data, mimeType: content.mimeType};
+  }
+  if (content.type === 'image_omitted') {
+    return {type: 'image_omitted', reason: content.reason === 'history-limit'
+      ? 'history-limit' : 'too-large'};
+  }
+  return null;
+}
+
+function userImageSource(image) {
+  if (!image || !INLINE_IMAGE_MIME_TYPES.has(image.mimeType) ||
+      typeof image.data !== 'string' || image.data.length === 0 ||
+      image.data.length > MAX_INLINE_IMAGE_BASE64_CHARS) return '';
+  return 'data:' + image.mimeType + ';base64,' + image.data;
+}
+
+function initialUserContentBlocks(text, images) {
+  const blocks = [];
+  for (const image of images || []) {
+    const block = normalizeUserContentBlock({
+      type: 'image', data: image.data, mimeType: image.mimeType
+    });
+    if (block) blocks.push(block);
+  }
+  const textBlock = normalizeUserContentBlock({type: 'text', text: text || ''});
+  if (textBlock) blocks.push(textBlock);
+  return blocks;
+}
+
+function appendUserMsgBlock(message, content) {
+  const block = normalizeUserContentBlock(content);
+  if (!block) return false;
+  const meta = message.querySelector(':scope > .meta');
+  message._blocks = message._blocks || [];
+  message._images = message._images || [];
+  message._text = message._text || '';
+  message._blocks.push(block);
+
+  if (block.type === 'text') {
+    const parsed = parseReferencedPrompt(block.text);
+    if (parsed.refs.length) message.insertBefore(makeSentRefs(parsed.refs), meta);
+    const textElement = document.createElement('div');
+    textElement.className = 'text';
+    textElement.textContent = parsed.text;
+    message.insertBefore(textElement, meta);
+    message._text += (message._text ? '\n' : '') + block.text;
+    return true;
+  }
+
+  if (block.type === 'image') {
+    const source = userImageSource(block);
+    if (!source) return false;
+    let row = meta.previousElementSibling;
+    if (!row || !row.classList.contains('sent-images')) {
+      row = document.createElement('div');
+      row.className = 'sent-images';
+      message.insertBefore(row, meta);
+    }
+    const image = document.createElement('img');
+    image.src = source;
+    image.alt = 'Attached image ' + (message._images.length + 1);
+    image.loading = 'lazy';
+    image.decoding = 'async';
+    row.appendChild(image);
+    row.classList.toggle('multiple', row.childElementCount > 1);
+    message._images.push({data: block.data, mimeType: block.mimeType});
+    message.classList.add('has-images');
+    return true;
+  }
+
+  const notice = document.createElement('div');
+  notice.className = 'sent-image-omitted';
+  notice.textContent = block.reason === 'history-limit'
+    ? 'Older image not loaded to limit phone memory.'
+    : 'Image too large to display safely.';
+  message.insertBefore(notice, meta);
+  return true;
+}
+
+function renderUserMsgContent(message, blocks) {
+  message.querySelectorAll(
+    ':scope > .sent-refs, :scope > .sent-images, :scope > .sent-image-omitted, :scope > .text'
+  ).forEach(element => element.remove());
+  message.classList.remove('has-images');
+  message._blocks = [];
+  message._images = [];
+  message._text = '';
+  for (const block of blocks || []) appendUserMsgBlock(message, block);
+}
+
+function makeUserMsg(text, status, images, blocks) {
   const d = document.createElement('div');
   d.className = 'msg user';
   d.id = 'msg-' + (++msgIdCounter);
   const time = formatTime(new Date());
   const deliveryIcon = status === 'queued' ? '&#9201;' : status === 'sending' ? '&#9675;' : '&#10003;';
-  const parsed = parseReferencedPrompt(text);
   d.innerHTML = '<span class="role">You</span>';
-  if (parsed.refs.length) d.appendChild(makeSentRefs(parsed.refs));
-  const textEl = document.createElement('div');
-  textEl.className = 'text';
-  textEl.textContent = parsed.text;
-  d.appendChild(textEl);
   const meta = document.createElement('div');
   meta.className = 'meta';
   meta.innerHTML = '<span class="time">' + time + '</span>' +
     '<span class="delivery">' + deliveryIcon + '</span>';
   d.appendChild(meta);
-  d._text = text;
-  d.addEventListener('contextmenu', (e) => { e.preventDefault(); copyText(text); });
+  renderUserMsgContent(d, blocks || initialUserContentBlocks(text, images));
+  d.addEventListener('contextmenu', (e) => { e.preventDefault(); copyText(d._text); });
   const live = status === 'sending' || status === 'queued';
   if (live) d.classList.add('msg-in');
+  return d;
+}
+
+function addUserMsg(text, status, images, blocks) {
+  endAnonymousThoughtRun();
+  currentUserMsg = null;
+  const d = makeUserMsg(text, status, images, blocks);
   messagesEl.appendChild(d);
+  enforceRenderedImageMemory();
   // Live sends: snap the scroll INSTANTLY and let the bubble's spring
   // animation supply all the visible motion — smooth-scrolling here
   // pans the bubble in from below the fold while its entrance
   // animation expires unseen (why sends felt flat).
-  if (live) scrollToBottom();
+  if (status === 'sending' || status === 'queued') scrollToBottom();
   else if (isAtBottom) scrollToBottom();
   return d;
+}
+
+function appendUserContentBlock(turn, content) {
+  const block = normalizeUserContentBlock(content);
+  if (!block) return turn;
+  const next = turn || {type: 'user', blocks: []};
+  next.blocks.push(block);
+  return next;
+}
+
+function limitReplayImageMemory(turns, maxChars) {
+  let remaining = maxChars === undefined ? MAX_REPLAY_IMAGE_BASE64_CHARS : maxChars;
+  for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex--) {
+    const blocks = turns[turnIndex].type === 'user' ? turns[turnIndex].blocks || [] : [];
+    for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex--) {
+      const block = blocks[blockIndex];
+      if (block.type !== 'image') continue;
+      if (block.data.length <= remaining) {
+        remaining -= block.data.length;
+      } else {
+        blocks[blockIndex] = {type: 'image_omitted', reason: 'history-limit'};
+      }
+    }
+  }
+}
+
+function resetReplayBuffer() {
+  replayBuffer = [];
+  replayBufferedImageChars = 0;
+  replayBufferedImages = [];
+}
+
+// Bound replay image data while websocket frames are still arriving. Without
+// this rolling limit, the quiet-period timer can retain an entire image-heavy
+// history before flushReplay gets a chance to compact it.
+function bufferReplayMessage(message, maxChars) {
+  const limit = maxChars === undefined ? MAX_REPLAY_IMAGE_BASE64_CHARS : maxChars;
+  const update = message && message.method === 'session/update' && message.params
+    ? message.params.update : null;
+  const content = update && update.sessionUpdate === 'user_message_chunk'
+    ? update.content : null;
+  if (content && content.type === 'image') {
+    if (!INLINE_IMAGE_MIME_TYPES.has(content.mimeType) ||
+        typeof content.data !== 'string' || content.data.length === 0) {
+      // Drop unsupported image payloads immediately, including their raw data.
+      update.content = {type: 'unsupported_image'};
+    } else if (content.data.length > MAX_INLINE_IMAGE_BASE64_CHARS) {
+      update.content = {type: 'image_omitted', reason: 'too-large'};
+    } else {
+      const entry = {update, chars: content.data.length};
+      replayBufferedImages.push(entry);
+      replayBufferedImageChars += entry.chars;
+      while (replayBufferedImageChars > limit && replayBufferedImages.length) {
+        const oldest = replayBufferedImages.shift();
+        replayBufferedImageChars -= oldest.chars;
+        oldest.update.content = {type: 'image_omitted', reason: 'history-limit'};
+      }
+    }
+  }
+  replayBuffer.push(message);
+}
+
+function enforceRenderedImageMemory(maxChars) {
+  let remaining = maxChars === undefined ? MAX_RENDERED_IMAGE_BASE64_CHARS : maxChars;
+  const messages = [...messagesEl.querySelectorAll(':scope > .msg.user')];
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex--) {
+    const message = messages[messageIndex];
+    const blocks = (message._blocks || []).slice();
+    let changed = false;
+    for (let blockIndex = blocks.length - 1; blockIndex >= 0; blockIndex--) {
+      const block = blocks[blockIndex];
+      if (block.type !== 'image') continue;
+      if (block.data.length <= remaining) {
+        remaining -= block.data.length;
+      } else {
+        blocks[blockIndex] = {type: 'image_omitted', reason: 'history-limit'};
+        changed = true;
+      }
+    }
+    if (changed) renderUserMsgContent(message, blocks);
+  }
 }
 
 function markSent(el) {
@@ -2120,6 +2333,13 @@ function legacyCopy(text) {
 
 document.addEventListener('click', (e) => {
   const target = e.target instanceof Element ? e.target : e.target.parentElement;
+  const sentImage = target && target.closest('.sent-images img');
+  if (sentImage && messagesEl.contains(sentImage)) {
+    e.preventDefault();
+    e.stopPropagation();
+    openReader(sentImage.closest('.msg'));
+    return;
+  }
   const copy = target && target.closest('.code-copy');
   if (copy) {
     e.preventDefault();
@@ -2240,9 +2460,11 @@ function cycleMode() {
 
 function connect(pid) {
   resetThoughtState();
+  currentUserMsg = null;
   replayMode = true;
-  replayBuffer = [];
+  resetReplayBuffer();
   clearTimeout(replayTimer);
+  replayTimer = null;
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let url = proto + '//' + location.host + basePath + '/ws';
@@ -2261,7 +2483,7 @@ function connect(pid) {
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (replayMode) {
-      replayBuffer.push(msg);
+      bufferReplayMessage(msg);
       clearTimeout(replayTimer);
       replayTimer = setTimeout(flushReplay, 80);
     } else {
@@ -2292,7 +2514,16 @@ function scheduleReconnect() {
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
     messagesEl.innerHTML = '';
+    messagesEl._toolCalls = {};
+    messagesEl._lastTool = null;
     currentAgentMsg = null;
+    currentUserMsg = null;
+    lastSentMsg = null;
+    resetReplayBuffer();
+    clearTimeout(replayTimer);
+    replayTimer = null;
+    closeMsgMenu();
+    closeReader();
     resetThoughtState();
     sessionId = null;
     allReplayTurns = [];
@@ -2383,16 +2614,7 @@ function renderTurnBatch(turns, prepend) {
     const t = turns[_ti];
     switch (t.type) {
       case 'user': {
-        const d = document.createElement('div');
-        d.className = 'msg user';
-        d.id = 'msg-' + (++msgIdCounter);
-        const time = formatTime(new Date());
-        d.innerHTML =
-          '<span class="role">You</span>' +
-          '<div class="text">' + escHtml(t.text) + '</div>' +
-          '<div class="meta"><span class="time">' + time + '</span>' +
-          '<span class="delivery">&#10003;</span></div>';
-        fragment.appendChild(d);
+        fragment.appendChild(makeUserMsg('', 'sent', null, t.blocks));
         break;
       }
       case 'agent': {
@@ -2447,6 +2669,7 @@ function renderTurnBatch(turns, prepend) {
   } else {
     messagesEl.appendChild(fragment);
   }
+  enforceRenderedImageMemory();
 }
 
 // Like addToolMsg but appends to a given parent (DocumentFragment).
@@ -2497,19 +2720,26 @@ function loadMoreHistory() {
 // Assembles agent chunks into complete messages, renders once per message turn.
 function flushReplay() {
   replayMode = false;
+  replayTimer = null;
   const msgs = replayBuffer;
-  replayBuffer = [];
+  resetReplayBuffer();
 
   // First pass: process responses (initialize, session/new, prompt results)
   // and collect notification sequences into assembled turns.
   const turns = []; // message turns; tool turns carry one normalized ACP tool state
   let pendingText = '';
+  let pendingUserTurn = null;
   const thoughtTurnsById = new Map();
   let currentAnonymousThoughtTurn = null;
   const flushPendingAgent = () => {
     if (!pendingText) return;
     turns.push({type: 'agent', text: pendingText});
     pendingText = '';
+  };
+  const flushPendingUser = () => {
+    if (!pendingUserTurn) return;
+    turns.push(pendingUserTurn);
+    pendingUserTurn = null;
   };
   // Track the *latest* turn boundary in replay order.  A historical
   // turn_complete must not make a newer, still-running turn look idle.
@@ -2518,6 +2748,7 @@ function flushReplay() {
   for (const msg of msgs) {
     // Responses: handle silently for state (sessionId, modes, etc.)
     if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+      flushPendingUser();
       if (msg.error) {
         currentAnonymousThoughtTurn = null;
         flushPendingAgent();
@@ -2559,6 +2790,7 @@ function flushReplay() {
 
     // Notifications
     if (msg.method === 'acp-multiplex/meta' && msg.params && msg.params.name) {
+      flushPendingUser();
       currentBufferName = msg.params.name;
       updateChatHeader();
       document.getElementById('chat-menu-btn').style.display = '';
@@ -2566,14 +2798,21 @@ function flushReplay() {
     }
     // Permission requests from agent (reverse calls)
     if (msg.method === 'session/request_permission' && msg.id !== undefined) {
+      flushPendingUser();
       currentAnonymousThoughtTurn = null;
       flushPendingAgent();
       turns.push({type: 'permission', msg: msg});
       continue;
     }
-    if (msg.method !== 'session/update' || !msg.params) continue;
+    if (msg.method !== 'session/update' || !msg.params) {
+      flushPendingUser();
+      continue;
+    }
     const update = msg.params.update;
-    if (!update) continue;
+    if (!update) {
+      flushPendingUser();
+      continue;
+    }
     if (!sessionId && msg.params.sessionId) {
       sessionId = msg.params.sessionId;
       sendBtn.disabled = false;
@@ -2581,6 +2820,7 @@ function flushReplay() {
 
     const kind = update.sessionUpdate;
     const text = (update.content && update.content.text) || update.text || '';
+    if (kind !== 'user_message_chunk') flushPendingUser();
     if (kind !== 'agent_thought_chunk') currentAnonymousThoughtTurn = null;
 
     switch (kind) {
@@ -2661,7 +2901,10 @@ function flushReplay() {
       case 'user_message_chunk':
         replayBusy = true;
         flushPendingAgent();
-        if (text) turns.push({type: 'user', text});
+        pendingUserTurn = appendUserContentBlock(
+          pendingUserTurn,
+          update.content || (typeof update.text === 'string'
+            ? {type: 'text', text: update.text} : null));
         break;
       case 'turn_complete':
         replayBusy = false;
@@ -2678,8 +2921,11 @@ function flushReplay() {
         break;
     }
   }
-  // Flush any remaining agent text
+  // Flush any remaining user or agent text/content.
+  const replayEndsWithUser = !!pendingUserTurn;
+  flushPendingUser();
   flushPendingAgent();
+  limitReplayImageMemory(turns);
 
   // The last lifecycle marker in the ordered replay is authoritative.
   // Empty/new sessions remain idle; a trailing user/tool/message update
@@ -2717,6 +2963,14 @@ function flushReplay() {
     }
   }
 
+  currentUserMsg = null;
+  if (replayEndsWithUser) {
+    const replayTail = messagesEl.lastElementChild;
+    if (replayTail && replayTail.classList.contains('user')) {
+      currentUserMsg = replayTail;
+    }
+  }
+
   // Show "load more" hint if there's older history
   if (renderedTurnStart > 0) {
     showLoadMoreHint();
@@ -2726,6 +2980,10 @@ function flushReplay() {
 }
 
 function handleMessage(msg) {
+  const isUserMessageChunk = msg.method === 'session/update' && msg.params &&
+    msg.params.update && msg.params.update.sessionUpdate === 'user_message_chunk';
+  if (!isUserMessageChunk) currentUserMsg = null;
+
   // Response
   if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
     if (msg.error) {
@@ -2850,7 +3108,19 @@ function handleMessage(msg) {
 
       case 'user_message_chunk':
         currentAgentMsg = null;
-        if (text) addUserMsg(text, 'sent');
+        {
+          const block = normalizeUserContentBlock(
+            update.content || (typeof update.text === 'string'
+              ? {type: 'text', text: update.text} : null));
+          if (!block) break;
+          if (currentUserMsg) {
+            appendUserMsgBlock(currentUserMsg, block);
+            enforceRenderedImageMemory();
+            if (isAtBottom) scrollToBottom();
+          } else {
+            currentUserMsg = addUserMsg('', 'sent', null, [block]);
+          }
+        }
         break;
 
       case 'turn_complete':
@@ -3090,10 +3360,7 @@ function sendPromptText(text, refs) {
   const imgs = pendingImages.splice(0);
   renderAttachRow();
   const payloadText = formatReferencedPrompt(text, refs || []);
-  const shownText = text + (imgs.length
-    ? (text ? '\n' : '') + '[' + imgs.length + ' image' + (imgs.length > 1 ? 's' : '') + ' attached]'
-    : '');
-  lastSentMsg = addUserMsg(formatReferencedPrompt(shownText, refs || []), 'sending');
+  lastSentMsg = addUserMsg(formatReferencedPrompt(text, refs || []), 'sending', imgs);
   setProcessing(true);
 
   const blocks = imgs.map(i => ({ type: 'image', data: i.data, mimeType: i.mimeType }));
@@ -3592,6 +3859,7 @@ function selectSession(session) {
   currentSessionKey = sKey(session);
   messagesEl.innerHTML = '';
   currentAgentMsg = null;
+  currentUserMsg = null;
   resetThoughtState();
   sessionId = null;
   projectCwd = session.cwd || null;
@@ -3623,6 +3891,18 @@ function showChat() {
 function showNavigator() {
   chatViewEl.classList.remove('visible');
   navigatorEl.classList.remove('hidden');
+  messagesEl.innerHTML = '';
+  messagesEl._toolCalls = {};
+  messagesEl._lastTool = null;
+  currentAgentMsg = null;
+  currentUserMsg = null;
+  lastSentMsg = null;
+  allReplayTurns = [];
+  resetReplayBuffer();
+  clearTimeout(replayTimer);
+  replayTimer = null;
+  closeMsgMenu();
+  closeReader();
   resetThoughtState();
   syncHistoryDock();
   // Disconnect current websocket
@@ -4066,6 +4346,7 @@ let swStart = null, swMsg = null, swDone = false;
 
 function openMsgMenu(el) {
   mmTarget = el;
+  mmPin.style.display = el.querySelector('.sent-images img') ? 'none' : '';
   mmPin.textContent = isPinned(el) ? 'Unpin message' : 'Pin message';
   mmScrim.classList.add('visible');
   msgMenu.classList.add('visible');
@@ -4073,6 +4354,7 @@ function openMsgMenu(el) {
 function closeMsgMenu() {
   mmScrim.classList.remove('visible');
   msgMenu.classList.remove('visible');
+  mmTarget = null;
 }
 function openReader(el) {
   // Clone the rendered bubble: markdown, code blocks and tool chrome
@@ -4091,7 +4373,11 @@ function openReader(el) {
   readerEl.classList.add('visible');
   readerBody.scrollTop = 0;
 }
-function closeReader() { readerEl.classList.remove('visible'); }
+function closeReader() {
+  readerEl.classList.remove('visible');
+  readerBody.innerHTML = '';
+  readerTitle.textContent = '';
+}
 
 // Swipe-left on a message → action menu. Long-press is left to iOS for
 // native text selection/copy; a clear horizontal left drag opens the menu.
@@ -4156,6 +4442,10 @@ function isPinned(el) {
   return loadPins().some(p => p.text === text);
 }
 function togglePin(el) {
+  // Full image data URLs do not belong in durable localStorage. Besides
+  // retaining sent photos after the session, a few images can exhaust its
+  // small quota and prevent unrelated pins from saving.
+  if (el.querySelector('.sent-images img')) return;
   const text = msgPinText(el);
   let pins = loadPins();
   if (pins.some(p => p.text === text)) {

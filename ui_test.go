@@ -19,6 +19,377 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+func TestSentImageRemainsVisibleInUserMessage(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexHTML)
+	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": []interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	page := openChromePage(t, server.URL)
+	page.call(t, "Emulation.setDeviceMetricsOverride", map[string]interface{}{
+		"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": true,
+	})
+	page.call(t, "Page.reload", map[string]interface{}{})
+	page.waitFor(t, `typeof sendPromptText === 'function'`)
+	state := page.evalObject(t, `(() => {
+		const pixel = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+		messagesEl.innerHTML = '';
+		showChat();
+		sessionId = 'sent-image-session';
+		ws = {readyState: 1, send: raw => { window.__sentImagePrompt = JSON.parse(raw); }};
+		pendingImages = [{
+			data: pixel,
+			mimeType: 'image/png',
+			thumb: 'data:image/png;base64,' + pixel
+		}];
+		sendPromptText('inspect this', []);
+		const message = document.querySelector('#messages > .msg.user');
+		const images = message ? [...message.querySelectorAll('img')] : [];
+		const imageRect = images[0] ? images[0].getBoundingClientRect() : null;
+		const messageRect = message ? message.getBoundingClientRect() : null;
+		if (images[0]) images[0].click();
+		const readerImage = document.querySelector('#reader-body .sent-images img');
+		const result = {
+			messageCount: document.querySelectorAll('#messages > .msg.user').length,
+			imageCount: images.length,
+			imageSource: images[0] ? images[0].getAttribute('src') : '',
+			imageAlt: images[0] ? images[0].getAttribute('alt') : '',
+			imageWidth: imageRect ? imageRect.width : 0,
+			imageInsideMessage: !!(imageRect && messageRect &&
+				imageRect.left >= messageRect.left && imageRect.right <= messageRect.right),
+			text: message && message.querySelector('.text') ? message.querySelector('.text').textContent : '',
+			placeholder: message ? message.textContent.includes('[1 image attached]') : false,
+			promptTypes: window.__sentImagePrompt.params.prompt.map(block => block.type).join('|'),
+			readerVisible: document.getElementById('reader').classList.contains('visible'),
+			readerImageCount: document.querySelectorAll('#reader-body .sent-images img').length,
+			readerImageMaxHeight: readerImage ? getComputedStyle(readerImage).maxHeight : '',
+			normalizedImageKeys: message && message._images[0]
+				? Object.keys(message._images[0]).sort().join('|') : ''
+		};
+		closeReader();
+		result.readerCleared = document.getElementById('reader-body').childElementCount === 0;
+		currentBufferName = 'image-pin-fixture';
+		localStorage.removeItem(pinsKey());
+		openMsgMenu(message);
+		result.pinActionHidden = getComputedStyle(mmPin).display === 'none';
+		closeMsgMenu();
+		result.menuTargetCleared = mmTarget === null;
+		togglePin(message);
+		result.pinPersisted = loadPins().length > 0;
+		localStorage.removeItem(pinsKey());
+		return result;
+	})()`)
+	if state["messageCount"] != float64(1) || state["imageCount"] != float64(1) ||
+		state["imageSource"] != "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" ||
+		state["imageAlt"] != "Attached image 1" || state["imageWidth"].(float64) < 200 ||
+		state["imageInsideMessage"] != true || state["text"] != "inspect this" ||
+		state["placeholder"] != false || state["promptTypes"] != "image|text" ||
+		state["readerVisible"] != true || state["readerImageCount"] != float64(1) ||
+		state["readerImageMaxHeight"] != "none" ||
+		state["normalizedImageKeys"] != "data|mimeType" || state["readerCleared"] != true ||
+		state["pinActionHidden"] != true || state["menuTargetCleared"] != true ||
+		state["pinPersisted"] != false {
+		t.Fatalf("sent image message state = %#v", state)
+	}
+}
+
+func TestRemoteUserMessageBoundariesMatchReplay(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexHTML)
+	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": []interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	page := openChromePage(t, server.URL)
+	page.waitFor(t, `typeof handleMessage === 'function' && typeof flushReplay === 'function'`)
+	state := page.evalObject(t, `(() => {
+		const userUpdate = text => ({jsonrpc: '2.0', method: 'session/update', params: {
+			sessionId: 'boundary-session',
+			update: {sessionUpdate: 'user_message_chunk', content: {type: 'text', text}}
+		}});
+		const permission = {jsonrpc: '2.0', id: 91, method: 'session/request_permission', params: {
+			sessionId: 'boundary-session', toolCall: {title: 'Boundary fixture'}, options: []
+		}};
+		const signature = () => [...messagesEl.children].map(message => {
+			if (message.classList.contains('user')) {
+				return 'user:' + [...message.querySelectorAll('.text')]
+					.map(element => element.textContent).join('|');
+			}
+			if (message.classList.contains('permission')) return 'permission';
+			return [...message.classList].join('.');
+		}).join(',');
+		const reset = () => {
+			messagesEl.innerHTML = '';
+			currentUserMsg = null;
+			pendingPermissions = [];
+		};
+
+		reset();
+		handleMessage(userUpdate('before response'));
+		handleMessage({jsonrpc: '2.0', id: 90, result: {}});
+		handleMessage(userUpdate('after response'));
+		const liveResponse = signature();
+
+		reset();
+		handleMessage(userUpdate('before permission'));
+		handleMessage(permission);
+		handleMessage(userUpdate('after permission'));
+		const livePermission = signature();
+
+		reset();
+		replayBuffer = [
+			userUpdate('before response'),
+			{jsonrpc: '2.0', id: 90, result: {}},
+			userUpdate('after response')
+		];
+		replayMode = true;
+		flushReplay();
+		const replayResponse = signature();
+
+		reset();
+		replayBuffer = [
+			userUpdate('before permission'),
+			permission,
+			userUpdate('after permission')
+		];
+		replayMode = true;
+		flushReplay();
+		const replayPermission = signature();
+
+		return {liveResponse, livePermission, replayResponse, replayPermission};
+	})()`)
+	if state["liveResponse"] != "user:before response,user:after response" ||
+		state["replayResponse"] != state["liveResponse"] ||
+		state["livePermission"] != "user:before permission,permission,user:after permission" ||
+		state["replayPermission"] != state["livePermission"] {
+		t.Fatalf("remote user boundary state = %#v", state)
+	}
+}
+
+func TestRemoteUserImagesRenderInLiveAndReplayPaths(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexHTML)
+	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": []interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	page := openChromePage(t, server.URL)
+	page.waitFor(t, `typeof handleMessage === 'function' && typeof flushReplay === 'function'`)
+	state := page.evalObject(t, `(() => {
+		const pixel = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+		const userUpdate = content => ({jsonrpc: '2.0', method: 'session/update', params: {
+			sessionId: 'remote-image-session',
+			update: {sessionUpdate: 'user_message_chunk', content}
+		}});
+		const agentUpdate = text => ({jsonrpc: '2.0', method: 'session/update', params: {
+			sessionId: 'remote-image-session',
+			update: {sessionUpdate: 'agent_message_chunk', content: {type: 'text', text}}
+		}});
+
+		messagesEl.innerHTML = '';
+		handleMessage(userUpdate({type: 'image', data: pixel, mimeType: 'image/png'}));
+		const firstLiveImage = document.querySelector('#messages > .msg.user img');
+		handleMessage(userUpdate({type: 'image', data: pixel, mimeType: 'image/png'}));
+		handleMessage(userUpdate({type: 'text', text: 'remote caption'}));
+		const liveMessage = document.querySelector('#messages > .msg.user');
+		const live = {
+			messageCount: document.querySelectorAll('#messages > .msg.user').length,
+			imageCount: liveMessage ? liveMessage.querySelectorAll('img').length : 0,
+			multiple: !!(liveMessage && liveMessage.querySelector('.sent-images.multiple')),
+			text: liveMessage && liveMessage.querySelector('.text') ? liveMessage.querySelector('.text').textContent : '',
+			firstImageStable: liveMessage ? liveMessage.querySelector('img') === firstLiveImage : false
+		};
+		handleMessage(agentUpdate('boundary'));
+		handleMessage(userUpdate({type: 'text', text: 'next turn'}));
+		live.afterBoundaryCount = document.querySelectorAll('#messages > .msg.user').length;
+		live.afterBoundaryLastText = [...document.querySelectorAll('#messages > .msg.user .text')].at(-1).textContent;
+		allReplayTurns = [{type: 'user', text: '', images: [{data: pixel, mimeType: 'image/png'}]}];
+		replayBuffer = [userUpdate({type: 'image', data: pixel, mimeType: 'image/png'})];
+		replayTimer = setTimeout(() => {}, 10000);
+		lastSentMsg = liveMessage;
+		openMsgMenu(liveMessage);
+		openReader(liveMessage);
+		showNavigator();
+		live.navigatorReset = currentUserMsg === null;
+		live.navigatorReleased = allReplayTurns.length === 0 && replayBuffer.length === 0 &&
+			messagesEl.childElementCount === 0 && readerBody.childElementCount === 0 &&
+			lastSentMsg === null && mmTarget === null && replayTimer === null;
+
+		messagesEl.innerHTML = '';
+		allReplayTurns = [];
+		replayBuffer = [
+			{id: 1, result: {agentInfo: {name: 'fixture'}}},
+			{id: 2, result: {sessionId: 'remote-image-session'}},
+			userUpdate({type: 'image', data: pixel, mimeType: 'image/png'}),
+			{jsonrpc: '2.0', method: 'session/update', params: {
+				sessionId: 'remote-image-session', update: {sessionUpdate: 'turn_complete'}
+			}}
+		];
+		replayMode = true;
+		flushReplay();
+		const replayMessage = document.querySelector('#messages > .msg.user');
+		const replay = {
+			messageCount: document.querySelectorAll('#messages > .msg.user').length,
+			imageCount: replayMessage ? replayMessage.querySelectorAll('img').length : 0,
+			text: replayMessage && replayMessage.querySelector('.text') ? replayMessage.querySelector('.text').textContent : '',
+			turnCount: allReplayTurns.length,
+			turnType: allReplayTurns[0] ? allReplayTurns[0].type : ''
+		};
+
+		messagesEl.innerHTML = '';
+		currentUserMsg = null;
+		handleMessage(userUpdate({
+			type: 'image', data: 'PHN2Zz48L3N2Zz4=', mimeType: 'image/svg+xml'
+		}));
+		const unsafe = {
+			messageCount: document.querySelectorAll('#messages > .msg.user').length,
+			imageCount: document.querySelectorAll('#messages > .msg.user img').length
+		};
+
+		const mixedUpdates = [
+			userUpdate({type: 'text', text: 'before image'}),
+			userUpdate({type: 'image', data: pixel, mimeType: 'image/png'}),
+			userUpdate({type: 'text', text: 'after image'})
+		];
+		const contentSignature = message => [...message.children]
+			.filter(element => !element.classList.contains('role') && !element.classList.contains('meta'))
+			.map(element => element.classList.contains('text')
+				? 'text:' + element.textContent
+				: element.classList.contains('sent-images')
+					? 'images:' + element.querySelectorAll('img').length
+					: element.className)
+			.join('|');
+		messagesEl.innerHTML = '';
+		currentUserMsg = null;
+		mixedUpdates.forEach(handleMessage);
+		const mixedLive = contentSignature(document.querySelector('#messages > .msg.user'));
+		messagesEl.innerHTML = '';
+		currentUserMsg = null;
+		replayBuffer = [...mixedUpdates, {jsonrpc: '2.0', method: 'session/update', params: {
+			sessionId: 'remote-image-session', update: {sessionUpdate: 'turn_complete'}
+		}}];
+		replayMode = true;
+		flushReplay();
+		const mixedReplay = contentSignature(document.querySelector('#messages > .msg.user'));
+
+		messagesEl.innerHTML = '';
+		currentUserMsg = null;
+		replayBuffer = [
+			userUpdate({type: 'image', data: 'PHN2Zz48L3N2Zz4=', mimeType: 'image/svg+xml'}),
+			{jsonrpc: '2.0', method: 'session/update', params: {
+				sessionId: 'remote-image-session', update: {sessionUpdate: 'turn_complete'}
+			}}
+		];
+		replayMode = true;
+		flushReplay();
+		const unsafeReplay = {
+			messageCount: document.querySelectorAll('#messages > .msg.user').length,
+			imageCount: document.querySelectorAll('#messages > .msg.user img').length
+		};
+		return {live, replay, unsafe, unsafeReplay, mixedLive, mixedReplay};
+	})()`)
+	live := state["live"].(map[string]interface{})
+	if live["messageCount"] != float64(1) || live["imageCount"] != float64(2) ||
+		live["multiple"] != true || live["text"] != "remote caption" ||
+		live["firstImageStable"] != true ||
+		live["afterBoundaryCount"] != float64(2) || live["afterBoundaryLastText"] != "next turn" ||
+		live["navigatorReset"] != true || live["navigatorReleased"] != true {
+		t.Fatalf("live remote image state = %#v", live)
+	}
+	replay := state["replay"].(map[string]interface{})
+	if replay["messageCount"] != float64(1) || replay["imageCount"] != float64(1) ||
+		replay["text"] != "" || replay["turnCount"] != float64(1) || replay["turnType"] != "user" {
+		t.Fatalf("replayed remote image state = %#v", replay)
+	}
+	unsafe := state["unsafe"].(map[string]interface{})
+	if unsafe["messageCount"] != float64(0) || unsafe["imageCount"] != float64(0) {
+		t.Fatalf("unsafe remote image state = %#v", unsafe)
+	}
+	unsafeReplay := state["unsafeReplay"].(map[string]interface{})
+	if unsafeReplay["messageCount"] != float64(0) || unsafeReplay["imageCount"] != float64(0) {
+		t.Fatalf("unsafe replay image state = %#v", unsafeReplay)
+	}
+	if state["mixedLive"] != "text:before image|images:1|text:after image" ||
+		state["mixedReplay"] != state["mixedLive"] {
+		t.Fatalf("mixed user content state = %#v", state)
+	}
+}
+
+func TestReplayImageMemoryBudgetKeepsNewestImages(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexHTML)
+	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": []interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	page := openChromePage(t, server.URL)
+	page.waitFor(t, `typeof limitReplayImageMemory === 'function'`)
+	state := page.evalObject(t, `(() => {
+		const turns = [
+			{type: 'user', blocks: [{type: 'image', data: 'aaaa', mimeType: 'image/png'}]},
+			{type: 'user', blocks: [{type: 'image', data: 'bbbb', mimeType: 'image/png'}]},
+			{type: 'user', blocks: [{type: 'image', data: 'cccc', mimeType: 'image/png'}]}
+		];
+		limitReplayImageMemory(turns, 8);
+		resetReplayBuffer();
+		const replayMessage = data => ({jsonrpc: '2.0', method: 'session/update', params: {
+			sessionId: 'memory-session', update: {sessionUpdate: 'user_message_chunk',
+				content: {type: 'image', data, mimeType: 'image/png'}}
+		}});
+		bufferReplayMessage(replayMessage('aaaa'), 8);
+		bufferReplayMessage(replayMessage('bbbb'), 8);
+		bufferReplayMessage(replayMessage('cccc'), 8);
+		return {
+			types: turns.map(turn => turn.blocks[0].type).join('|'),
+			reasons: turns.map(turn => turn.blocks[0].reason || '').join('|'),
+			retainedChars: turns.reduce((total, turn) => total + turn.blocks.reduce(
+				(sum, block) => sum + (block.type === 'image' ? block.data.length : 0), 0), 0),
+			bufferedTypes: replayBuffer.map(message => message.params.update.content.type).join('|'),
+			bufferedChars: replayBufferedImageChars,
+			bufferedRefs: replayBufferedImages.length
+		};
+	})()`)
+	if state["types"] != "image_omitted|image|image" ||
+		state["reasons"] != "history-limit||" || state["retainedChars"] != float64(8) ||
+		state["bufferedTypes"] != "image_omitted|image|image" ||
+		state["bufferedChars"] != float64(8) || state["bufferedRefs"] != float64(2) {
+		t.Fatalf("replay image budget state = %#v", state)
+	}
+}
+
 func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
 	messages := loadThoughtReplayFixture(t)
 	const replayPrefix = 4
@@ -653,7 +1024,26 @@ func openChromePage(t *testing.T, pageURL string) *chromePage {
 		t.Skip("Chrome not installed; skipping browser interaction test")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	profile := t.TempDir()
+	profile, err := os.MkdirTemp("", "acp-mobile-chrome-")
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// Chrome helpers can outlive the browser process briefly and touch the
+		// profile after Wait returns. Retry removal so that race cannot turn a
+		// passing browser assertion into a TempDir cleanup failure.
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			if err := os.RemoveAll(profile); err == nil {
+				break
+			} else if time.Now().After(deadline) {
+				t.Errorf("remove Chrome profile: %v", err)
+				break
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	})
 	cmd := exec.CommandContext(ctx, chrome,
 		"--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
 		"--disable-background-networking", "--remote-debugging-port=0",
