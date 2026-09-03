@@ -1396,6 +1396,11 @@ func TestOrderedListsRenderAndPinsRerenderFromSource(t *testing.T) {
 			boldInItem: ols[0] ? ols[0].querySelectorAll('strong').length : 0,
 			listStyle: ols[0] ? getComputedStyle(ols[0]).listStyleType : '',
 			indented: ols[0] ? getComputedStyle(ols[0]).paddingLeft : '',
+			markerColor: ols[0] ? getComputedStyle(ols[0].children[0], '::marker').color : '',
+			markerWeight: ols[0] ? getComputedStyle(ols[0].children[0], '::marker').fontWeight : '',
+			bulletColor: uls[0] ? getComputedStyle(uls[0].children[0], '::marker').color : '',
+			panel: ols[0] ? getComputedStyle(ols[0]).backgroundColor : '',
+			codePanel: getComputedStyle(document.documentElement).getPropertyValue('--bg-hard').trim(),
 			markerLeaked: md.innerHTML.indexOf('data-ol') >= 0 || md.innerHTML.indexOf('data-ul') >= 0,
 			numberNotEatenMidLine: md.textContent.indexOf('Trailing. 1985. is not a list.') >= 0,
 			pinStale: pinMd ? pinMd.textContent.indexOf('STALE RENDER') >= 0 : null,
@@ -1413,9 +1418,16 @@ func TestOrderedListsRenderAndPinsRerenderFromSource(t *testing.T) {
 		state["resumedValues"] != "7,8" || state["boldInItem"] != float64(2) {
 		t.Fatalf("list content = %#v", state)
 	}
-	if state["listStyle"] != "decimal" || state["indented"] != "20px" ||
+	if state["listStyle"] != "decimal" || state["indented"] != "32px" ||
 		state["markerLeaked"] != false || state["numberNotEatenMidLine"] != true {
 		t.Fatalf("list styling = %#v", state)
+	}
+	// Markers carry agent-shell's mr-x/agent-shell-list-marker yellow, and the
+	// block sits on the same panel as a code block.
+	if state["markerColor"] != "rgb(250, 189, 47)" || state["markerWeight"] != "700" ||
+		state["bulletColor"] != "rgb(250, 189, 47)" ||
+		state["panel"] != "rgb(29, 32, 33)" || state["codePanel"] != "#1d2021" {
+		t.Fatalf("list marker styling = %#v", state)
 	}
 	if state["pinStale"] != false || state["pinMatchesChat"] != true {
 		t.Fatalf("pin rendering = %#v, want the pin re-rendered like the chat bubble", state)

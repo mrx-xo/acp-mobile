@@ -1149,10 +1149,17 @@ input, textarea, #fbv-content, .msg, .msg * {
 :is(.msg.agent, .pv-msg.agent) .md strong { font-weight: 700; }
 :is(.msg.agent, .pv-msg.agent) .md em { font-style: italic; }
 :is(.msg.agent, .pv-msg.agent) .md a { color: var(--purple); text-decoration: underline; }
+/* Lists mirror agent-shell's mr-x/agent-shell-list-item + -list-marker: the
+   whole block sits on the same panel as a code block, markers in gruvbox
+   yellow and bold so numbering reads as chrome, not prose. */
 :is(.msg.agent, .pv-msg.agent) .md ul, :is(.msg.agent, .pv-msg.agent) .md ol {
-  margin: 4px 0; padding-left: 20px;
+  margin: 6px 0; padding: 8px 10px 8px 32px;
+  background: var(--bg-hard); border: 1px solid var(--bg1); border-radius: 7px;
 }
 :is(.msg.agent, .pv-msg.agent) .md li { margin: 2px 0; }
+:is(.msg.agent, .pv-msg.agent) .md li::marker {
+  color: var(--yellow); font-weight: 700;
+}
 /* Same heading ramp as agent-shell's org-level face remap (orange/yellow/aqua) */
 :is(.msg.agent, .pv-msg.agent) .md h1, :is(.msg.agent, .pv-msg.agent) .md h2, :is(.msg.agent, .pv-msg.agent) .md h3 {
   margin: 10px 0 4px 0; font-weight: 700;
