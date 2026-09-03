@@ -1500,9 +1500,23 @@ function renderMarkdown(text) {
   // Blockquotes
   html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
 
-  // Unordered lists
-  html = html.replace(/^(?:- |\* )(.+)$/gm, '<li>$1</li>');
-  html = html.replace(/(<li>[\s\S]*?<\/li>\n?)+/g, (m) => '<ul>' + m + '</ul>');
+  // Lists. Items are tagged with their kind before any wrapping so a run
+  // of bullets is never swallowed into an <ol> (or the reverse). Ordered
+  // items keep an explicit value= so a list the agent numbered 7, 8, 9 —
+  // or one split by a paragraph — renders with the numbers it was written
+  // with instead of restarting at 1.
+  html = html.replace(/^(?:- |\* )(.+)$/gm, '<li data-ul="">$1</li>');
+  html = html.replace(/^(\d{1,9})[.)] (.+)$/gm, '<li data-ol="" value="$1">$2</li>');
+  // Newlines around and between items are dropped while wrapping: the later
+  // \n -> <br> pass would otherwise strand a <br> beside every item and
+  // double-space the list. <ul>/<ol> are block elements, so the breaks they
+  // replace are not needed.
+  const wrapList = (tag, attr) => (m) =>
+    '<' + tag + '>' + m.replace(attr, '').replace(/\n/g, '') + '</' + tag + '>';
+  html = html.replace(/\n*(?:<li data-ul="">[\s\S]*?<\/li>\n*)+/g,
+    wrapList('ul', / data-ul=""/g));
+  html = html.replace(/\n*(?:<li data-ol="" value="\d{1,9}">[\s\S]*?<\/li>\n*)+/g,
+    wrapList('ol', / data-ol=""/g));
 
   // Paragraphs
   html = html.replace(/\n\n+/g, '</p><p>');
@@ -4548,6 +4562,19 @@ function buildPinItem(p, storageKey, rerender) {
   meta.appendChild(unpin);
   const holder = document.createElement('div');
   holder.innerHTML = p.html;
+  // A pin stores the bubble as it was rendered, so without this it would
+  // keep the renderer and theme of the day it was pinned forever. Re-render
+  // the markdown body from the saved source: a pin then always looks like
+  // the same message looks in the chat today.
+  const pinned = holder.querySelector('.msg');
+  const body = pinned && pinned.querySelector('.md');
+  if (body && typeof p.text === 'string' && p.text !== '') {
+    if (pinned.classList.contains('agent')) {
+      body.innerHTML = renderAgentMarkdown(p.text);
+    } else if (pinned.classList.contains('thought')) {
+      body.innerHTML = renderMarkdown(p.text);
+    }
+  }
   item.appendChild(meta);
   item.appendChild(holder);
   // Tap → same full-screen view-only reader as in chat

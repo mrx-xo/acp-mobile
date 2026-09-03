@@ -1333,3 +1333,91 @@ func (p *chromePage) waitFor(t *testing.T, expression string) {
 	}
 	t.Fatalf("timed out waiting for browser condition: %s", strings.TrimSpace(expression))
 }
+
+func TestOrderedListsRenderAndPinsRerenderFromSource(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexHTML)
+	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": []interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	page := openChromePage(t, server.URL)
+	page.waitFor(t, `typeof addAgentMsg === 'function' && typeof togglePin === 'function'`)
+	state := page.evalObject(t, `(() => {
+		messagesEl.innerHTML = '';
+		showChat();
+		const text = [
+			'Intro line.',
+			'1. **First** item',
+			'2. **Second** item',
+			'3. Third item',
+			'',
+			'- bullet one',
+			'- bullet two',
+			'',
+			'7. resumed seven',
+			'8. resumed eight',
+			'',
+			'Trailing. 1985. is not a list.'
+		].join('\n');
+		const msg = addAgentMsg(text);
+		const md = msg.querySelector('.md');
+		const ols = [...md.querySelectorAll('ol')];
+		const uls = [...md.querySelectorAll('ul')];
+
+		currentBufferName = 'ordered-list-fixture';
+		localStorage.removeItem(pinsKey());
+		togglePin(msg);
+		// Stand in for a pin captured by an older renderer: same source text,
+		// stale markup. It must come back styled the way the chat renders it now.
+		const stored = JSON.parse(localStorage.getItem(pinsKey()));
+		stored[0].html = '<div class="msg agent"><span class="role">Agent</span>' +
+			'<div class="md"><p>STALE RENDER</p></div></div>';
+		localStorage.setItem(pinsKey(), JSON.stringify(stored));
+		renderPins();
+		const pinMd = pinsBody.querySelector('.msg .md');
+
+		const result = {
+			olCount: ols.length,
+			ulCount: uls.length,
+			olItems: ols.map(ol => [...ol.children].map(li => li.tagName).join(',')).join('/'),
+			ulItems: uls.map(ul => [...ul.children].map(li => li.tagName).join(',')).join('/'),
+			firstOlText: ols[0] ? [...ols[0].children].map(li => li.textContent).join('|') : '',
+			resumedValues: ols[1] ? [...ols[1].children].map(li => li.getAttribute('value')).join(',') : '',
+			boldInItem: ols[0] ? ols[0].querySelectorAll('strong').length : 0,
+			listStyle: ols[0] ? getComputedStyle(ols[0]).listStyleType : '',
+			indented: ols[0] ? getComputedStyle(ols[0]).paddingLeft : '',
+			markerLeaked: md.innerHTML.indexOf('data-ol') >= 0 || md.innerHTML.indexOf('data-ul') >= 0,
+			numberNotEatenMidLine: md.textContent.indexOf('Trailing. 1985. is not a list.') >= 0,
+			pinStale: pinMd ? pinMd.textContent.indexOf('STALE RENDER') >= 0 : null,
+			pinMatchesChat: pinMd ? pinMd.innerHTML === md.innerHTML : false
+		};
+		localStorage.removeItem(pinsKey());
+		return result;
+	})()`)
+
+	if state["olCount"] != float64(2) || state["ulCount"] != float64(1) ||
+		state["olItems"] != "LI,LI,LI/LI,LI" || state["ulItems"] != "LI,LI" {
+		t.Fatalf("list structure = %#v, want two <ol> and one <ul> holding only <li>", state)
+	}
+	if state["firstOlText"] != "First item|Second item|Third item" ||
+		state["resumedValues"] != "7,8" || state["boldInItem"] != float64(2) {
+		t.Fatalf("list content = %#v", state)
+	}
+	if state["listStyle"] != "decimal" || state["indented"] != "20px" ||
+		state["markerLeaked"] != false || state["numberNotEatenMidLine"] != true {
+		t.Fatalf("list styling = %#v", state)
+	}
+	if state["pinStale"] != false || state["pinMatchesChat"] != true {
+		t.Fatalf("pin rendering = %#v, want the pin re-rendered like the chat bubble", state)
+	}
+}
