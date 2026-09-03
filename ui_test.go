@@ -1400,7 +1400,8 @@ func TestOrderedListsRenderAndPinsRerenderFromSource(t *testing.T) {
 			markerWeight: ols[0] ? getComputedStyle(ols[0].children[0], '::marker').fontWeight : '',
 			bulletColor: uls[0] ? getComputedStyle(uls[0].children[0], '::marker').color : '',
 			panel: ols[0] ? getComputedStyle(ols[0]).backgroundColor : '',
-			codePanel: getComputedStyle(document.documentElement).getPropertyValue('--bg-hard').trim(),
+			itemGap: ols[0] ? getComputedStyle(ols[0].children[1]).marginTop : '',
+			firstItemGap: ols[0] ? getComputedStyle(ols[0].children[0]).marginTop : '',
 			markerLeaked: md.innerHTML.indexOf('data-ol') >= 0 || md.innerHTML.indexOf('data-ul') >= 0,
 			numberNotEatenMidLine: md.textContent.indexOf('Trailing. 1985. is not a list.') >= 0,
 			pinStale: pinMd ? pinMd.textContent.indexOf('STALE RENDER') >= 0 : null,
@@ -1418,15 +1419,17 @@ func TestOrderedListsRenderAndPinsRerenderFromSource(t *testing.T) {
 		state["resumedValues"] != "7,8" || state["boldInItem"] != float64(2) {
 		t.Fatalf("list content = %#v", state)
 	}
-	if state["listStyle"] != "decimal" || state["indented"] != "32px" ||
+	if state["listStyle"] != "decimal" || state["indented"] != "30px" ||
 		state["markerLeaked"] != false || state["numberNotEatenMidLine"] != true {
 		t.Fatalf("list styling = %#v", state)
 	}
-	// Markers carry agent-shell's mr-x/agent-shell-list-marker yellow, and the
-	// block sits on the same panel as a code block.
+	// Markers carry agent-shell's mr-x/agent-shell-list-marker yellow. Items are
+	// separated by a gap rather than a panel, and only between items — no stray
+	// leading space where the list meets the paragraph above it.
 	if state["markerColor"] != "rgb(250, 189, 47)" || state["markerWeight"] != "700" ||
 		state["bulletColor"] != "rgb(250, 189, 47)" ||
-		state["panel"] != "rgb(29, 32, 33)" || state["codePanel"] != "#1d2021" {
+		state["panel"] != "rgba(0, 0, 0, 0)" ||
+		state["itemGap"] != "12px" || state["firstItemGap"] != "0px" {
 		t.Fatalf("list marker styling = %#v", state)
 	}
 	if state["pinStale"] != false || state["pinMatchesChat"] != true {

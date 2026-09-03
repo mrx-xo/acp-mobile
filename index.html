@@ -1149,14 +1149,15 @@ input, textarea, #fbv-content, .msg, .msg * {
 :is(.msg.agent, .pv-msg.agent) .md strong { font-weight: 700; }
 :is(.msg.agent, .pv-msg.agent) .md em { font-style: italic; }
 :is(.msg.agent, .pv-msg.agent) .md a { color: var(--purple); text-decoration: underline; }
-/* Lists mirror agent-shell's mr-x/agent-shell-list-item + -list-marker: the
-   whole block sits on the same panel as a code block, markers in gruvbox
-   yellow and bold so numbering reads as chrome, not prose. */
+/* Markers take agent-shell's mr-x/agent-shell-list-marker yellow so numbering
+   reads as chrome, not prose. No panel behind the block: at phone width the
+   items wrap to three lines each, so the gap between items — not a border —
+   is what separates them. */
 :is(.msg.agent, .pv-msg.agent) .md ul, :is(.msg.agent, .pv-msg.agent) .md ol {
-  margin: 6px 0; padding: 8px 10px 8px 32px;
-  background: var(--bg-hard); border: 1px solid var(--bg1); border-radius: 7px;
+  margin: 12px 0; padding: 0 0 0 30px;
 }
-:is(.msg.agent, .pv-msg.agent) .md li { margin: 2px 0; }
+:is(.msg.agent, .pv-msg.agent) .md li { margin: 0; }
+:is(.msg.agent, .pv-msg.agent) .md li + li { margin-top: 12px; }
 :is(.msg.agent, .pv-msg.agent) .md li::marker {
   color: var(--yellow); font-weight: 700;
 }
