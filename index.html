@@ -1170,6 +1170,9 @@ input, textarea, #fbv-content, .msg, .msg * {
 }
 :is(.msg.agent, .pv-msg.agent) .md p { margin: 4px 0; }
 :is(.msg.agent, .pv-msg.agent) .md { color: var(--fg); font-size: 15px; line-height: 22px; }
+:is(.msg.agent, .pv-msg.agent) .agent-cue-prefix {
+  color: #fb4934; background: #331917; font-weight: 700;
+}
 /* Peek sheet: same markdown look as bubbles, but at the sheet's compact size */
 .pv-msg.agent .md { font-size: 13px; line-height: 1.5; }
 .pv-msg.agent .md h1 { font-size: 14px; }
@@ -1508,6 +1511,60 @@ function renderMarkdown(text) {
   return '<p>' + html + '</p>';
 }
 
+function agentCueRanges(text) {
+  const protectedRanges = [];
+  const protect = (pattern) => {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      protectedRanges.push({start: match.index, end: match.index + match[0].length});
+    }
+  };
+  protect(/```(?:\w*)\n[\s\S]*?(?:```|$)/g);
+  protect(/`[^`\n]+`/g);
+  protect(/\[[^\]]+\]\([^)]+\)/g);
+
+  const ranges = [];
+  const collect = (pattern) => {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      const cue = match[2];
+      const start = match.index + match[1].length;
+      const end = start + cue.length;
+      const isProtected = protectedRanges.some(range => start < range.end && end > range.start);
+      if (!isProtected) ranges.push({start, end, cue});
+    }
+  };
+  collect(/^([ \t]*(?:(?:[-*] |[0-9]+\. ))?)(Next:|Separately:|Step [0-9]+ of [0-9]+ done:)/gm);
+  collect(/(^[ \t]*|\. )(Cause:|Fix:)/gm);
+  return ranges.sort((left, right) => left.start - right.start);
+}
+
+function renderAgentMarkdown(text) {
+  const ranges = agentCueRanges(text);
+  if (!ranges.length) return renderMarkdown(text);
+
+  let marker = '\uE000';
+  while (text.includes(marker)) marker += '\uE000';
+  const cues = [];
+  let marked = '';
+  let cursor = 0;
+  for (const range of ranges) {
+    const token = marker + cues.length + '\uE001';
+    marked += text.slice(cursor, range.start) + token;
+    cues.push({token, text: range.cue});
+    cursor = range.end;
+  }
+  marked += text.slice(cursor);
+
+  let html = renderMarkdown(marked);
+  for (const cue of cues) {
+    html = html.split(cue.token).join(
+      '<span class="agent-cue-prefix">' + cue.text + '</span>'
+    );
+  }
+  return html;
+}
+
 function escHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -1843,7 +1900,7 @@ function addAgentMsg(text) {
   d.id = 'msg-' + (++msgIdCounter);
   d.innerHTML =
     '<span class="role">Agent</span>' +
-    '<div class="md">' + renderMarkdown(text) + '</div>';
+    '<div class="md">' + renderAgentMarkdown(text) + '</div>';
   d._text = text;
   d.addEventListener('contextmenu', (e) => { e.preventDefault(); copyText(d._text); });
   messagesEl.appendChild(d);
@@ -1853,7 +1910,7 @@ function addAgentMsg(text) {
 
 function updateAgentMsg(el, text) {
   el._text = text;
-  el.querySelector('.md').innerHTML = renderMarkdown(text);
+  el.querySelector('.md').innerHTML = renderAgentMarkdown(text);
   if (isAtBottom) scrollToBottom();
 }
 
@@ -2623,7 +2680,7 @@ function renderTurnBatch(turns, prepend) {
         d.id = 'msg-' + (++msgIdCounter);
         d.innerHTML =
           '<span class="role">Agent</span>' +
-          '<div class="md">' + renderMarkdown(t.text) + '</div>';
+          '<div class="md">' + renderAgentMarkdown(t.text) + '</div>';
         d._text = t.text;
         fragment.appendChild(d);
         break;
@@ -4168,7 +4225,7 @@ async function showPreview(s, name) {
     pvBody.innerHTML = msgs.length
       ? msgs.map(m => m.role === 'user'
           ? '<div class="pv-msg user">' + escHtml(m.text) + '</div>'
-          : '<div class="pv-msg agent"><div class="md">' + renderMarkdown(m.text) + '</div></div>').join('')
+          : '<div class="pv-msg agent"><div class="md">' + renderAgentMarkdown(m.text) + '</div></div>').join('')
       : '<div class="pv-msg agent">(empty conversation)</div>';
     pvBody.scrollTop = pvBody.scrollHeight;
   } catch (err) {
@@ -4822,7 +4879,7 @@ async function openTranscript(t, query = '') {
     const s = sections[index];
     const d = document.createElement('div');
     d.className = 'pv-msg ' + s.role;
-    if (s.role === 'agent') d.innerHTML = '<div class="md">' + renderMarkdown(s.text) + '</div>';
+    if (s.role === 'agent') d.innerHTML = '<div class="md">' + renderAgentMarkdown(s.text) + '</div>';
     else d.textContent = s.text;
     if (index === matchIndex) {
       highlightHistoryMatch(d, query);

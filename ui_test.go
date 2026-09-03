@@ -390,6 +390,127 @@ func TestReplayImageMemoryBudgetKeepsNewestImages(t *testing.T) {
 	}
 }
 
+func TestAgentCuePrefixRenderingMatchesAnswerContract(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexHTML)
+	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": []interface{}{}})
+	})
+	mux.HandleFunc("/api/preview", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"messages": []map[string]string{{"role": "agent", "text": "Next: preview"}},
+		})
+	})
+	mux.HandleFunc("/api/transcript", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"content": "# Fixture\n\n## Agent (12:00)\nNext: history",
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	page := openChromePage(t, server.URL)
+	page.waitFor(t, `typeof addAgentMsg === 'function' && typeof showPreview === 'function' &&
+		typeof openTranscript === 'function'`)
+	state := page.evalObject(t, `(async () => {
+		messagesEl.innerHTML = '';
+		const tick = String.fromCharCode(96);
+		const fence = tick.repeat(3);
+		const answerText = [
+			'Next: do the thing',
+			'Cause: stale state. Fix: refresh it.',
+			'',
+			'Separately: rotate later',
+			'Step 2 of 4 done: browser tests pass.',
+			'- Next: list item',
+			'1. Next: numbered item',
+			'A Cause: ordinary phrase.',
+			'Inline ' + tick + 'state. Fix:' + tick + ' stays code.',
+			'[Details. Cause: linked](https://example.test) stays linked.',
+			fence + 'text',
+			'Fix: inside fence',
+			fence,
+			fence + 'text',
+			'Cause: inside unfinished fence'
+		].join('\n');
+		const answer = addAgentMsg(answerText);
+		const cues = [...answer.querySelectorAll('.agent-cue-prefix')];
+		const firstStyle = cues[0] ? getComputedStyle(cues[0]) : null;
+		const first = cues[0];
+
+		const streaming = addAgentMsg('Ne');
+		updateAgentMsg(streaming, 'Next: stream');
+		updateAgentMsg(streaming, 'Next: stream complete');
+		renderTurnBatch([{type: 'agent', text: 'Next: replay'}], false);
+		const replay = messagesEl.lastElementChild;
+
+		const user = addUserMsg('Next: user text', 'sent');
+		const thought = addThoughtMsg('Next: thought text', 'cue-thought');
+
+		currentBufferName = 'cue-prefix-fixture';
+		localStorage.removeItem(pinsKey());
+		togglePin(streaming);
+		renderPins();
+		openReader(streaming);
+
+		await showPreview({pid: 7}, 'Cue preview');
+		await openTranscript({
+			file: 'fixture.md', agent: 'Fixture', project: 'syzygy', timestamp: 0
+		});
+
+		const result = {
+			liveCount: cues.length,
+			liveTexts: cues.map(cue => cue.textContent).join('|'),
+			foreground: firstStyle ? firstStyle.color : '',
+			background: firstStyle ? firstStyle.backgroundColor : '',
+			weight: firstStyle ? firstStyle.fontWeight : '',
+			prefixOnly: !!(first && first.textContent === 'Next:' &&
+				first.nextSibling && first.nextSibling.nodeValue === ' do the thing'),
+			protectedCueCount: answer.querySelectorAll(
+				'code .agent-cue-prefix, pre .agent-cue-prefix, a .agent-cue-prefix'
+			).length,
+			streamCount: streaming.querySelectorAll('.agent-cue-prefix').length,
+			streamText: streaming.textContent,
+			replayCount: replay.querySelectorAll('.agent-cue-prefix').length,
+			userCount: user.querySelectorAll('.agent-cue-prefix').length,
+			thoughtCount: thought.querySelectorAll('.agent-cue-prefix').length,
+			pinCount: pinsBody.querySelectorAll('.agent-cue-prefix').length,
+			readerCount: readerBody.querySelectorAll('.agent-cue-prefix').length,
+			previewCount: pvBody.querySelectorAll('.agent-cue-prefix').length,
+			historyCount: historyBody.querySelectorAll('.agent-cue-prefix').length
+		};
+		closeReader();
+		localStorage.removeItem(pinsKey());
+		return result;
+	})()`)
+
+	if state["liveCount"] != float64(7) ||
+		state["liveTexts"] != "Next:|Cause:|Fix:|Separately:|Step 2 of 4 done:|Next:|Next:" {
+		t.Fatalf("agent cue matches = %#v", state)
+	}
+	if state["foreground"] != "rgb(251, 73, 52)" ||
+		state["background"] != "rgb(51, 25, 23)" || state["weight"] != "700" ||
+		state["prefixOnly"] != true || state["protectedCueCount"] != float64(0) {
+		t.Fatalf("agent cue styling/exclusions = %#v", state)
+	}
+	if state["streamCount"] != float64(1) || state["streamText"] != "AgentNext: stream complete" ||
+		state["replayCount"] != float64(1) || state["pinCount"] != float64(1) ||
+		state["readerCount"] != float64(1) || state["previewCount"] != float64(1) ||
+		state["historyCount"] != float64(1) {
+		t.Fatalf("agent cue answer surfaces = %#v", state)
+	}
+	if state["userCount"] != float64(0) || state["thoughtCount"] != float64(0) {
+		t.Fatalf("non-answer cue counts = %#v", state)
+	}
+}
+
 func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
 	messages := loadThoughtReplayFixture(t)
 	const replayPrefix = 4
