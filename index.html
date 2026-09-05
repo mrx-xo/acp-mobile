@@ -4447,6 +4447,7 @@ setInterval(() => {
 // pageshow/focus/visibilitychange because Safari commonly fires all three.
 let navigatorResumeTimer = null;
 function refreshNavigatorOnResume() {
+  if (document.visibilityState !== 'hidden') consumePendingSession();
   if (!navigatorIsVisible()) return;
   clearTimeout(navigatorResumeTimer);
   navigatorResumeTimer = setTimeout(() => {
@@ -4549,6 +4550,23 @@ if ('serviceWorker' in navigator) {
     const m = e.data || {};
     if (m.type === 'open-session') openSessionByName(m.bufferName);
   });
+}
+// A push tap leaves its target in the Cache API (sw.js) because the
+// postMessage path dies whenever iOS reloaded the app on focus.  Read and
+// clear it on load and on every resume.
+let pendingSessionBusy = false;
+async function consumePendingSession() {
+  if (pendingSessionBusy || !('caches' in window)) return;
+  pendingSessionBusy = true;
+  try {
+    const c = await caches.open('acp-pending');
+    const r = await c.match('/pending-session');
+    if (!r) return;
+    const name = (await r.text()).trim();
+    await c.delete('/pending-session');
+    if (name) await openSessionByName(name);
+  } catch (e) {
+  } finally { pendingSessionBusy = false; }
 }
 // Jump to a chat by Emacs buffer name (push tap, ?session= on launch).
 async function openSessionByName(name) {
@@ -5244,9 +5262,10 @@ document.addEventListener('keydown', (e) => {
 
 // Start: try loading sessions (discover mode), fall back to direct connect.
 // ?session=<bufferName> (a push tap with no window open) lands on that chat.
-loadSessions().then(() => {
+loadSessions().then(async () => {
   const wanted = new URLSearchParams(location.search).get('session');
-  if (wanted) openSessionByName(wanted);
+  if (wanted) await openSessionByName(wanted);
+  consumePendingSession();
 });
 </script>
 </body>
