@@ -308,6 +308,7 @@ func main() {
 	mux.HandleFunc("/api/spawn", handleSpawn)
 	mux.HandleFunc("/api/kill", handleKill)
 	mux.HandleFunc("/api/label", handleLabel)
+	mux.HandleFunc("/api/push", handlePush)
 	mux.HandleFunc("/api/preview", handlePreview)
 	mux.HandleFunc("/api/transcripts", handleTranscripts)
 	mux.HandleFunc("/api/transcript-search", handleTranscriptSearch)
@@ -550,6 +551,7 @@ type sessionInfo struct {
 	Preview      string `json:"preview,omitempty"` // first user message, for card headlines
 	Label        string `json:"label,omitempty"`   // user-set label from labels.json sidecar
 	Status       string `json:"status,omitempty"`  // busy/permission/idle from status.json sidecar
+	Push         bool   `json:"push"`              // phone push armed, from push.json sidecar
 	LastActivity int64  `json:"lastActivity"`      // unix timestamp
 }
 
@@ -569,6 +571,34 @@ func loadSidecar(name string) map[string]string {
 		return nil
 	}
 	return m
+}
+
+// loadPush reads the sessionId→armed sidecar written by Emacs
+// (agent-shell-push--sync-sidecar).  Missing/corrupt file means nothing
+// is armed — the bell is a convenience, not a dependency.
+func loadPush() map[string]bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".acp-mobile", "push.json"))
+	if err != nil {
+		return nil
+	}
+	var push map[string]bool
+	if json.Unmarshal(data, &push) != nil {
+		return nil
+	}
+	return push
+}
+
+// mergePush marks sessions whose id is armed in the push sidecar.
+func mergePush(sessions []sessionInfo, push map[string]bool) {
+	for i := range sessions {
+		if sessions[i].SessionID != "" && push[sessions[i].SessionID] {
+			sessions[i].Push = true
+		}
+	}
 }
 
 // loadLabels reads the sessionId→label sidecar written by Emacs (or by hand).
@@ -749,6 +779,7 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 			sessions[i].Status = st
 		}
 	}
+	mergePush(sessions, loadPush())
 
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
@@ -1515,6 +1546,55 @@ func handleLabel(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// pushExpr builds the Lisp call that arms/disarms phone push for a buffer.
+func pushExpr(bufferName string, enabled bool) string {
+	esc := strings.ReplaceAll(strings.ReplaceAll(bufferName, `\`, `\\`), `"`, `\"`)
+	flag := "nil"
+	if enabled {
+		flag = "t"
+	}
+	return fmt.Sprintf(`(agent-shell-push-set "%s" %s)`, esc, flag)
+}
+
+// handlePush arms/disarms phone push for a convo via the Emacs daemon —
+// same bridge as handleLabel.  Emacs owns the buffer-local minor mode and
+// mirrors armed session ids to push.json, so rig and phone always agree.
+func handlePush(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		BufferName string `json:"bufferName"`
+		Enabled    bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.BufferName == "" || !validBufferName.MatchString(req.BufferName) {
+		http.Error(w, "invalid buffer name", http.StatusBadRequest)
+		return
+	}
+
+	out, err := evalEmacs("emacsclient", "--eval", pushExpr(req.BufferName, req.Enabled))
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		log.Printf("push: %v: %s", err, out)
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": strings.TrimSpace(string(out))})
+		return
+	}
+	state := strings.Trim(strings.TrimSpace(string(out)), `"`)
+	if state == "nil" {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "no such buffer"})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "push": state == "on"})
 }
 
 // evalEmacs runs an emacsclient-backed command, retrying when the eval

@@ -224,6 +224,21 @@ body {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 #header .header-title.labeled { color: var(--orange); }
+#header .header-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* Phone push bell: outline + muted when off, filled orange when on.
+   Toggles agent-shell-push-mode on the rig via /api/push. */
+#header .bell-btn {
+  display: none; flex-shrink: 0; width: 28px; height: 28px; padding: 0;
+  margin: -4px 0; border: none; background: none; border-radius: 6px;
+  color: var(--fg-mute); -webkit-tap-highlight-color: transparent;
+  align-items: center; justify-content: center;
+}
+#header .bell-btn.visible { display: flex; }
+#header .bell-btn:active { background: var(--bg2); }
+#header .bell-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#header .bell-btn.on { color: var(--orange); }
+#header .bell-btn.on svg { fill: currentColor; }
+#header .bell-btn.pending { opacity: 0.5; }
 #header .header-buf {
   font-size: 11px; color: var(--fg-mute); font-family: var(--mono);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
@@ -1237,7 +1252,10 @@ input, textarea, #fbv-content, .msg, .msg * {
 <div id="header">
   <button class="back-btn" id="back-btn">&larr;</button>
   <div class="header-info">
-    <div class="header-title" id="header-title">ACP</div>
+    <div class="header-row">
+      <div class="header-title" id="header-title">ACP</div>
+      <button class="bell-btn" id="bell-btn" aria-label="Phone push" aria-pressed="false" title="Phone push for this chat"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button>
+    </div>
     <div class="header-sub">
       <span class="header-status" id="status-text">Connecting...</span>
       <span class="header-buf" id="header-buf"></span>
@@ -1352,12 +1370,19 @@ const headerTitle = document.getElementById('header-title');
 const headerBuf = document.getElementById('header-buf');
 // Chat header: user label (orange) as the title with the Emacs buffer
 // name demoted to the sub row; unlabeled convos title with the buffer name.
+const bellBtn = document.getElementById('bell-btn');
+function setBell(on) {
+  bellBtn.classList.toggle('on', !!on);
+  bellBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+}
 function updateChatHeader() {
   const s = lastSessions.find(x => x.bufferName === currentBufferName) || {};
   const label = (s.label || '').trim();
   headerTitle.textContent = label || currentBufferName || headerTitle.textContent;
   headerTitle.classList.toggle('labeled', !!label);
   headerBuf.textContent = label ? (currentBufferName || '') : '';
+  bellBtn.classList.toggle('visible', !!currentBufferName);
+  setBell(!!s.push);
 }
 const modeBtn = document.getElementById('mode-btn');
 const promptEl = document.getElementById('prompt');
@@ -4418,6 +4443,31 @@ headerTitle.addEventListener('click', async () => {
     if (entry) entry.label = label.trim();
     updateChatHeader();
   } catch (err) { alert('Label failed: ' + err.message); }
+});
+// Bell: opt this chat into phone push (done/failed/permission events).
+// Optimistic flip; the server answers with the rig's actual state.
+bellBtn.addEventListener('click', async () => {
+  if (!currentBufferName || bellBtn.classList.contains('pending')) return;
+  const entry = lastSessions.find(s => s.bufferName === currentBufferName);
+  const was = !!(entry && entry.push);
+  setBell(!was);
+  bellBtn.classList.add('pending');
+  try {
+    const resp = await fetch(basePath + '/api/push', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ bufferName: currentBufferName, enabled: !was })
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    if (entry) entry.push = !!data.push;
+    setBell(!!data.push);
+  } catch (err) {
+    setBell(was);
+    alert('Phone push failed: ' + err.message);
+  } finally {
+    bellBtn.classList.remove('pending');
+  }
 });
 // Chat ⋮ menu: Pinned (only when this chat has pins) + Kill
 const cmScrim = document.getElementById('cm-scrim');
