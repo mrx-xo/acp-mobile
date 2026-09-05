@@ -1601,3 +1601,41 @@ func TestSendMotionIsVisibleAndThinkingBarKeepsBubbleInView(t *testing.T) {
 		t.Fatalf("thinking bar should not push the new bubble out of view, got %v", state)
 	}
 }
+
+// The jump-to-bottom button must land on the real bottom and hand over to
+// auto-follow. It used to receive the click event as the "smooth" flag,
+// which animated toward a stale height and never marked the list at bottom,
+// so streamed content kept arriving below the landing point.
+func TestJumpToBottomLandsOnRealBottomAndFollows(t *testing.T) {
+	page := openComposerTestPage(t, 844, 844)
+	state := page.evalObject(t, `(async () => {
+		messagesEl.innerHTML = '';
+		showChat();
+		sessionId = 'jump-session';
+		ws = {readyState: 1, send: () => {}};
+		setProcessing(false);
+		for (let i = 0; i < 60; i++) addAgentMsg('line ' + i);
+		messagesEl.scrollTop = 0;
+		await new Promise(r => setTimeout(r, 150));   // let the scroll event mark us away from the bottom
+		const shownBefore = scrollBtn.classList.contains('visible') && !isAtBottom;
+		scrollBtn.click();
+		// Read synchronously: an instant snap has already landed and flagged
+		// at-bottom; a smooth scroll has done neither yet.
+		const gapAfterClick = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop;
+		const atBottomAfterClick = isAtBottom;
+		const hiddenAfterClick = !scrollBtn.classList.contains('visible');
+		// Content that streams in after the jump must stay in view.
+		for (let i = 0; i < 5; i++) addAgentMsg('late line ' + i);
+		const gapAfterStream = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop;
+		return {shownBefore, gapAfterClick, atBottomAfterClick, hiddenAfterClick, gapAfterStream};
+	})()`)
+	if state["shownBefore"] != true {
+		t.Fatalf("button should show when scrolled up, got %v", state)
+	}
+	if state["gapAfterClick"].(float64) > 1 || state["atBottomAfterClick"] != true || state["hiddenAfterClick"] != true {
+		t.Fatalf("jump should snap to the real bottom, mark at-bottom and hide, got %v", state)
+	}
+	if state["gapAfterStream"].(float64) > 1 {
+		t.Fatalf("list should keep following after the jump, got %v", state)
+	}
+}

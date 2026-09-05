@@ -4446,7 +4446,10 @@ document.getElementById('fb-back').addEventListener('click', fbNavigateUp);
 document.getElementById('fb-hidden-toggle').addEventListener('click', fbToggleHidden);
 document.getElementById('fb-close').addEventListener('click', closeFileBrowser);
 document.getElementById('fbv-back').addEventListener('click', closeFileViewer);
-document.getElementById('scroll-btn').addEventListener('click', scrollToBottom);
+// Instant snap, not smooth: a smooth scroll animates toward the height at
+// the moment of the tap and stops short once streamed content grows past
+// it. The snap also marks the list at bottom so auto-follow takes over.
+scrollBtn.addEventListener('click', () => scrollToBottom());
 // iOS: a tap on Send while the keyboard is up used to only dismiss the
 // keyboard (see the #send svg rule for the hit-target half of that bug).
 // Send on the touch pointerdown, before any blur can run; preventDefault
