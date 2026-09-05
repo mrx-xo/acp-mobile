@@ -198,6 +198,12 @@ body {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .session-card .sc-name.labeled { color: var(--orange); font-family: var(--mono); }
+/* Phone push armed: filled orange bell after the name. Absent when off. */
+.session-card .sc-bell {
+  width: 14px; height: 14px; flex: 0 0 14px; color: var(--orange);
+  fill: currentColor; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 .session-card .sc-path {
   font-size: 12px; color: var(--blue); margin-top: 3px;
   font-family: var(--mono); opacity: 0.8;
@@ -3979,6 +3985,7 @@ function makeSessionCard(s, name) {
     '<div class="sc-info">' +
       '<div class="sc-title">' + providerIcon(s.title || s.bufferName) +
         '<div class="' + nameClass + '">' + escHtml(name) + '</div>' +
+        (s.push ? '<svg class="sc-bell" viewBox="0 0 24 24" aria-label="Phone push on"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>' : '') +
       '</div>' +
       (metaParts.length ? '<div class="sc-path">' + metaParts.join('  &middot;  ') + '</div>' : '') +
     '</div>';
