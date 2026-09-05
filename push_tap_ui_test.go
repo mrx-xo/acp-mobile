@@ -44,7 +44,7 @@ func TestPushTapPendingSessionOpensChatOnLoad(t *testing.T) {
 	page.waitFor(t, `typeof openSessionByName === 'function' && document.getElementById('chat-view').classList.contains('visible')`)
 	state := page.evalObject(t, `(async () => ({
 		buffer: currentBufferName,
-		navigatorHidden: document.getElementById('navigator').classList.contains('hidden'),
+		navigatorHidden: document.getElementById('orrery').classList.contains('hidden'),
 		pendingCleared: !(await (await caches.open('acp-pending')).match('/pending-session'))
 	}))()`)
 	if state["buffer"] != "Claude Agent @ tap-test" || state["navigatorHidden"] != true || state["pendingCleared"] != true {

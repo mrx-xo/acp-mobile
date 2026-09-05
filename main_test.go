@@ -1273,10 +1273,10 @@ func TestHistoryDockOwnsSearchAndNewChatOutsideBothScreens(t *testing.T) {
 	}
 	header := htmlNodeByID(doc, "nav-header")
 	dock := htmlNodeByID(doc, "history-dock")
-	navigator := htmlNodeByID(doc, "navigator")
+	orrery := htmlNodeByID(doc, "orrery")
 	history := htmlNodeByID(doc, "history")
-	if header == nil || dock == nil || navigator == nil || history == nil {
-		t.Fatal("navigator, history, header, and shared dock must all exist")
+	if header == nil || dock == nil || orrery == nil || history == nil {
+		t.Fatal("orrery, history, header, and shared dock must all exist")
 	}
 	for _, id := range []string{"nav-history-btn", "nav-pins-btn"} {
 		if !htmlNodeContainsID(header, id) {
@@ -1291,7 +1291,7 @@ func TestHistoryDockOwnsSearchAndNewChatOutsideBothScreens(t *testing.T) {
 			t.Fatalf("shared dock is missing %s", id)
 		}
 	}
-	if htmlNodeContainsID(navigator, "history-dock") || htmlNodeContainsID(history, "history-dock") {
+	if htmlNodeContainsID(orrery, "history-dock") || htmlNodeContainsID(history, "history-dock") {
 		t.Fatal("dock must be a shared sibling, not owned by Sessions or History")
 	}
 	spawn := htmlNodeByID(dock, "spawn-btn")

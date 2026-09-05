@@ -237,7 +237,7 @@ func TestRemoteUserImagesRenderInLiveAndReplayPaths(t *testing.T) {
 		lastSentMsg = liveMessage;
 		openMsgMenu(liveMessage);
 		openReader(liveMessage);
-		showNavigator();
+		showOrrery();
 		live.navigatorReset = currentUserMsg === null;
 		live.navigatorReleased = allReplayTurns.length === 0 && replayBuffer.length === 0 &&
 			messagesEl.childElementCount === 0 && readerBody.childElementCount === 0 &&
@@ -708,11 +708,11 @@ func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
 	}
 
 	reset := page.evalObject(t, `(() => {
-		showNavigator();
+		showOrrery();
 		return {identified: thoughtMsgsById.size, anonymousCleared: currentAnonymousThought === null};
 	})()`)
 	if reset["identified"] != float64(0) || reset["anonymousCleared"] != true {
-		t.Fatalf("navigator thought reset = %#v", reset)
+		t.Fatalf("orrery thought reset = %#v", reset)
 	}
 
 	page.call(t, "Page.reload", map[string]interface{}{})
@@ -1101,10 +1101,10 @@ func TestHistorySearchDockOpensSeparateHistoryAndRefines(t *testing.T) {
 	if state["dockVisible"] != false {
 		t.Fatalf("chat state = %#v, want dock hidden", state)
 	}
-	page.eval(t, `showNavigator()`)
+	page.eval(t, `showOrrery()`)
 	state = page.evalObject(t, `({dockVisible: document.getElementById('history-dock').classList.contains('visible')})`)
 	if state["dockVisible"] != true {
-		t.Fatalf("navigator state = %#v, want dock restored", state)
+		t.Fatalf("orrery state = %#v, want dock restored", state)
 	}
 	state = page.evalObject(t, `(() => {
 		const vv = window.visualViewport;

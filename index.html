@@ -68,11 +68,11 @@ body {
   overflow: hidden;
 }
 
-/* Navigator (session list) */
-#navigator {
+/* Orrery: the home screen, every chat and its state in one view */
+#orrery {
   display: flex; flex-direction: column; height: 100%;
 }
-#navigator.hidden { display: none; }
+#orrery.hidden { display: none; }
 #nav-header {
   display: flex; align-items: center; padding: 12px 16px;
   padding-top: calc(12px + env(safe-area-inset-top));
@@ -84,6 +84,7 @@ body {
   display: inline-flex; align-items: center;
 }
 #nav-header .nav-title:active { opacity: 0.6; }
+#nav-header .nav-mode { font-size: 13px; font-weight: 500; color: var(--fg-mute); margin-left: 8px; }
 /* Tap affordance: the title is the Sessions/Projects toggle */
 #nav-header .nav-caret {
   color: var(--fg-mute); margin-left: 6px; flex-shrink: 0;
@@ -105,7 +106,7 @@ body {
   overscroll-behavior-y: contain;
   padding-bottom: calc(82px + env(safe-area-inset-bottom));
 }
-#navigator { position: relative; }
+#orrery { position: relative; }
 #history-dock {
   display: none; position: fixed; z-index: 130;
   left: 12px; right: 12px; bottom: max(10px, env(safe-area-inset-bottom));
@@ -1254,9 +1255,9 @@ input, textarea, #fbv-content, .msg, .msg * {
     <path fill="url(#provider-gemini-gradient)" d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"/>
   </symbol>
 </svg>
-<div id="navigator">
+<div id="orrery">
   <div id="nav-header">
-    <span class="nav-title" id="nav-title"><span id="nav-title-text">Sessions</span><svg class="nav-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+    <span class="nav-title" id="nav-title"><span id="nav-title-text">Orrery</span><span class="nav-mode" id="nav-mode-text">Sessions</span><svg class="nav-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
     <span id="nav-spin"></span>
     <button class="nav-btn" id="nav-history-btn" aria-label="Chat history"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button>
     <button class="nav-btn" id="nav-pins-btn" aria-label="Pinned messages"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg></button>
@@ -1413,7 +1414,7 @@ const sendBtn = document.getElementById('send');
 const stopBtn = document.getElementById('stop-btn');
 const thinkingEl = document.getElementById('thinking');
 const scrollBtn = document.getElementById('scroll-btn');
-const navigatorEl = document.getElementById('navigator');
+const orreryEl = document.getElementById('orrery');
 const chatViewEl = document.getElementById('chat-view');
 const navListEl = document.getElementById('nav-list');
 const backBtn = document.getElementById('back-btn');
@@ -2738,7 +2739,7 @@ function scheduleReconnect() {
           }
           // ~40s and it never came back — bail to the list, not a freeze.
           waitForSessionAttempts = 0;
-          showNavigator();
+          showOrrery();
           return;
         }
         waitForSessionAttempts = 0;
@@ -3740,7 +3741,7 @@ async function fbOpenFile(filePath) {
   }
 }
 
-// --- Navigator ---
+// --- Orrery (home screen: session list) ---
 
 let discoverMode = false;
 let sortMode = localStorage.getItem('acp-sort') || 'project'; // 'project' or 'recent'
@@ -3886,7 +3887,7 @@ function applyLatestStatuses(sessions) {
 // reads the tiny sidecar/in-memory turn map, so it can run frequently without
 // reconnecting to every multiplex socket and replaying conversation history.
 async function loadStatuses() {
-  if (!discoverMode || navigatorEl.classList.contains('hidden')
+  if (!discoverMode || orreryEl.classList.contains('hidden')
       || document.visibilityState !== 'visible') return;
   const serial = ++statusRequestSerial;
   try {
@@ -3913,7 +3914,7 @@ async function loadStatuses() {
 function renderSessions(sessions) {
   lastSessions = sessions;
   navListEl.innerHTML = '';
-  document.getElementById('nav-title-text').textContent =
+  document.getElementById('nav-mode-text').textContent =
     sortMode === 'project' ? 'Projects' : 'Sessions';
 
   if (sortMode === 'recent') {
@@ -4056,7 +4057,7 @@ function selectSession(session) {
 }
 
 function showChat() {
-  navigatorEl.classList.add('hidden');
+  orreryEl.classList.add('hidden');
   chatViewEl.classList.add('visible');
   document.getElementById('history').classList.remove('visible');
   document.getElementById('pins').classList.remove('visible');
@@ -4066,9 +4067,9 @@ function showChat() {
   }
 }
 
-function showNavigator() {
+function showOrrery() {
   chatViewEl.classList.remove('visible');
-  navigatorEl.classList.remove('hidden');
+  orreryEl.classList.remove('hidden');
   messagesEl.innerHTML = '';
   messagesEl._toolCalls = {};
   messagesEl._lastTool = null;
@@ -4097,7 +4098,7 @@ function showNavigator() {
 }
 
 function navigateBack() {
-  showNavigator();
+  showOrrery();
 }
 
 // Spawn sheet: project chips from known cwds, optional label + first
@@ -4232,7 +4233,7 @@ async function killSession() {
       alert('Kill failed: ' + data.error);
       return;
     }
-    showNavigator();
+    showOrrery();
   } catch (err) {
     alert('Kill failed: ' + err.message);
   }
@@ -4426,38 +4427,38 @@ document.getElementById('spawn-btn').addEventListener('click', spawnAgent);
   place();
 })();
 
-function navigatorIsVisible() {
-  return discoverMode && !navigatorEl.classList.contains('hidden')
+function orreryIsVisible() {
+  return discoverMode && !orreryEl.classList.contains('hidden')
     && document.visibilityState === 'visible';
 }
 
 // Full discovery stays on a relaxed clock; status-only refreshes are cheap
 // enough to keep generating/finished transitions close to real time.
 setInterval(() => {
-  if (navigatorIsVisible()) {
+  if (orreryIsVisible()) {
     loadSessions(true);
   }
 }, 12000);
 setInterval(() => {
-  if (navigatorIsVisible()) loadStatuses();
+  if (orreryIsVisible()) loadStatuses();
 }, 3000);
 
 // iOS can freeze a home-screen web app without letting its intervals catch
 // up.  Refresh immediately when the page becomes visible again.  Debounce
 // pageshow/focus/visibilitychange because Safari commonly fires all three.
-let navigatorResumeTimer = null;
-function refreshNavigatorOnResume() {
+let orreryResumeTimer = null;
+function refreshOrreryOnResume() {
   if (document.visibilityState !== 'hidden') consumePendingSession();
-  if (!navigatorIsVisible()) return;
-  clearTimeout(navigatorResumeTimer);
-  navigatorResumeTimer = setTimeout(() => {
+  if (!orreryIsVisible()) return;
+  clearTimeout(orreryResumeTimer);
+  orreryResumeTimer = setTimeout(() => {
     loadSessions(true);
     loadStatuses();
   }, 60);
 }
-document.addEventListener('visibilitychange', refreshNavigatorOnResume);
-window.addEventListener('pageshow', refreshNavigatorOnResume);
-window.addEventListener('focus', refreshNavigatorOnResume);
+document.addEventListener('visibilitychange', refreshOrreryOnResume);
+window.addEventListener('pageshow', refreshOrreryOnResume);
+window.addEventListener('focus', refreshOrreryOnResume);
 document.getElementById('back-btn').addEventListener('click', navigateBack);
 document.getElementById('mode-btn').addEventListener('click', cycleMode);
 document.getElementById('files-btn').addEventListener('click', openFileBrowser);
@@ -4936,7 +4937,7 @@ let historyRootState = {
 };
 
 function syncHistoryDock() {
-  const hidden = navigatorEl.classList.contains('hidden') ||
+  const hidden = orreryEl.classList.contains('hidden') ||
     pinsEl.classList.contains('visible') || spSheet.classList.contains('visible') ||
     pvSheet.classList.contains('visible');
   historyDock.classList.toggle('visible', !hidden);
