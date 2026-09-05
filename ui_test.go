@@ -1639,3 +1639,49 @@ func TestJumpToBottomLandsOnRealBottomAndFollows(t *testing.T) {
 		t.Fatalf("list should keep following after the jump, got %v", state)
 	}
 }
+
+// The multiplex keeps answered permissions in the replay so their cards stay
+// visible as history. Only a permission that is the final turn of the replay
+// is still waiting; an answered one must not make an idle chat look busy.
+func TestReplayAnsweredPermissionDoesNotLookBusy(t *testing.T) {
+	page := openComposerTestPage(t, 844, 844)
+	state := page.evalObject(t, `(() => {
+		const upd = (update) => ({jsonrpc: '2.0', method: 'session/update', params: {sessionId: 's1', update}});
+		const perm = (id) => ({jsonrpc: '2.0', id, method: 'session/request_permission', params: {sessionId: 's1',
+			toolCall: {title: 'Read facts file', kind: 'read'},
+			options: [{optionId: 'allow', name: 'Allow', kind: 'allow_once'}, {optionId: 'deny', name: 'Deny', kind: 'reject_once'}]}});
+		const run = (records) => {
+			messagesEl.innerHTML = ''; showChat(); sessionId = null; pendingPermissions = []; setProcessing(false);
+			replayMode = true; resetReplayBuffer();
+			for (const r of records) bufferReplayMessage(r);
+			flushReplay();
+			const card = messagesEl.querySelector('.msg.permission');
+			return {processing, resolved: !!card && card.classList.contains('resolved'),
+				buttons: card ? card.querySelectorAll('.perm-btn:not([disabled])').length : -1};
+		};
+		const answered = run([
+			{jsonrpc: '2.0', id: 0, result: {sessionId: 's1'}},
+			upd({sessionUpdate: 'user_message_chunk', content: {type: 'text', text: 'check the facts file'}}),
+			upd({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'Looking.'}}),
+			perm(7),
+			upd({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'Done, it is up to date.'}}),
+			upd({sessionUpdate: 'usage_update', used: 10, size: 100}),
+			upd({sessionUpdate: 'turn_complete', stopReason: 'end_turn'})
+		]);
+		const waiting = run([
+			{jsonrpc: '2.0', id: 0, result: {sessionId: 's1'}},
+			upd({sessionUpdate: 'user_message_chunk', content: {type: 'text', text: 'check the facts file'}}),
+			upd({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'Looking.'}}),
+			perm(8)
+		]);
+		return {answered, waiting};
+	})()`)
+	answered := state["answered"].(map[string]interface{})
+	waiting := state["waiting"].(map[string]interface{})
+	if answered["processing"] != false || answered["resolved"] != true || answered["buttons"] != float64(0) {
+		t.Fatalf("answered permission in history must replay resolved and idle, got %v", answered)
+	}
+	if waiting["processing"] != true || waiting["resolved"] != false || waiting["buttons"].(float64) < 1 {
+		t.Fatalf("permission that ends the replay must stay interactive and busy, got %v", waiting)
+	}
+}

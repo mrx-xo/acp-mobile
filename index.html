@@ -3048,15 +3048,15 @@ function flushReplay() {
   // without turn_complete means the turn is still running.
   setProcessing(replayBusy);
 
-  // If there's a pending permission in replay, mark it interactive.
-  // The cache only stores a permission while it's unanswered, so any
-  // permission found here is guaranteed to need interaction.
-  for (let i = turns.length - 1; i >= 0; i--) {
-    if (turns[i].type === 'permission') {
-      turns[i].interactive = true;
-      setProcessing(true);
-      break;
-    }
+  // A permission is still waiting only if it ends the replay: the
+  // multiplex appends the unanswered request after every cached update,
+  // and moves it into history once answered. Answered ones replay as
+  // resolved cards; treating them as pending made idle chats show
+  // "thinking" and a Stop button.
+  const lastTurn = turns[turns.length - 1];
+  if (lastTurn && lastTurn.type === 'permission') {
+    lastTurn.interactive = true;
+    setProcessing(true);
   }
 
   // Store all turns; render only the last chunk
