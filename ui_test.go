@@ -1527,3 +1527,37 @@ func TestTouchSendFiresOnPointerdownAndKeepsComposerFocused(t *testing.T) {
 	}
 }
 
+// iOS home-screen web apps shrink the layout viewport for the keyboard and
+// never grow it back after blur; forcing the root element to the screen
+// height for a beat makes WebKit recompute it. The poke must happen only
+// when the viewport is actually short and must clear itself afterwards.
+func TestStandaloneViewportRestoreAfterKeyboardDismiss(t *testing.T) {
+	probe := `(async () => {
+		Object.defineProperty(navigator, 'standalone', {value: true, configurable: true});
+		showChat();
+		promptEl.focus();
+		await new Promise(r => setTimeout(r, 30));
+		promptEl.blur();
+		const started = Date.now();
+		let poked = '';
+		while (Date.now() - started < 1500 && !poked) {
+			poked = document.documentElement.style.height;
+			await new Promise(r => setTimeout(r, 20));
+		}
+		await new Promise(r => setTimeout(r, 600));
+		return {poked, cleared: document.documentElement.style.height};
+	})()`
+
+	short := openComposerTestPage(t, 812, 874)
+	state := short.evalObject(t, probe)
+	if state["poked"] != "874px" || state["cleared"] != "" {
+		t.Fatalf("short standalone viewport should be poked to screen height then cleared, got %v", state)
+	}
+
+	full := openComposerTestPage(t, 874, 874)
+	state = full.evalObject(t, probe)
+	if state["poked"] != "" {
+		t.Fatalf("full-height viewport must not be poked, got %v", state)
+	}
+}
+

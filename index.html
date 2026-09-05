@@ -1411,6 +1411,33 @@ if (window.visualViewport) {
   vv.addEventListener('scroll', syncViewport);
   window.addEventListener('focusin', settleViewport);
   window.addEventListener('focusout', settleViewport);
+
+  // Home-screen web apps (navigator.standalone) shrink the LAYOUT viewport
+  // for the keyboard and never grow it back after blur: innerHeight, 100dvh
+  // and visualViewport.height all stay short, so every bottom-pinned element
+  // (composer, dock, sheets, scroll button) floats up by the missing height
+  // and a dead band shows underneath. Resetting the viewport meta, scrolling,
+  // or a display:none reflow do nothing; forcing the root element to the
+  // screen height for a beat makes WebKit recompute the viewport, and it
+  // stays correct after the override is cleared.
+  let viewportRestoreTimer = null;
+  const restoreStandaloneViewport = () => {
+    clearTimeout(viewportRestoreTimer);
+    if (!navigator.standalone) return;
+    viewportRestoreTimer = setTimeout(() => {
+      const active = document.activeElement;
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return;
+      const portrait = window.innerWidth <= window.innerHeight;
+      const expected = portrait ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
+      if (window.innerHeight >= expected - 1) return;
+      document.documentElement.style.height = expected + 'px';
+      setTimeout(() => {
+        document.documentElement.style.height = '';
+        settleViewport();
+      }, 300);
+    }, 700);
+  };
+  window.addEventListener('focusout', restoreStandaloneViewport);
 }
 
 // Derive base path for proxy-safe URLs (e.g. "/app/acp-mobile/" -> "/app/acp-mobile")
