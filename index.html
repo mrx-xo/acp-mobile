@@ -43,7 +43,20 @@
   --h1: #fe8019;        /* = agent-shell's org-level remap (gruvbox accents) */
   --h2: #fabd2f;
   --h3: #8ec07c;
+  /* ADHD cue prefixes = agent-shell's mr-x/agent-shell-cue-*-face
+     (emacs.org, "STYLING API").  One --cue-<style>-fg/bg pair per style
+     in AGENT_CUES below; `cue` is the default style. */
+  --cue-fg: #fb4934;         /* = mr-x/agent-shell-cue-face */
+  --cue-bg: #331917;
+  --cue-aside-fg: #83a598;   /* = mr-x/agent-shell-cue-aside-face */
+  --cue-aside-bg: #212726;
   --mono: "Iosevka Term Slab", ui-monospace, "SF Mono", Menlo, monospace;
+}
+/* Phone-only overrides.  The :root block above mirrors agent-shell's
+   defaults; when the phone needs to diverge, redeclare the variable here
+   instead of editing the shared value, so the Emacs/phone diff stays
+   visible in one place. */
+:root {
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 * { -webkit-tap-highlight-color: transparent; }
@@ -1207,7 +1220,10 @@ input, textarea, #fbv-content, .msg, .msg * {
 :is(.msg.agent, .pv-msg.agent) .md p { margin: 4px 0; }
 :is(.msg.agent, .pv-msg.agent) .md { color: var(--fg); font-size: 15px; line-height: 22px; }
 :is(.msg.agent, .pv-msg.agent) .agent-cue-prefix {
-  color: #fb4934; background: #331917; font-weight: 700;
+  color: var(--cue-fg); background: var(--cue-bg); font-weight: 700;
+}
+:is(.msg.agent, .pv-msg.agent) .agent-cue-prefix[data-style="aside"] {
+  color: var(--cue-aside-fg); background: var(--cue-aside-bg);
 }
 /* Peek sheet: same markdown look as bubbles, but at the sheet's compact size */
 .pv-msg.agent .md { font-size: 13px; line-height: 1.5; }
@@ -1598,6 +1614,18 @@ function renderMarkdown(text) {
   return '<p>' + html + '</p>';
 }
 
+// Mirror of mr-x/agent-shell-cues (emacs.org, "STYLING API"): one row per
+// ADHD cue prefix.  `where` is line (start of line, optionally after a list
+// bullet/number) or inline (also after a sentence end); `style` picks the
+// --cue-<style>-* variables via the span's data-style attribute.
+const AGENT_CUES = [
+  {name: 'next',       re: 'Next:',                       where: 'line',   style: 'cue'},
+  {name: 'separately', re: 'Separately:',                 where: 'line',   style: 'aside'},
+  {name: 'step',       re: 'Step [0-9]+ of [0-9]+ done:', where: 'line',   style: 'cue'},
+  {name: 'cause',      re: 'Cause:',                      where: 'inline', style: 'cue'},
+  {name: 'fix',        re: 'Fix:',                        where: 'inline', style: 'cue'}
+];
+
 function agentCueRanges(text) {
   const protectedRanges = [];
   const protect = (pattern) => {
@@ -1611,18 +1639,18 @@ function agentCueRanges(text) {
   protect(/\[[^\]]+\]\([^)]+\)/g);
 
   const ranges = [];
-  const collect = (pattern) => {
+  for (const spec of AGENT_CUES) {
+    const lead = spec.where === 'inline' ? '(^[ \\t]*|\\. )' : '^([ \\t]*(?:(?:[-*] |[0-9]+\\. ))?)';
+    const pattern = new RegExp(lead + '(' + spec.re + ')', 'gm');
     let match;
     while ((match = pattern.exec(text)) !== null) {
       const cue = match[2];
       const start = match.index + match[1].length;
       const end = start + cue.length;
       const isProtected = protectedRanges.some(range => start < range.end && end > range.start);
-      if (!isProtected) ranges.push({start, end, cue});
+      if (!isProtected) ranges.push({start, end, cue, name: spec.name, style: spec.style});
     }
-  };
-  collect(/^([ \t]*(?:(?:[-*] |[0-9]+\. ))?)(Next:|Separately:|Step [0-9]+ of [0-9]+ done:)/gm);
-  collect(/(^[ \t]*|\. )(Cause:|Fix:)/gm);
+  }
   return ranges.sort((left, right) => left.start - right.start);
 }
 
@@ -1638,7 +1666,7 @@ function renderAgentMarkdown(text) {
   for (const range of ranges) {
     const token = marker + cues.length + '\uE001';
     marked += text.slice(cursor, range.start) + token;
-    cues.push({token, text: range.cue});
+    cues.push({token, text: range.cue, name: range.name, style: range.style});
     cursor = range.end;
   }
   marked += text.slice(cursor);
@@ -1646,7 +1674,8 @@ function renderAgentMarkdown(text) {
   let html = renderMarkdown(marked);
   for (const cue of cues) {
     html = html.split(cue.token).join(
-      '<span class="agent-cue-prefix">' + cue.text + '</span>'
+      '<span class="agent-cue-prefix" data-cue="' + cue.name +
+      '" data-style="' + cue.style + '">' + cue.text + '</span>'
     );
   }
   return html;

@@ -444,6 +444,8 @@ func TestAgentCuePrefixRenderingMatchesAnswerContract(t *testing.T) {
 		const cues = [...answer.querySelectorAll('.agent-cue-prefix')];
 		const firstStyle = cues[0] ? getComputedStyle(cues[0]) : null;
 		const first = cues[0];
+		const aside = cues.find(cue => cue.textContent === 'Separately:');
+		const asideStyle = aside ? getComputedStyle(aside) : null;
 
 		const streaming = addAgentMsg('Ne');
 		updateAgentMsg(streaming, 'Next: stream');
@@ -471,6 +473,11 @@ func TestAgentCuePrefixRenderingMatchesAnswerContract(t *testing.T) {
 			foreground: firstStyle ? firstStyle.color : '',
 			background: firstStyle ? firstStyle.backgroundColor : '',
 			weight: firstStyle ? firstStyle.fontWeight : '',
+			firstCue: first ? first.dataset.cue + '/' + first.dataset.style : '',
+			asideCue: aside ? aside.dataset.cue + '/' + aside.dataset.style : '',
+			asideForeground: asideStyle ? asideStyle.color : '',
+			asideBackground: asideStyle ? asideStyle.backgroundColor : '',
+			asideWeight: asideStyle ? asideStyle.fontWeight : '',
 			prefixOnly: !!(first && first.textContent === 'Next:' &&
 				first.nextSibling && first.nextSibling.nodeValue === ' do the thing'),
 			protectedCueCount: answer.querySelectorAll(
@@ -499,6 +506,11 @@ func TestAgentCuePrefixRenderingMatchesAnswerContract(t *testing.T) {
 		state["background"] != "rgb(51, 25, 23)" || state["weight"] != "700" ||
 		state["prefixOnly"] != true || state["protectedCueCount"] != float64(0) {
 		t.Fatalf("agent cue styling/exclusions = %#v", state)
+	}
+	if state["firstCue"] != "next/cue" || state["asideCue"] != "separately/aside" ||
+		state["asideForeground"] != "rgb(131, 165, 152)" ||
+		state["asideBackground"] != "rgb(33, 39, 38)" || state["asideWeight"] != "700" {
+		t.Fatalf("agent cue aside styling = %#v", state)
 	}
 	if state["streamCount"] != float64(1) || state["streamText"] != "AgentNext: stream complete" ||
 		state["replayCount"] != float64(1) || state["pinCount"] != float64(1) ||
