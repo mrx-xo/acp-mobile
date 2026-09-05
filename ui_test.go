@@ -1561,3 +1561,43 @@ func TestStandaloneViewportRestoreAfterKeyboardDismiss(t *testing.T) {
 	}
 }
 
+// The send spring must spread its motion over enough frames to be seen, and
+// the thinking bar that appears on send must not cover the new bubble.
+func TestSendMotionIsVisibleAndThinkingBarKeepsBubbleInView(t *testing.T) {
+	page := openComposerTestPage(t, 844, 844)
+	state := page.evalObject(t, `(() => {
+		messagesEl.innerHTML = '';
+		showChat();
+		sessionId = 'send-motion-session';
+		ws = {readyState: 1, send: () => {}};
+		setProcessing(false);
+		for (let i = 0; i < 40; i++) addAgentMsg('filler line ' + i);
+		const bubble = addUserMsg('outgoing', 'sending');
+		const style = getComputedStyle(bubble);
+		// Sample the easing at 18% of the duration: the old spring curve had
+		// already travelled ~90% by then, which is 3-4 frames at 340ms.
+		const bezier = style.animationTimingFunction.match(/cubic-bezier\(([^)]+)\)/);
+		const [x1, y1, x2, y2] = bezier ? bezier[1].split(',').map(Number) : [0, 0, 1, 1];
+		const at = (p, a, b) => 3 * (1 - p) * (1 - p) * p * a + 3 * (1 - p) * p * p * b + p * p * p;
+		let lo = 0, hi = 1;
+		for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (at(mid, x1, x2) < 0.18) lo = mid; else hi = mid; }
+		const progressAt18 = at(lo, y1, y2);
+		setProcessing(true);
+		const gap = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop;
+		return {
+			duration: parseFloat(style.animationDuration),
+			progressAt18,
+			gapAfterThinkingBar: gap,
+			thinkingVisible: thinkingEl.classList.contains('visible')
+		};
+	})()`)
+	if d := state["duration"].(float64); d < 0.4 {
+		t.Fatalf("send animation too short to register: %v", state)
+	}
+	if p := state["progressAt18"].(float64); p > 0.7 {
+		t.Fatalf("send easing front-loads its motion (%.2f done at 18%% of duration): %v", p, state)
+	}
+	if state["thinkingVisible"] != true || state["gapAfterThinkingBar"].(float64) > 1 {
+		t.Fatalf("thinking bar should not push the new bubble out of view, got %v", state)
+	}
+}

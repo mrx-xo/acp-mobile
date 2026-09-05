@@ -1070,11 +1070,13 @@ input, textarea, #fbv-content, .msg, .msg * {
 }
 #attach-input { display: none; }
 
-/* New outgoing messages spring up from the composer instead of popping.
+/* New outgoing messages ease up from the composer instead of popping.
    Deliberately NOT gated on prefers-reduced-motion — the animation was
-   asked for by name, and iOS has Reduce Motion on half the time. */
+   asked for by name, and iOS has Reduce Motion on half the time.
+   Easing is a plain ease-out: the earlier overshoot spring finished ~90%
+   of its travel in the first 60ms (3-4 frames), which read as instant. */
 .msg.msg-in {
-  animation: msg-in 0.34s cubic-bezier(0.18, 1.25, 0.4, 1);
+  animation: msg-in 0.42s cubic-bezier(0.33, 1, 0.68, 1);
 }
 @keyframes msg-in {
   from { opacity: 0; transform: translateY(26px) scale(0.94); }
@@ -2529,7 +2531,11 @@ const spinnerGlyph = document.getElementById('spinner-glyph');
 
 function setProcessing(v) {
   processing = v;
+  const wasAtBottom = isAtBottom;
   thinkingEl.classList.toggle('visible', v);
+  // The bar takes its height from the message list; without a re-snap the
+  // bubble that was just sent loses its bottom edge behind it.
+  if (v && wasAtBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
   sendBtn.style.display = v ? 'none' : '';
   stopBtn.style.display = v ? 'flex' : 'none';
   if (v && !spinnerTimer) {
