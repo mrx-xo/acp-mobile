@@ -1339,3 +1339,48 @@ func htmlText(root *html.Node) string {
 	walk(root)
 	return strings.TrimSpace(b.String())
 }
+
+func TestSpawnArgsKeepsPlainShapeAndAppendsCloneOf(t *testing.T) {
+	cases := []struct {
+		name string
+		req  spawnRequest
+		want []string
+	}{
+		{"plain", spawnRequest{Name: "n", Cwd: "/p"}, []string{"n", "/p"}},
+		{"task", spawnRequest{Name: "n", Cwd: "/p", Task: "do"}, []string{"n", "/p", "do"}},
+		{"preset", spawnRequest{Cwd: "/p", Preset: "f"}, []string{"", "/p", "", "f"}},
+		{"clone", spawnRequest{CloneOf: "*agent-shell: x*"}, []string{"", "", "", "", "*agent-shell: x*"}},
+		{"clone+name", spawnRequest{Name: "again", CloneOf: "buf"}, []string{"again", "", "", "", "buf"}},
+	}
+	for _, c := range cases {
+		got := spawnArgs(c.req)
+		if strings.Join(got, "\x00") != strings.Join(c.want, "\x00") {
+			t.Fatalf("%s: spawnArgs = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A clone names a buffer instead of a directory, so cwd must not be
+// required; the bridge itself is absent in tests, which surfaces as 500.
+func TestHandleSpawnAcceptsCloneOfWithoutCwd(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/spawn", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handleSpawn(w, req)
+		return w
+	}
+	if w := post(`{"name":"x"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("no cwd, no cloneOf: status = %d, want 400", w.Code)
+	}
+	if w := post(`{"cloneOf":"a\nb"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("multi-line cloneOf: status = %d, want 400", w.Code)
+	}
+	w := post(`{"cloneOf":"*agent-shell: home-lab*"}`)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("cloneOf without cwd: status = %d, want 500 (bridge missing), body %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "agent-shell-spawn") {
+		t.Fatalf("error should name the bridge, got %s", w.Body.String())
+	}
+}

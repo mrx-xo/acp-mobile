@@ -1697,3 +1697,56 @@ func TestReplayAnsweredPermissionDoesNotLookBusy(t *testing.T) {
 		t.Fatalf("permission that ends the replay must stay interactive and busy, got %v", waiting)
 	}
 }
+
+// The chat menu's Clone item asks the rig to copy THIS convo (by buffer
+// name only), then walks into the new session once its socket shows up.
+func TestChatMenuCloneSpawnsFromCurrentBufferAndOpensIt(t *testing.T) {
+	page := openComposerTestPage(t, 844, 844)
+	state := page.evalObject(t, `(async () => {
+		showChat();
+		currentBufferName = '*agent-shell: home-lab*';
+		lastSessions = [{pid: 1, sessionId: 'old', cwd: '/p'}];
+		SPAWN_POLL_MS = 5;
+		window.__posts = [];
+		window.fetch = async (url, opts) => {
+			window.__posts.push({url, body: JSON.parse(opts.body)});
+			return {json: async () => ({ok: true})};
+		};
+		let loads = 0;
+		loadSessions = async () => {
+			if (++loads >= 2) lastSessions = [{pid: 1, sessionId: 'old', cwd: '/p'}, {pid: 2, sessionId: 'fresh', cwd: '/p'}];
+		};
+		window.__selected = null;
+		selectSession = (s) => { window.__selected = s.sessionId; };
+		document.getElementById('chat-menu-btn').click();
+		const menuOpen = chatMenu.classList.contains('visible');
+		const clone = document.getElementById('cm-clone');
+		clone.click();
+		const busyLabel = clone.textContent;
+		for (let i = 0; i < 100 && !window.__selected; i++) await new Promise(r => setTimeout(r, 10));
+		return {
+			menuOpen,
+			busyLabel,
+			posts: window.__posts.length,
+			url: window.__posts[0] ? window.__posts[0].url : '',
+			body: window.__posts[0] ? window.__posts[0].body : null,
+			selected: window.__selected,
+			menuClosed: !chatMenu.classList.contains('visible'),
+			label: clone.textContent,
+			enabled: !clone.disabled
+		};
+	})()`)
+	if state["menuOpen"] != true || state["posts"] != float64(1) || !strings.HasSuffix(state["url"].(string), "/api/spawn") {
+		t.Fatalf("clone should POST once to /api/spawn, got %v", state)
+	}
+	body, _ := state["body"].(map[string]interface{})
+	if body == nil || body["cloneOf"] != "*agent-shell: home-lab*" || body["cwd"] != nil {
+		t.Fatalf("clone body should carry only cloneOf, got %v", state["body"])
+	}
+	if state["busyLabel"] == "Clone" || state["selected"] != "fresh" {
+		t.Fatalf("clone should show progress and open the new session, got %v", state)
+	}
+	if state["menuClosed"] != true || state["label"] != "Clone" || state["enabled"] != true {
+		t.Fatalf("menu should close and the item reset after cloning, got %v", state)
+	}
+}

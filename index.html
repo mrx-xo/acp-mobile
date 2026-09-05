@@ -1329,6 +1329,7 @@ input, textarea, #fbv-content, .msg, .msg * {
 <div id="cm-scrim"></div>
 <div id="chat-menu">
   <button id="cm-pinned">Pinned</button>
+  <button id="cm-clone">Clone</button>
   <button id="cm-kill" style="color:var(--red)">Kill session</button>
 </div>
 <div id="history">
@@ -4172,6 +4173,37 @@ function hideSpawnSheet() {
 spScrim.addEventListener('click', hideSpawnSheet);
 document.getElementById('sp-close').addEventListener('click', hideSpawnSheet);
 
+// How often to look for the freshly spawned session's socket (ms).
+// Tests shrink it; the rig needs a second or so per attempt.
+let SPAWN_POLL_MS = 1000;
+
+// POST a spawn request, then wait for the new session's socket and walk
+// straight into it. Resolves true once the session is open, false if it
+// was accepted but slow to appear (the list catches it), throws on error.
+async function spawnAndOpen(body) {
+  // Keyed by session, not pid: a rig-side reload of some OTHER convo
+  // mid-wait surfaces a new pid but keeps its session id — only a
+  // genuinely new session counts as our spawn.
+  const prevKeys = new Set(lastSessions.map(sKey));
+  const resp = await fetch(basePath + '/api/spawn', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error);
+  for (let i = 0; i < 15; i++) {
+    await new Promise(r => setTimeout(r, SPAWN_POLL_MS));
+    await loadSessions(true);
+    const fresh = lastSessions.find(x => !prevKeys.has(sKey(x)));
+    if (fresh) {
+      selectSession(fresh);
+      return true;
+    }
+  }
+  return false;
+}
+
 spGo.addEventListener('click', async () => {
   const cwd = spDir.value.trim();
   if (!cwd) { spDir.focus(); return; }
@@ -4180,37 +4212,35 @@ spGo.addEventListener('click', async () => {
   let fi = 0;
   const spin = setInterval(() => { spGo.textContent = frames[fi = (fi + 1) % frames.length] + ' spawning'; }, 80);
   try {
-    // Keyed by session, not pid: a rig-side reload of some OTHER convo
-    // mid-wait surfaces a new pid but keeps its session id — only a
-    // genuinely new session counts as our spawn.
-    const prevKeys = new Set(lastSessions.map(sKey));
-    const resp = await fetch(basePath + '/api/spawn', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ cwd, name: spName.value.trim(), task: spTask.value.trim(), preset: spPreset })
-    });
-    const data = await resp.json();
-    if (data.error) throw new Error(data.error);
-    // Wait for the new session's socket, then walk straight into it
-    for (let i = 0; i < 15; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-      await loadSessions(true);
-      const fresh = lastSessions.find(x => !prevKeys.has(sKey(x)));
-      if (fresh) {
-        clearInterval(spin);
-        hideSpawnSheet();
-        selectSession(fresh);
-        return;
-      }
-    }
+    await spawnAndOpen({ cwd, name: spName.value.trim(), task: spTask.value.trim(), preset: spPreset });
     clearInterval(spin);
-    hideSpawnSheet(); // spawned but slow to appear; list will catch it
+    hideSpawnSheet();
   } catch (err) {
     clearInterval(spin);
     spGo.disabled = false; spGo.textContent = 'spawn';
     alert('Spawn failed: ' + err.message);
   }
 });
+
+// Clone: a fresh convo with this chat's agent, model, permission mode
+// and directory, no history (the rig's SPC c n). The rig resolves the
+// buffer name; nothing else about the session needs to travel.
+async function cloneSession() {
+  if (!currentBufferName) {
+    alert('No buffer name available for this session');
+    return;
+  }
+  const btn = document.getElementById('cm-clone');
+  btn.disabled = true; btn.textContent = 'Cloning\u2026';
+  try {
+    await spawnAndOpen({ cloneOf: currentBufferName });
+  } catch (err) {
+    alert('Clone failed: ' + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Clone';
+    closeChatMenu();
+  }
+}
 
 function spawnAgent() { openSpawnSheet(null); }
 function spawnInProject(cwd) { openSpawnSheet(cwd); }
@@ -4635,6 +4665,7 @@ cmPinned.addEventListener('click', () => {
   renderPins();
   pinsEl.classList.add('visible');
 });
+document.getElementById('cm-clone').addEventListener('click', () => { cloneSession(); });
 document.getElementById('cm-kill').addEventListener('click', () => {
   closeChatMenu();
   killSession();

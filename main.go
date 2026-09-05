@@ -814,24 +814,54 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"sessions": sessions, "version": buildID})
 }
 
+// spawnRequest is the body of /api/spawn. Cwd names the project to start
+// in; CloneOf instead names an existing agent-shell buffer whose agent,
+// model, permission mode and directory the new convo copies (the phone
+// side of the rig's clone, SPC c n). One of the two is required.
+type spawnRequest struct {
+	Cwd     string `json:"cwd"`
+	Name    string `json:"name"`
+	Task    string `json:"task"`
+	Preset  string `json:"preset"`
+	CloneOf string `json:"cloneOf"`
+}
+
+// spawnArgs lays out the positional argv for the agent-shell-spawn
+// bridge: NAME CWD [TASK] [PRESET] [CLONE_OF]. Trailing empties are only
+// kept when a later slot is set, so plain spawns keep their old shape.
+func spawnArgs(req spawnRequest) []string {
+	args := []string{req.Name, req.Cwd}
+	if req.Task != "" || req.Preset != "" || req.CloneOf != "" {
+		args = append(args, req.Task)
+	}
+	if req.Preset != "" || req.CloneOf != "" {
+		args = append(args, req.Preset)
+	}
+	if req.CloneOf != "" {
+		args = append(args, req.CloneOf)
+	}
+	return args
+}
+
 func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var req struct {
-		Cwd    string `json:"cwd"`
-		Name   string `json:"name"`
-		Task   string `json:"task"`
-		Preset string `json:"preset"`
-	}
+	var req spawnRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Cwd == "" {
-		http.Error(w, "cwd is required", http.StatusBadRequest)
+	if req.Cwd == "" && req.CloneOf == "" {
+		http.Error(w, "cwd or cloneOf is required", http.StatusBadRequest)
+		return
+	}
+	// Buffer names reach an elisp string literal via the bridge script;
+	// keep them on one line and short, everything else is escaped there.
+	if len(req.CloneOf) > 512 || strings.ContainsAny(req.CloneOf, "\n\r") {
+		http.Error(w, "invalid cloneOf", http.StatusBadRequest)
 		return
 	}
 	// Preset is a single char key into the rig's mr-x/agent-shell-presets;
@@ -841,15 +871,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args := []string{req.Name, req.Cwd}
-	if req.Task != "" || req.Preset != "" {
-		args = append(args, req.Task)
-	}
-	if req.Preset != "" {
-		args = append(args, req.Preset)
-	}
-
-	out, err := evalEmacs("agent-shell-spawn", args...)
+	out, err := evalEmacs("agent-shell-spawn", spawnArgs(req)...)
 	if err != nil {
 		log.Printf("spawn: %v: %s", err, out)
 		w.Header().Set("Content-Type", "application/json")
