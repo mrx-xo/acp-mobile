@@ -1436,3 +1436,94 @@ func TestOrderedListsRenderAndPinsRerenderFromSource(t *testing.T) {
 		t.Fatalf("pin rendering = %#v, want the pin re-rendered like the chat bubble", state)
 	}
 }
+
+// openComposerTestPage serves the embedded UI at phone metrics. height may be
+// smaller than screenHeight to emulate the iOS standalone keyboard-restore
+// bug, where the layout viewport stays short after the keyboard dismisses.
+func openComposerTestPage(t *testing.T, height, screenHeight int) *chromePage {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexHTML)
+	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": []interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	page := openChromePage(t, server.URL)
+	page.call(t, "Emulation.setDeviceMetricsOverride", map[string]interface{}{
+		"width": 390, "height": height, "screenWidth": 390, "screenHeight": screenHeight,
+		"deviceScaleFactor": 1, "mobile": true,
+	})
+	page.call(t, "Page.reload", map[string]interface{}{})
+	page.waitFor(t, `typeof sendPromptText === 'function'`)
+	return page
+}
+
+// A touch on Send must send on that first contact and must not blur the
+// composer: on iOS the click that used to carry the send only arrives after
+// the textarea blurs, the keyboard drops, and the composer moves out from
+// under the finger (one tap dismissed the keyboard, a second tap sent).
+func TestTouchSendFiresOnPointerdownAndKeepsComposerFocused(t *testing.T) {
+	page := openComposerTestPage(t, 844, 844)
+	state := page.evalObject(t, `(async () => {
+		messagesEl.innerHTML = '';
+		showChat();
+		sessionId = 'touch-send-session';
+		window.__sends = [];
+		ws = {readyState: 1, send: raw => window.__sends.push(JSON.parse(raw))};
+		setProcessing(false);
+		sendBtn.disabled = false;
+		promptEl.focus();
+		promptEl.value = 'first tap';
+		const down = new PointerEvent('pointerdown', {pointerType: 'touch', bubbles: true, cancelable: true});
+		sendBtn.dispatchEvent(down);
+		const sentOnPointerdown = window.__sends.length;
+		// The synthetic click that follows a touch must not send or queue again.
+		promptEl.value = 'ghost';
+		sendBtn.click();
+		await new Promise(r => setTimeout(r, 30));
+		const afterClick = window.__sends.length + messageQueue.length;
+		const ghostKept = promptEl.value;
+		// Mouse and keyboard still send via click once the touch window closes.
+		await new Promise(r => setTimeout(r, 700));
+		setProcessing(false);
+		messageQueue = [];
+		promptEl.value = 'desktop click';
+		sendBtn.click();
+		return {
+			sentOnPointerdown,
+			iconIgnoresPointer: getComputedStyle(sendBtn.querySelector('svg')).pointerEvents === 'none',
+			defaultPrevented: down.defaultPrevented,
+			focused: document.activeElement === promptEl,
+			afterClick,
+			ghostKept,
+			total: window.__sends.length,
+			firstText: window.__sends[0] ? window.__sends[0].params.prompt[0].text : '',
+			lastText: window.__sends[1] ? window.__sends[1].params.prompt[0].text : ''
+		};
+	})()`)
+	if state["sentOnPointerdown"] != float64(1) || state["firstText"] != "first tap" {
+		t.Fatalf("touch pointerdown should send once, got %v", state)
+	}
+	if state["defaultPrevented"] != true || state["focused"] != true {
+		t.Fatalf("touch send should keep the composer focused, got %v", state)
+	}
+	if state["iconIgnoresPointer"] != true {
+		t.Fatalf("send icon must not be the hit target (iOS drops touches on it while the textarea is focused), got %v", state)
+	}
+	if state["afterClick"] != float64(1) || state["ghostKept"] != "ghost" {
+		t.Fatalf("trailing click after touch must not send again, got %v", state)
+	}
+	if state["total"] != float64(2) || state["lastText"] != "desktop click" {
+		t.Fatalf("click should still send outside the touch window, got %v", state)
+	}
+}
+

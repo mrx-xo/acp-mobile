@@ -1089,6 +1089,10 @@ input, textarea, #fbv-content, .msg, .msg * {
   transition: transform 0.12s ease, background 0.15s ease;
 }
 #send:active { background: #98971a; transform: scale(0.92); }
+/* iOS drops touches that land on the SVG icon while the textarea is
+   focused (elementFromPoint returns the <path>, no touch/pointer event is
+   dispatched, the field just blurs). Route hits to the button itself. */
+#send svg { pointer-events: none; }
 #send:disabled { background: var(--bg1); color: var(--fg-mute); }
 #stop-btn {
   background: var(--red); border: none; border-radius: 12px;
@@ -4410,7 +4414,23 @@ document.getElementById('fb-hidden-toggle').addEventListener('click', fbToggleHi
 document.getElementById('fb-close').addEventListener('click', closeFileBrowser);
 document.getElementById('fbv-back').addEventListener('click', closeFileViewer);
 document.getElementById('scroll-btn').addEventListener('click', scrollToBottom);
-document.getElementById('send').addEventListener('click', sendPrompt);
+// iOS: a tap on Send while the keyboard is up used to only dismiss the
+// keyboard (see the #send svg rule for the hit-target half of that bug).
+// Send on the touch pointerdown, before any blur can run; preventDefault
+// keeps the textarea focused so the keyboard stays up for the next
+// message, and the synthetic click that follows is ignored. Mouse and
+// keyboard activation still go through click.
+let suppressSendClickUntil = 0;
+sendBtn.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch' || sendBtn.disabled) return;
+  e.preventDefault();
+  suppressSendClickUntil = Date.now() + 600;
+  sendPrompt();
+});
+sendBtn.addEventListener('click', () => {
+  if (Date.now() < suppressSendClickUntil) return;
+  sendPrompt();
+});
 document.getElementById('stop-btn').addEventListener('click', cancelPrompt);
 
 // --- Long-press a message → mini menu → full-screen reader ---
