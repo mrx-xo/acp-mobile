@@ -8,6 +8,7 @@
 <meta name="apple-mobile-web-app-title" content="Agent">
 <meta name="theme-color" content="#1d2021">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>ACP</title>
 <style>
 /* Gruvbox dark, same face as the Emacs rig (doom-gruvbox +
@@ -4451,14 +4452,104 @@ headerTitle.addEventListener('click', async () => {
     updateChatHeader();
   } catch (err) { alert('Label failed: ' + err.message); }
 });
+// --- Web Push: this phone subscribes through the service worker; the
+// server (acp-mobile) fans out pushes that Emacs asks for via /api/notify.
+// A tap on such a push lands back in this app on that chat.
+let swRegistration = null;
+let pushPublicKey = null;   // fetched early so the bell tap stays inside iOS's gesture window
+const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+function urlBase64ToUint8Array(b64) {
+  const pad = '='.repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+async function fetchPushKey() {
+  if (pushPublicKey) return pushPublicKey;
+  const resp = await fetch(basePath + '/api/push-key', { cache: 'no-store' });
+  if (!resp.ok) throw new Error('push key: HTTP ' + resp.status);
+  pushPublicKey = (await resp.json()).publicKey;
+  return pushPublicKey;
+}
+async function postPushSubscription(sub, unsubscribe) {
+  const resp = await fetch(basePath + '/api/push-subscribe', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ subscription: sub.toJSON(), unsubscribe: !!unsubscribe })
+  });
+  if (!resp.ok) throw new Error('subscribe: HTTP ' + resp.status);
+}
+// Returns {ok, reason}.  Notification.requestPermission() must be the
+// first await in the tap's call chain -- iOS drops the gesture after any
+// network round trip -- so the key and registration are fetched ahead.
+async function ensurePushSubscription() {
+  if (!pushSupported) {
+    return { ok: false, reason: navigator.standalone === false
+      ? 'Pushes only reach the home-screen app. Add this page to the Home Screen and open it from there.'
+      : 'This browser does not support Web Push.' };
+  }
+  let perm = Notification.permission;
+  if (perm !== 'granted') perm = await Notification.requestPermission();
+  if (perm !== 'granted') return { ok: false, reason: 'Notifications are blocked for this app on this phone.' };
+  const reg = swRegistration || await navigator.serviceWorker.ready;
+  const key = await fetchPushKey();
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) });
+  }
+  await postPushSubscription(sub);
+  return { ok: true };
+}
+// Keep the server's copy of this phone's subscription fresh: iOS can
+// rotate the endpoint, and the store may have been pruned.
+async function refreshPushSubscription() {
+  if (!pushSupported || Notification.permission !== 'granted') return;
+  try {
+    const reg = swRegistration || await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) await postPushSubscription(sub);
+  } catch (err) { console.warn('push refresh failed', err); }
+}
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register(basePath + '/sw.js', { scope: basePath + '/' })
+    .then((reg) => { swRegistration = reg; refreshPushSubscription(); })
+    .catch((err) => console.warn('service worker registration failed', err));
+  fetchPushKey().catch(() => {});
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const m = e.data || {};
+    if (m.type === 'open-session') openSessionByName(m.bufferName);
+  });
+}
+// Jump to a chat by Emacs buffer name (push tap, ?session= on launch).
+async function openSessionByName(name) {
+  if (!name) return;
+  let s = lastSessions.find(x => x.bufferName === name);
+  if (!s) {
+    await loadSessions(true);
+    s = lastSessions.find(x => x.bufferName === name);
+  }
+  if (!s) return;
+  if (currentBufferName === name && chatViewEl.classList.contains('visible')) return;
+  selectSession(s);
+}
 // Bell: opt this chat into phone push (done/failed/permission events).
-// Optimistic flip; the server answers with the rig's actual state.
+// Subscribes this phone first (permission prompt on first use), then
+// arms the rig.  Optimistic flip; the server answers with the rig's
+// actual state.
 bellBtn.addEventListener('click', async () => {
   if (!currentBufferName || bellBtn.classList.contains('pending')) return;
   const entry = lastSessions.find(s => s.bufferName === currentBufferName);
   const was = !!(entry && entry.push);
   setBell(!was);
   bellBtn.classList.add('pending');
+  let warn = null;
+  if (!was) {
+    try {
+      const r = await ensurePushSubscription();
+      if (!r.ok) warn = r.reason;
+    } catch (err) { warn = 'Subscribing this phone failed: ' + err.message; }
+  }
   try {
     const resp = await fetch(basePath + '/api/push', {
       method: 'POST',
@@ -4469,6 +4560,7 @@ bellBtn.addEventListener('click', async () => {
     if (data.error) throw new Error(data.error);
     if (entry) entry.push = !!data.push;
     setBell(!!data.push);
+    if (warn && data.push) alert('Push armed on the rig, but this phone will not get it. ' + warn);
   } catch (err) {
     setBell(was);
     alert('Phone push failed: ' + err.message);
@@ -5121,8 +5213,12 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// Start: try loading sessions (discover mode), fall back to direct connect
-loadSessions();
+// Start: try loading sessions (discover mode), fall back to direct connect.
+// ?session=<bufferName> (a push tap with no window open) lands on that chat.
+loadSessions().then(() => {
+  const wanted = new URLSearchParams(location.search).get('session');
+  if (wanted) openSessionByName(wanted);
+});
 </script>
 </body>
 </html>

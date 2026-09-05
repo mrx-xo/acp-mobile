@@ -50,6 +50,13 @@ var buildID = func() string {
 //go:embed fonts
 var fontsFS embed.FS
 
+// cspHeader builds the page CSP.  worker-src 'self' is what lets
+// navigator.serviceWorker.register('/sw.js') through a nonce-only
+// script-src (the worker fetch falls back to script-src otherwise).
+func cspHeader(nonce string) string {
+	return fmt.Sprintf("default-src 'self'; img-src 'self' data: blob:; script-src 'nonce-%s'; worker-src 'self'; manifest-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'", nonce)
+}
+
 var validBufferName = regexp.MustCompile(`^[\w\s.\-@<>/()]+$`)
 
 // --- Configuration ---
@@ -223,6 +230,9 @@ func main() {
 
 	authKey := loadOrCreateAuthKey()
 	authRL := newRateLimiter()
+	if _, err := loadOrCreateVAPID(); err != nil {
+		log.Printf("webpush: vapid keys unavailable, phone push disabled: %v", err)
+	}
 
 	mux := http.NewServeMux()
 
@@ -239,8 +249,7 @@ func main() {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("Content-Security-Policy",
-			fmt.Sprintf("default-src 'self'; img-src 'self' data: blob:; script-src 'nonce-%s'; style-src 'unsafe-inline'; frame-ancestors 'none'", nonce))
+		w.Header().Set("Content-Security-Policy", cspHeader(nonce))
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		page := bytes.Replace(indexHTML, []byte("__CSP_NONCE__"), []byte(nonce), 1)
@@ -309,6 +318,11 @@ func main() {
 	mux.HandleFunc("/api/kill", handleKill)
 	mux.HandleFunc("/api/label", handleLabel)
 	mux.HandleFunc("/api/push", handlePush)
+	mux.HandleFunc("/api/push-key", handlePushKey)
+	mux.HandleFunc("/api/push-subscribe", handlePushSubscribe)
+	mux.HandleFunc("/api/notify", handleNotify)
+	mux.HandleFunc("/sw.js", handleServiceWorker)
+	mux.HandleFunc("/manifest.webmanifest", handleManifest)
 	mux.HandleFunc("/api/preview", handlePreview)
 	mux.HandleFunc("/api/transcripts", handleTranscripts)
 	mux.HandleFunc("/api/transcript-search", handleTranscriptSearch)
@@ -353,6 +367,13 @@ func main() {
 		// cookies during Add to Home Screen; a 401 silently falls back
 		// to a page-screenshot icon. It's just a glyph — no secrets.
 		if r.URL.Path == "/apple-touch-icon.png" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		// Same for the manifest and service worker: iOS fetches the
+		// manifest without credentials, and a 401 on either one silently
+		// disables Web Push.  Both are static and secret-free.
+		if r.URL.Path == "/manifest.webmanifest" || r.URL.Path == "/sw.js" {
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -412,11 +433,18 @@ func main() {
 		mux.ServeHTTP(w, r)
 	})
 
-	// Write link file
-	link := fmt.Sprintf("http://127.0.0.1:%s?authkey=%s", port, authKey)
-	if tsErr == nil {
-		link = fmt.Sprintf("http://%s:%s?authkey=%s", ts.Hostname, port, authKey)
+	// Write link file.  Prefer the `tailscale serve` https origin: Web
+	// Push only works from a secure origin, and the home-screen app has
+	// to be installed from the same origin that registers the worker.
+	serveOrigin := tailscaleServeURL(port)
+	if serveOrigin != "" {
+		log.Printf("acp-mobile: tailscale serve proxies %s to this port", serveOrigin)
 	}
+	tailnetHost := ""
+	if tsErr == nil {
+		tailnetHost = ts.Hostname
+	}
+	link := linkURL(serveOrigin, tailnetHost, port, authKey)
 	log.Printf("acp-mobile: %s", link)
 	linkPath := filepath.Join(filepath.Dir(authKeyPath()), "link")
 	os.WriteFile(linkPath, []byte(link+"\n"), 0600)

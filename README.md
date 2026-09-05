@@ -25,6 +25,27 @@ go build -o acp-mobile .
 
 The server binds to `127.0.0.1` only. On first run it generates an authkey and prints a URL with the key embedded — open that URL to authenticate.
 
+## Phone push (Web Push)
+
+acp-mobile can send Web Push notifications to phones that installed it as a
+home-screen web app. Requirements: an https origin (for example
+`tailscale serve` in front of the port; when it proxies to this port the
+link file switches to that https URL), the service worker at `/sw.js`, and
+a tap on a chat's bell, which asks for notification permission and posts
+the subscription to `/api/push-subscribe`. A local caller (Emacs) triggers
+a push with:
+
+```bash
+curl -X POST -H "Cookie: authkey=$(cat ~/.acp-mobile/authkey)" \
+  -H 'Content-Type: application/json' \
+  -d '{"bufferName":"Claude Agent @ proj","title":"proj","message":"Finished"}' \
+  http://127.0.0.1:8090/api/notify
+```
+
+State: `~/.acp-mobile/vapid.json` (signing keypair, generated once) and
+`~/.acp-mobile/push-subscriptions.json`. Tapping a notification opens the
+home-screen app on that chat.
+
 ## Session names
 
 acp-mobile shows session names from acp-multiplex. To pass agent-shell buffer names through, set the `ACP_MULTIPLEX_NAME` environment variable when spawning the acp-multiplex process. In agent-shell, this requires injecting it into `:environment-variables` (not `process-environment`) because `acp.el` starts the process lazily:
