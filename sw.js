@@ -11,7 +11,7 @@ function trace(event, detail) {
   } catch (e) { return Promise.resolve(); }
 }
 
-const SW_VERSION = 'trace-2';
+const SW_VERSION = 'trace-3';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil((async () => {
   await self.clients.claim();
@@ -26,6 +26,12 @@ self.addEventListener('push', (event) => {
     const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     await trace('push', SW_VERSION + ' ' + (data.bufferName || '') + ' windows=' + wins.length + ' ' +
       wins.map((w) => (w.visibilityState || '?') + (w.focused ? ' focused' : '')).join(','));
+    // Probes: can the page hear the worker at all on this platform?
+    try { new BroadcastChannel('acp-push').postMessage({ type: 'push-arrived', bufferName: data.bufferName || '' }); } catch (e) {}
+    try {
+      const c = await caches.open(PENDING_CACHE);
+      await c.put('/last-push', new Response(data.bufferName || '', { headers: { 'Content-Type': 'text/plain' } }));
+    } catch (e) {}
     await self.registration.showNotification(title, {
       body: data.body || '',
       tag: data.tag || data.bufferName || undefined,

@@ -4758,8 +4758,21 @@ if ('BroadcastChannel' in window) {
   new BroadcastChannel('acp-push').onmessage = (e) => {
     const m = e.data || {};
     if (m.type === 'open-session') openSessionFromPush(m.bufferName, 'broadcast');
+    if (m.type === 'push-arrived') pushTrace('page:push-broadcast', m.bufferName + ' visibility=' + document.visibilityState);
   };
 }
+// Probe: does the page see the worker's Cache API writes?
+setInterval(async () => {
+  if (document.visibilityState !== 'visible' || !('caches' in window)) return;
+  try {
+    const c = await caches.open('acp-pending');
+    const r = await c.match('/last-push');
+    if (!r) return;
+    const name = await r.text();
+    await c.delete('/last-push');
+    pushTrace('page:push-cache', name);
+  } catch (e) {}
+}, 2000);
 // A tap handled live must also clear the durable copy, or the next
 // resume would replay it.
 async function openSessionFromPush(name, via) {
