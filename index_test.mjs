@@ -263,6 +263,7 @@ function loadTurnNav() {
     turnNavStops: plain(context.turnNavStops),
     turnNavTarget: plain(context.turnNavTarget),
     turnNavNextMode: context.turnNavNextMode,
+    turnNavShouldShow: context.turnNavShouldShow,
   };
 }
 
@@ -325,4 +326,11 @@ test('mode cycles prompt, response, alternate, prompt', () => {
   assert.equal(turnNavNextMode('response'), 'alternate');
   assert.equal(turnNavNextMode('alternate'), 'prompt');
   assert.equal(turnNavNextMode('garbage'), 'prompt');
+});
+
+test('turn nav only shows when enabled for this chat and there is somewhere to go', () => {
+  const {turnNavShouldShow} = loadTurnNav();
+  assert.equal(turnNavShouldShow(false, 5), false);
+  assert.equal(turnNavShouldShow(true, 1), false);
+  assert.equal(turnNavShouldShow(true, 2), true);
 });

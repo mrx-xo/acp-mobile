@@ -1373,6 +1373,7 @@ input, textarea, #fbv-content, .msg, .msg * {
 <div id="chat-menu">
   <button id="cm-pinned">Pinned</button>
   <button id="cm-clone">Clone</button>
+  <button id="cm-turn-nav">Show turn nav</button>
   <button id="cm-kill" style="color:var(--red)">Kill session</button>
 </div>
 <div id="history">
@@ -4096,6 +4097,7 @@ function selectSession(session) {
   renderedTurnStart = 0;
   sendBtn.disabled = true;
   setProcessing(false);
+  if (window.turnNav) turnNav.setEnabled(false);
 
   showChat();
   connect(String(session.pid));
@@ -4530,6 +4532,10 @@ function turnNavTarget(stops, viewportTop, dir, slack) {
   }
   return null;
 }
+// Off by default on every chat; the chat menu turns it on for this chat.
+function turnNavShouldShow(enabled, stopCount) {
+  return !!enabled && stopCount >= 2;
+}
 // --- Turn nav: end ---
 
 (function () {
@@ -4539,6 +4545,7 @@ function turnNavTarget(stops, viewportTop, dir, slack) {
   const modeBtn = document.getElementById('turn-nav-mode');
   const stored = localStorage.getItem('acp-turn-nav');
   let mode = TURN_NAV_MODES.includes(stored) ? stored : 'prompt';
+  let enabled = false;
   let lastItems = [];
 
   function items() {
@@ -4567,8 +4574,9 @@ function turnNavTarget(stops, viewportTop, dir, slack) {
   function refresh() {
     lastItems = items();
     const stops = turnNavStops(lastItems, mode);
-    navEl.classList.toggle('visible', stops.length >= 2);
-    if (stops.length < 2) return;
+    const show = turnNavShouldShow(enabled, stops.length);
+    navEl.classList.toggle('visible', show);
+    if (!show) return;
     const top = messagesEl.scrollTop;
     paintArrow(upBtn, turnNavTarget(stops, top, -1));
     paintArrow(downBtn, turnNavTarget(stops, top, 1));
@@ -4607,6 +4615,10 @@ function turnNavTarget(stops, viewportTop, dir, slack) {
   new MutationObserver(scheduleRefresh).observe(messagesEl, { childList: true, subtree: true });
   paintMode();
   refresh();
+  window.turnNav = {
+    isEnabled: () => enabled,
+    setEnabled(v) { enabled = !!v; refresh(); },
+  };
 })();
 
 // Keep the scroll-to-bottom button floating just above the composer,
@@ -4856,12 +4868,14 @@ bellBtn.addEventListener('click', async () => {
 const cmScrim = document.getElementById('cm-scrim');
 const chatMenu = document.getElementById('chat-menu');
 const cmPinned = document.getElementById('cm-pinned');
+const cmTurnNav = document.getElementById('cm-turn-nav');
 function closeChatMenu() {
   cmScrim.classList.remove('visible');
   chatMenu.classList.remove('visible');
 }
 document.getElementById('chat-menu-btn').addEventListener('click', () => {
   cmPinned.style.display = loadPins().length ? '' : 'none';
+  cmTurnNav.textContent = turnNav.isEnabled() ? 'Hide turn nav' : 'Show turn nav';
   cmScrim.classList.add('visible');
   chatMenu.classList.add('visible');
 });
@@ -4872,6 +4886,10 @@ cmPinned.addEventListener('click', () => {
   pinsEl.classList.add('visible');
 });
 document.getElementById('cm-clone').addEventListener('click', () => { cloneSession(); });
+cmTurnNav.addEventListener('click', () => {
+  closeChatMenu();
+  turnNav.setEnabled(!turnNav.isEnabled());
+});
 document.getElementById('cm-kill').addEventListener('click', () => {
   closeChatMenu();
   killSession();
