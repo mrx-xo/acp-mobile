@@ -996,6 +996,10 @@ type transcriptInfo struct {
 	Preview   string `json:"preview"`
 	SessionID string `json:"sessionId"`
 	Label     string `json:"label,omitempty"`
+	// Resumable/ResumeReason come from syzygy-recall's readiness check;
+	// the History resume button keys on them.
+	Resumable    bool   `json:"resumable"`
+	ResumeReason string `json:"resumeReason,omitempty"`
 }
 
 type transcriptSearchResult struct {

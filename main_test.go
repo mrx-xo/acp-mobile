@@ -1627,3 +1627,28 @@ func TestHandleSpawnAcceptsCloneOfWithoutCwd(t *testing.T) {
 		t.Fatalf("error should name the bridge, got %s", w.Body.String())
 	}
 }
+
+// The History list is decoded into transcriptInfo before it reaches the
+// phone, so the readiness fields syzygy-recall emits must survive that hop
+// or the resume button never enables.
+func TestTranscriptInfoKeepsResumeReadiness(t *testing.T) {
+	var info transcriptInfo
+	err := json.Unmarshal([]byte(`{"file":"/t.md","resumable":true,"resumeReason":""}`), &info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Resumable {
+		t.Fatal("resumable dropped on decode")
+	}
+	out, _ := json.Marshal(info)
+	if !strings.Contains(string(out), `"resumable":true`) {
+		t.Fatalf("resumable dropped on encode: %s", out)
+	}
+	if err := json.Unmarshal([]byte(`{"file":"/t.md","resumable":false,"resumeReason":"no session id"}`), &info); err != nil {
+		t.Fatal(err)
+	}
+	out, _ = json.Marshal(info)
+	if !strings.Contains(string(out), `"resumable":false`) || !strings.Contains(string(out), `"resumeReason":"no session id"`) {
+		t.Fatalf("unavailable reason dropped: %s", out)
+	}
+}
