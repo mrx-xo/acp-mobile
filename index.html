@@ -672,6 +672,36 @@ body {
 }
 #scroll-btn:active { background: #b16286; }
 
+/* Turn nav: bare arrows above the scroll button, no chrome so the chat
+   stays readable underneath. Each arrow takes the color of the block it
+   would land on: orange = a prompt (matches the You role), aqua = a
+   response (matches the Agent role). The mode glyph between them cycles
+   prompt -> response -> alternate. */
+#turn-nav {
+  display: none; position: fixed; right: 12px; bottom: 150px; z-index: 10;
+  flex-direction: column; align-items: center;
+  font-family: var(--mono); user-select: none; -webkit-user-select: none;
+}
+#turn-nav.visible { display: flex; }
+#turn-nav button {
+  background: none; border: none; padding: 2px 12px; cursor: pointer;
+  color: var(--fg-mute); font-size: 26px; font-weight: 700; line-height: 1;
+  text-shadow: 0 0 6px var(--bg-hard), 0 0 3px var(--bg-hard), 0 1px 2px rgba(0,0,0,0.8);
+  -webkit-tap-highlight-color: transparent;
+}
+#turn-nav button.prompt { color: var(--orange); }
+#turn-nav button.response { color: var(--aqua); }
+#turn-nav button[disabled] { opacity: 0.25; }
+#turn-nav button:active:not([disabled]) { transform: scale(0.85); }
+#turn-nav-mode { font-size: 13px; letter-spacing: 1px; padding: 4px 12px; }
+#turn-nav-mode.alternate { color: var(--orange); }
+#turn-nav-mode.alternate span { color: var(--aqua); }
+.msg.turn-nav-hit-prompt, .msg.turn-nav-hit-response {
+  transition: box-shadow 0.15s ease-out;
+}
+.msg.turn-nav-hit-prompt { box-shadow: 0 0 0 2px var(--orange), 0 0 12px var(--orange); }
+.msg.turn-nav-hit-response { box-shadow: 0 0 0 2px var(--aqua), 0 0 12px var(--aqua); }
+
 /* Swipe navigation indicator */
 #swipe-indicator {
   display: none; position: fixed; top: 50%; left: 50%;
@@ -1319,6 +1349,11 @@ input, textarea, #fbv-content, .msg, .msg * {
 <div id="swipe-indicator"></div>
 <div id="thinking"><span class="spinner" id="spinner-glyph">⠋</span><span class="label">thinking…</span></div>
 <button id="scroll-btn">&darr;</button>
+<div id="turn-nav">
+  <button id="turn-nav-up" aria-label="Previous">&uarr;</button>
+  <button id="turn-nav-mode" aria-label="Navigation mode"></button>
+  <button id="turn-nav-down" aria-label="Next">&darr;</button>
+</div>
 <div id="attach-row"></div>
 <div id="input-area">
   <button id="attach-btn" aria-label="Attach image">+</button>
@@ -4451,6 +4486,129 @@ document.getElementById('spawn-btn').addEventListener('click', spawnAgent);
   });
 })();
 
+// --- Turn nav: jump between prompts and responses ---
+// Pure helpers (covered by index_test.mjs). items/stops carry {kind, top}
+// where top is the block's offset inside the scroll container.
+const TURN_NAV_MODES = ['prompt', 'response', 'alternate'];
+
+function turnNavNextMode(mode) {
+  const i = TURN_NAV_MODES.indexOf(mode);
+  return TURN_NAV_MODES[(i + 1) % TURN_NAV_MODES.length];
+}
+
+// prompt: every user message. response: one stop per agent turn, at the
+// first agent-side block after a prompt (or at the very start). alternate:
+// both, in document order. System notices never start a turn.
+function turnNavStops(items, mode) {
+  const stops = [];
+  let turnOpen = true;
+  for (const it of items) {
+    if (it.kind === 'user') {
+      turnOpen = true;
+      if (mode !== 'response') stops.push({kind: 'prompt', top: it.top});
+    } else if (it.kind !== 'system' && turnOpen) {
+      turnOpen = false;
+      if (mode !== 'prompt') stops.push({kind: 'response', top: it.top});
+    }
+  }
+  return stops;
+}
+
+// Nearest stop strictly beyond the viewport top in the given direction.
+// The slack keeps a stop that is already sitting at the top from being
+// re-picked as "next" after a jump.
+function turnNavTarget(stops, viewportTop, dir, slack) {
+  const s = slack == null ? 8 : slack;
+  if (dir < 0) {
+    for (let i = stops.length - 1; i >= 0; i--) {
+      if (stops[i].top < viewportTop - s) return stops[i];
+    }
+    return null;
+  }
+  for (let i = 0; i < stops.length; i++) {
+    if (stops[i].top > viewportTop + s) return stops[i];
+  }
+  return null;
+}
+// --- Turn nav: end ---
+
+(function () {
+  const navEl = document.getElementById('turn-nav');
+  const upBtn = document.getElementById('turn-nav-up');
+  const downBtn = document.getElementById('turn-nav-down');
+  const modeBtn = document.getElementById('turn-nav-mode');
+  const stored = localStorage.getItem('acp-turn-nav');
+  let mode = TURN_NAV_MODES.includes(stored) ? stored : 'prompt';
+  let lastItems = [];
+
+  function items() {
+    const base = messagesEl.getBoundingClientRect().top - messagesEl.scrollTop;
+    const out = [];
+    messagesEl.querySelectorAll('.msg').forEach(el => {
+      const kind = el.classList.contains('user') ? 'user'
+        : el.classList.contains('system') ? 'system' : 'agent';
+      out.push({kind, top: Math.round(el.getBoundingClientRect().top - base), el});
+    });
+    return out;
+  }
+
+  function paintArrow(btn, target) {
+    btn.classList.remove('prompt', 'response');
+    btn.disabled = !target;
+    if (target) btn.classList.add(target.kind);
+  }
+
+  function paintMode() {
+    modeBtn.classList.remove('prompt', 'response', 'alternate');
+    modeBtn.classList.add(mode);
+    modeBtn.innerHTML = mode === 'prompt' ? 'P' : mode === 'response' ? 'R' : 'P<span>R</span>';
+  }
+
+  function refresh() {
+    lastItems = items();
+    const stops = turnNavStops(lastItems, mode);
+    navEl.classList.toggle('visible', stops.length >= 2);
+    if (stops.length < 2) return;
+    const top = messagesEl.scrollTop;
+    paintArrow(upBtn, turnNavTarget(stops, top, -1));
+    paintArrow(downBtn, turnNavTarget(stops, top, 1));
+  }
+
+  let queued = false;
+  function scheduleRefresh() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; refresh(); });
+  }
+
+  function jump(dir) {
+    lastItems = items();
+    const stops = turnNavStops(lastItems, mode);
+    const target = turnNavTarget(stops, messagesEl.scrollTop, dir);
+    if (!target) return;
+    messagesEl.scrollTo({ top: Math.max(0, target.top - 8), behavior: 'smooth' });
+    const hit = lastItems.find(it => it.top === target.top);
+    if (hit) {
+      const cls = 'turn-nav-hit-' + target.kind;
+      hit.el.classList.add(cls);
+      setTimeout(() => hit.el.classList.remove(cls), 900);
+    }
+  }
+
+  upBtn.addEventListener('click', () => jump(-1));
+  downBtn.addEventListener('click', () => jump(1));
+  modeBtn.addEventListener('click', () => {
+    mode = turnNavNextMode(mode);
+    localStorage.setItem('acp-turn-nav', mode);
+    paintMode();
+    refresh();
+  });
+  messagesEl.addEventListener('scroll', scheduleRefresh, { passive: true });
+  new MutationObserver(scheduleRefresh).observe(messagesEl, { childList: true, subtree: true });
+  paintMode();
+  refresh();
+})();
+
 // Keep the scroll-to-bottom button floating just above the composer,
 // whatever height it currently has (safe-area, grown textarea,
 // attachment chips) instead of a hardcoded offset that overlaps.
@@ -4460,6 +4618,7 @@ document.getElementById('spawn-btn').addEventListener('click', spawnAgent);
     const h = inputAreaEl.offsetHeight
       + (attachRow.classList.contains('has-items') ? attachRow.offsetHeight : 0);
     scrollBtn.style.bottom = (h + 14) + 'px';
+    document.getElementById('turn-nav').style.bottom = (h + 14 + 44 + 10) + 'px';
   };
   new ResizeObserver(place).observe(inputAreaEl);
   new ResizeObserver(place).observe(attachRow);

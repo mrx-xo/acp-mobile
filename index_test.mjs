@@ -244,3 +244,85 @@ test('an older transcript response cannot overwrite a newer transcript', async (
     child.textContent === 'second transcript'), true);
   assert.equal(rendered.some(child => child.textContent === 'first transcript'), false);
 });
+
+// --- Turn nav: prompt/response jumping ---
+
+function loadTurnNav() {
+  const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const start = html.indexOf('// --- Turn nav: jump between prompts and responses ---');
+  const end = html.indexOf('// --- Turn nav: end ---', start);
+  assert.notEqual(start, -1, 'turn nav block should exist');
+  assert.notEqual(end, -1, 'turn nav block should have an end marker');
+  const context = { console, Math };
+  vm.createContext(context);
+  vm.runInContext(html.slice(start, end), context, {filename: 'index.html#turnnav'});
+  // Objects built inside the vm have a foreign Object prototype, which
+  // deepStrictEqual rejects; round-trip through JSON to normalise.
+  const plain = fn => (...args) => JSON.parse(JSON.stringify(fn(...args)));
+  return {
+    turnNavStops: plain(context.turnNavStops),
+    turnNavTarget: plain(context.turnNavTarget),
+    turnNavNextMode: context.turnNavNextMode,
+  };
+}
+
+const convo = [
+  {kind: 'user', top: 0},
+  {kind: 'thought', top: 100},
+  {kind: 'tool', top: 150},
+  {kind: 'agent', top: 200},
+  {kind: 'agent', top: 300},
+  {kind: 'user', top: 400},
+  {kind: 'agent', top: 500},
+  {kind: 'system', top: 600},
+];
+
+test('prompt mode stops on every user message', () => {
+  const {turnNavStops} = loadTurnNav();
+  assert.deepEqual(turnNavStops(convo, 'prompt'), [
+    {kind: 'prompt', top: 0}, {kind: 'prompt', top: 400},
+  ]);
+});
+
+test('response mode stops once per agent turn, at its first agent-side block', () => {
+  const {turnNavStops} = loadTurnNav();
+  assert.deepEqual(turnNavStops(convo, 'response'), [
+    {kind: 'response', top: 100}, {kind: 'response', top: 500},
+  ]);
+});
+
+test('a conversation that opens with the agent counts that as a response', () => {
+  const {turnNavStops} = loadTurnNav();
+  assert.deepEqual(turnNavStops([{kind: 'agent', top: 0}, {kind: 'user', top: 50}], 'response'),
+    [{kind: 'response', top: 0}]);
+});
+
+test('alternate mode interleaves prompts and responses in document order', () => {
+  const {turnNavStops} = loadTurnNav();
+  assert.deepEqual(turnNavStops(convo, 'alternate').map(s => s.kind + '@' + s.top),
+    ['prompt@0', 'response@100', 'prompt@400', 'response@500']);
+});
+
+test('down picks the nearest stop below the viewport top, ignoring the one under it', () => {
+  const {turnNavStops, turnNavTarget} = loadTurnNav();
+  const stops = turnNavStops(convo, 'alternate');
+  assert.deepEqual(turnNavTarget(stops, 100, 1), {kind: 'prompt', top: 400});
+  assert.deepEqual(turnNavTarget(stops, 104, 1), {kind: 'prompt', top: 400});
+  assert.deepEqual(turnNavTarget(stops, 500, 1), null);
+});
+
+test('up picks the nearest stop above the viewport top, ignoring the one under it', () => {
+  const {turnNavStops, turnNavTarget} = loadTurnNav();
+  const stops = turnNavStops(convo, 'alternate');
+  assert.deepEqual(turnNavTarget(stops, 400, -1), {kind: 'response', top: 100});
+  assert.deepEqual(turnNavTarget(stops, 396, -1), {kind: 'response', top: 100});
+  assert.deepEqual(turnNavTarget(stops, 0, -1), null);
+});
+
+test('mode cycles prompt, response, alternate, prompt', () => {
+  const {turnNavNextMode} = loadTurnNav();
+  assert.equal(turnNavNextMode('prompt'), 'response');
+  assert.equal(turnNavNextMode('response'), 'alternate');
+  assert.equal(turnNavNextMode('alternate'), 'prompt');
+  assert.equal(turnNavNextMode('garbage'), 'prompt');
+});
