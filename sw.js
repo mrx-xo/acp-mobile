@@ -3,25 +3,6 @@
 // id changes, and an offline cache would defeat that.
 'use strict';
 
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
-
-self.addEventListener('push', (event) => {
-  let data = {};
-  try { data = event.data ? event.data.json() : {}; } catch (e) { data = { body: event.data && event.data.text() }; }
-  const title = data.title || data.bufferName || 'agent-shell';
-  event.waitUntil(self.registration.showNotification(title, {
-    body: data.body || '',
-    tag: data.tag || data.bufferName || undefined,
-    data: { bufferName: data.bufferName || '' },
-  }));
-});
-
-// Tap: record the target durably first, then hand it to an open window or
-// open one.  iOS freezes/evicts a backgrounded home-screen app and reloads
-// it on focus, so a postMessage to the old page is lost and openWindow's
-// URL is not always honored.  The page reads and clears the pending
-// target on every load and resume (see consumePendingSession).
 function trace(event, detail) {
   try {
     return fetch('/api/push-trace', { method: 'POST', credentials: 'include',
@@ -29,6 +10,35 @@ function trace(event, detail) {
       body: JSON.stringify({ event: 'sw:' + event, detail: String(detail || '') }) }).catch(() => {});
   } catch (e) { return Promise.resolve(); }
 }
+
+const SW_VERSION = 'trace-2';
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => event.waitUntil((async () => {
+  await self.clients.claim();
+  await trace('activate', SW_VERSION);
+})()));
+
+self.addEventListener('push', (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (e) { data = { body: event.data && event.data.text() }; }
+  const title = data.title || data.bufferName || 'agent-shell';
+  event.waitUntil((async () => {
+    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    await trace('push', SW_VERSION + ' ' + (data.bufferName || '') + ' windows=' + wins.length + ' ' +
+      wins.map((w) => (w.visibilityState || '?') + (w.focused ? ' focused' : '')).join(','));
+    await self.registration.showNotification(title, {
+      body: data.body || '',
+      tag: data.tag || data.bufferName || undefined,
+      data: { bufferName: data.bufferName || '' },
+    });
+  })());
+});
+
+// Tap: record the target durably first, then hand it to an open window or
+// open one.  iOS freezes/evicts a backgrounded home-screen app and reloads
+// it on focus, so a postMessage to the old page is lost and openWindow's
+// URL is not always honored.  The page reads and clears the pending
+// target on every load and resume (see consumePendingSession).
 const PENDING_CACHE = 'acp-pending';
 const PENDING_KEY = '/pending-session';
 async function rememberPendingSession(bufferName) {
