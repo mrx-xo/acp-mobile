@@ -4588,8 +4588,24 @@ if ('serviceWorker' in navigator) {
   fetchPushKey().catch(() => {});
   navigator.serviceWorker.addEventListener('message', (e) => {
     const m = e.data || {};
-    if (m.type === 'open-session') openSessionByName(m.bufferName);
+    if (m.type === 'open-session') openSessionFromPush(m.bufferName);
   });
+  // Spec: worker messages queue until the page opts in.
+  if (navigator.serviceWorker.startMessages) navigator.serviceWorker.startMessages();
+}
+// Same signal over a BroadcastChannel: reaches this page even when the
+// worker's clients.matchAll() misses it (seen on iOS with the app open).
+if ('BroadcastChannel' in window) {
+  new BroadcastChannel('acp-push').onmessage = (e) => {
+    const m = e.data || {};
+    if (m.type === 'open-session') openSessionFromPush(m.bufferName);
+  };
+}
+// A tap handled live must also clear the durable copy, or the next
+// resume would replay it.
+async function openSessionFromPush(name) {
+  try { const c = await caches.open('acp-pending'); await c.delete('/pending-session'); } catch (e) {}
+  openSessionByName(name);
 }
 // A push tap leaves its target in the Cache API (sw.js) because the
 // postMessage path dies whenever iOS reloaded the app on focus.  Read and

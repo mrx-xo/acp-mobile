@@ -36,6 +36,9 @@ self.addEventListener('notificationclick', (event) => {
   const bufferName = (event.notification.data && event.notification.data.bufferName) || '';
   event.waitUntil((async () => {
     await rememberPendingSession(bufferName);
+    // Second channel to an open page that does not depend on matchAll
+    // finding the window (iOS is not reliable there).
+    try { new BroadcastChannel('acp-push').postMessage({ type: 'open-session', bufferName }); } catch (e) {}
     const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     if (wins.length) {
       const win = wins[0];
