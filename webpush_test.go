@@ -458,3 +458,72 @@ func TestLinkURLPrefersHTTPSServe(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestPushInboxReturnsOnlyEntriesAfterSince(t *testing.T) {
+	resetPushInbox()
+	recordPush("a", "A", "Finished", 1000)
+	recordPush("b", "B", "Permission: rm", 2000)
+	recordPush("c", "C", "Finished", 3000)
+	w := httptest.NewRecorder()
+	handlePushInbox(w, httptest.NewRequest(http.MethodPost, "/api/push-inbox", strings.NewReader(`{"since":2000}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Now     int64 `json:"now"`
+		Entries []struct {
+			BufferName string `json:"bufferName"`
+			Title      string `json:"title"`
+			Message    string `json:"message"`
+			At         int64  `json:"at"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Entries) != 1 || resp.Entries[0].BufferName != "c" || resp.Entries[0].At != 3000 {
+		t.Fatalf("entries = %+v", resp.Entries)
+	}
+	if resp.Now <= 0 {
+		t.Fatalf("now missing: %s", w.Body)
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("Cache-Control = %q", cc)
+	}
+}
+
+func TestPushInboxIsBounded(t *testing.T) {
+	resetPushInbox()
+	for i := 0; i < pushInboxMax+10; i++ {
+		recordPush("b", "B", "m", int64(i+1))
+	}
+	w := httptest.NewRecorder()
+	handlePushInbox(w, httptest.NewRequest(http.MethodPost, "/api/push-inbox", strings.NewReader(`{"since":0}`)))
+	var resp struct {
+		Entries []json.RawMessage `json:"entries"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Entries) != pushInboxMax {
+		t.Fatalf("got %d entries, want %d", len(resp.Entries), pushInboxMax)
+	}
+}
+
+func TestHandleNotifyRecordsInboxEntryEvenWithoutSubscriptions(t *testing.T) {
+	isolatedHome(t)
+	resetPushInbox()
+	if _, err := loadOrCreateVAPID(); err != nil {
+		t.Fatal(err)
+	}
+	useFakeSend(t)
+	w := httptest.NewRecorder()
+	handleNotify(w, httptest.NewRequest(http.MethodPost, "/api/notify",
+		strings.NewReader(`{"bufferName":"Claude Agent @ x","title":"x","message":"Finished"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body)
+	}
+	w = httptest.NewRecorder()
+	handlePushInbox(w, httptest.NewRequest(http.MethodPost, "/api/push-inbox", strings.NewReader(`{"since":0}`)))
+	if !strings.Contains(w.Body.String(), `"bufferName":"Claude Agent @ x"`) {
+		t.Fatalf("inbox missing the notify entry: %s", w.Body)
+	}
+}

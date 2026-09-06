@@ -322,6 +322,7 @@ func main() {
 	mux.HandleFunc("/api/push-subscribe", handlePushSubscribe)
 	mux.HandleFunc("/api/notify", handleNotify)
 	mux.HandleFunc("/api/push-trace", handlePushTrace)
+	mux.HandleFunc("/api/push-inbox", handlePushInbox)
 	mux.HandleFunc("/sw.js", handleServiceWorker)
 	mux.HandleFunc("/manifest.webmanifest", handleManifest)
 	mux.HandleFunc("/api/preview", handlePreview)

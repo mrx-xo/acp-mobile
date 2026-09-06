@@ -11,7 +11,7 @@ function trace(event, detail) {
   } catch (e) { return Promise.resolve(); }
 }
 
-const SW_VERSION = 'trace-3';
+const SW_VERSION = 'push-2';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil((async () => {
   await self.clients.claim();
@@ -26,12 +26,6 @@ self.addEventListener('push', (event) => {
     const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     await trace('push', SW_VERSION + ' ' + (data.bufferName || '') + ' windows=' + wins.length + ' ' +
       wins.map((w) => (w.visibilityState || '?') + (w.focused ? ' focused' : '')).join(','));
-    // Probes: can the page hear the worker at all on this platform?
-    try { new BroadcastChannel('acp-push').postMessage({ type: 'push-arrived', bufferName: data.bufferName || '' }); } catch (e) {}
-    try {
-      const c = await caches.open(PENDING_CACHE);
-      await c.put('/last-push', new Response(data.bufferName || '', { headers: { 'Content-Type': 'text/plain' } }));
-    } catch (e) {}
     await self.registration.showNotification(title, {
       body: data.body || '',
       tag: data.tag || data.bufferName || undefined,
@@ -60,12 +54,8 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil((async () => {
     await trace('notificationclick', bufferName);
     await rememberPendingSession(bufferName);
-    // Second channel to an open page that does not depend on matchAll
-    // finding the window (iOS is not reliable there).
-    let bc = 'ok';
-    try { new BroadcastChannel('acp-push').postMessage({ type: 'open-session', bufferName }); } catch (e) { bc = 'error ' + e; }
     const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    await trace('clients', wins.length + ' window(s), broadcast ' + bc + ' ' +
+    await trace('clients', wins.length + ' window(s) ' +
       wins.map((w) => (w.visibilityState || '?') + (w.focused ? ' focused' : '')).join(','));
     if (wins.length) {
       const win = wins[0];

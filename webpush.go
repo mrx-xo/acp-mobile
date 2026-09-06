@@ -279,6 +279,7 @@ func handleNotify(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Title) == "" {
 		req.Title = req.BufferName
 	}
+	recordPush(req.BufferName, req.Title, req.Message, time.Now().UnixMilli())
 	sent, dropped, err := notifyAll(r.Context(), req.Title, req.Message, req.BufferName)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
@@ -447,4 +448,68 @@ func handlePushTrace(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("push-trace: %s %s", req.Event, req.Detail)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Foreground pushes.  On iOS a home-screen web app that is already open
+// never hears about a push from its own worker: clients.matchAll() is
+// empty, BroadcastChannel does not cross, a live page reads stale Cache
+// API state, and notificationclick does not fire while the app is in
+// front (all traced 2026-09-06).  The server remembers what it sent and
+// the page polls this while visible to show an in-app banner instead.
+const pushInboxMax = 50
+
+type pushEntry struct {
+	BufferName string `json:"bufferName"`
+	Title      string `json:"title"`
+	Message    string `json:"message"`
+	At         int64  `json:"at"` // unix milliseconds
+}
+
+var pushInbox struct {
+	mu      sync.Mutex
+	entries []pushEntry
+}
+
+func resetPushInbox() {
+	pushInbox.mu.Lock()
+	pushInbox.entries = nil
+	pushInbox.mu.Unlock()
+}
+
+func recordPush(bufferName, title, message string, at int64) {
+	pushInbox.mu.Lock()
+	defer pushInbox.mu.Unlock()
+	pushInbox.entries = append(pushInbox.entries, pushEntry{bufferName, title, message, at})
+	if n := len(pushInbox.entries); n > pushInboxMax {
+		pushInbox.entries = pushInbox.entries[n-pushInboxMax:]
+	}
+}
+
+// POST /api/push-inbox {since} -> {now, entries} with entries after SINCE
+// (unix ms).  The page passes the previous response's now.
+func handlePushInbox(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Since int64 `json:"since"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&req)
+	}
+	pushInbox.mu.Lock()
+	entries := []pushEntry{}
+	for _, e := range pushInbox.entries {
+		if e.At > req.Since {
+			entries = append(entries, e)
+		}
+	}
+	pushInbox.mu.Unlock()
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"now":     time.Now().UnixMilli(),
+		"entries": entries,
+	})
 }

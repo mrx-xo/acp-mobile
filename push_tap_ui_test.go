@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // A push tap must land on the tapped chat even when iOS reloaded the
@@ -42,6 +43,7 @@ func newPushTapServer(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/api/statuses", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"statuses": map[string]string{}, "version": buildID})
 	})
+	mux.HandleFunc("/api/push-inbox", handlePushInbox)
 	return httptest.NewServer(mux)
 }
 
@@ -91,21 +93,35 @@ func TestPushTapServiceWorkerMessageOpensChatWhileOpen(t *testing.T) {
 }
 
 // App already in the foreground (user on the Orrery or in another chat)
-// when the banner is tapped: no load, no resume event, and on iOS the
-// worker's clients.matchAll() may miss the window.  The worker also
-// broadcasts the target; the page must act on it and clear the durable
-// copy so the next resume does not replay it.
-func TestPushTapBroadcastOpensChatWhileForeground(t *testing.T) {
+// when a push about another chat goes out: iOS gives the page no way to
+// hear its worker and no notificationclick, so the page polls the
+// server's inbox while visible and shows an in-app banner whose tap
+// opens that chat.
+func TestForegroundPushShowsBannerAndTapOpensChat(t *testing.T) {
+	resetPushInbox()
 	server := newPushTapServer(t)
 	defer server.Close()
 	page := openChromePage(t, server.URL)
-	page.waitFor(t, `typeof openSessionByName === 'function' && lastSessions.length === 1`)
-	page.eval(t, `(async () => {
-		const c = await caches.open('acp-pending');
-		await c.put('/pending-session', new Response('Claude Agent @ tap-test'));
-		new BroadcastChannel('acp-push').postMessage({ type: 'open-session', bufferName: 'Claude Agent @ tap-test' });
-		return true;
-	})()`)
+	page.waitFor(t, `typeof pollPushInbox === 'function' && lastSessions.length === 1 && pushInboxSince > 0`)
+	recordPush("Claude Agent @ tap-test", "tap-test", "Finished", time.Now().UnixMilli())
+	page.eval(t, `pollPushInbox().then(() => true)`)
+	page.waitFor(t, `document.getElementById('push-toast').classList.contains('visible') && document.getElementById('pt-title').textContent === 'tap-test'`)
+	page.eval(t, `(document.getElementById('push-toast').click(), true)`)
 	page.waitFor(t, `document.getElementById('chat-view').classList.contains('visible') && currentBufferName === 'Claude Agent @ tap-test'`)
-	page.waitFor(t, `(async () => !(await (await caches.open('acp-pending')).match('/pending-session')))()`)
+	page.waitFor(t, `!document.getElementById('push-toast').classList.contains('shown')`)
+}
+
+func TestForegroundPushAboutCurrentChatShowsNoBanner(t *testing.T) {
+	resetPushInbox()
+	server := newPushTapServer(t)
+	defer server.Close()
+	page := openChromePage(t, server.URL)
+	page.waitFor(t, `typeof pollPushInbox === 'function' && lastSessions.length === 1 && pushInboxSince > 0`)
+	page.eval(t, `(openSessionByName('Claude Agent @ tap-test'), true)`)
+	page.waitFor(t, `currentBufferName === 'Claude Agent @ tap-test'`)
+	recordPush("Claude Agent @ tap-test", "tap-test", "Finished", time.Now().UnixMilli())
+	page.eval(t, `pollPushInbox().then(() => true)`)
+	if shown, _ := page.eval(t, `document.getElementById('push-toast').classList.contains('visible')`).(bool); shown {
+		t.Fatal("banner must not show for the chat already on screen")
+	}
 }

@@ -246,6 +246,28 @@ body {
 }
 #header .header-title.labeled { color: var(--orange); }
 #header .header-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* In-app push banner: a push about another chat while this app is in
+   front.  iOS never tells the page about a tap on the system banner in
+   that state, so this is the tap target.  Same bar language as the
+   header: surface bg, orange title, dim message. */
+#push-toast {
+  position: fixed; left: 12px; right: 12px; z-index: 60;
+  top: calc(8px + env(safe-area-inset-top));
+  display: none; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--bg0); border: 1px solid var(--bg2);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+  font-family: var(--mono); cursor: pointer;
+  transform: translateY(-8px); opacity: 0;
+  transition: transform 180ms ease-out, opacity 180ms ease-out;
+}
+#push-toast.visible { display: flex; }
+#push-toast.shown { transform: translateY(0); opacity: 1; }
+#push-toast svg { width: 16px; height: 16px; flex-shrink: 0; fill: var(--orange); stroke: var(--orange); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#push-toast .pt-text { flex: 1; min-width: 0; }
+#push-toast .pt-title { color: var(--orange); font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#push-toast .pt-msg { color: var(--fg-dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#push-toast .pt-close { color: var(--fg-mute); background: none; border: none; font-size: 18px; padding: 2px 6px; font-family: var(--mono); }
 /* Phone push bell: outline + muted when off, filled orange when on.
    Toggles agent-shell-push-mode on the rig via /api/push. */
 #header .bell-btn {
@@ -1293,6 +1315,7 @@ input, textarea, #fbv-content, .msg, .msg * {
     <path fill="url(#provider-gemini-gradient)" d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"/>
   </symbol>
 </svg>
+<div id="push-toast" role="status" aria-live="polite"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><div class="pt-text"><div class="pt-title" id="pt-title"></div><div class="pt-msg" id="pt-msg"></div></div><button class="pt-close" id="pt-close" aria-label="Dismiss">×</button></div>
 <div id="orrery">
   <div id="nav-header">
     <span class="nav-title" id="nav-title"><span id="nav-title-text">Orrery</span><span class="nav-mode" id="nav-mode-text">Sessions</span><svg class="nav-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
@@ -4764,29 +4787,62 @@ if ('serviceWorker' in navigator) {
   // Spec: worker messages queue until the page opts in.
   if (navigator.serviceWorker.startMessages) navigator.serviceWorker.startMessages();
 }
-// Same signal over a BroadcastChannel: reaches this page even when the
-// worker's clients.matchAll() misses it (seen on iOS with the app open).
-if ('BroadcastChannel' in window) {
-  new BroadcastChannel('acp-push').onmessage = (e) => {
-    const m = e.data || {};
-    if (m.type === 'open-session') openSessionFromPush(m.bufferName, 'broadcast');
-    if (m.type === 'push-arrived') pushTrace('page:push-broadcast', m.bufferName + ' visibility=' + document.visibilityState);
-  };
+// Foreground pushes.  With the app already in front, iOS never lets the
+// page hear its own worker (no window clients, no BroadcastChannel, stale
+// Cache API reads, no notificationclick), so the server keeps what it
+// sent and the page asks while visible.  Pushes about other chats show
+// an in-app banner; tapping it opens that chat.
+const pushToast = document.getElementById('push-toast');
+const pushToastTitle = document.getElementById('pt-title');
+const pushToastMsg = document.getElementById('pt-msg');
+let pushToastTimer = null;
+let pushToastTarget = null;
+function hidePushToast() {
+  clearTimeout(pushToastTimer);
+  pushToast.classList.remove('shown');
+  pushToastTimer = setTimeout(() => pushToast.classList.remove('visible'), 200);
+  pushToastTarget = null;
 }
-// Probe: does the page see the worker's Cache API writes?
-let probeTicks = 0;
-setInterval(async () => {
-  if (document.visibilityState !== 'visible' || !('caches' in window)) return;
-  if (++probeTicks % 5 === 0) pushTrace('page:alive', 'tick ' + probeTicks + ' standalone=' + navigator.standalone);
+function showPushToast(entry) {
+  clearTimeout(pushToastTimer);
+  pushToastTarget = entry.bufferName;
+  pushToastTitle.textContent = entry.title || entry.bufferName;
+  pushToastMsg.textContent = entry.message || '';
+  pushToast.classList.add('visible');
+  // Next frame so the transition runs; skip if it was dismissed meanwhile.
+  requestAnimationFrame(() => { if (pushToastTarget) pushToast.classList.add('shown'); });
+  pushToastTimer = setTimeout(hidePushToast, 8000);
+}
+pushToast.addEventListener('click', (e) => {
+  if (e.target.closest('.pt-close')) { hidePushToast(); return; }
+  const name = pushToastTarget;
+  hidePushToast();
+  if (name) openSessionByName(name);
+});
+let pushInboxSince = 0;
+let pushInboxBusy = false;
+async function pollPushInbox() {
+  if (pushInboxBusy || document.visibilityState !== 'visible') return;
+  pushInboxBusy = true;
   try {
-    const c = await caches.open('acp-pending');
-    const r = await c.match('/last-push');
-    if (!r) return;
-    const name = await r.text();
-    await c.delete('/last-push');
-    pushTrace('page:push-cache', name);
-  } catch (e) {}
-}, 2000);
+    const resp = await fetch(basePath + '/api/push-inbox', {
+      method: 'POST', cache: 'no-store',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ since: pushInboxSince })
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const first = pushInboxSince === 0;
+    pushInboxSince = data.now || pushInboxSince;
+    if (first) return;   // nothing from before this page existed
+    const entries = (data.entries || []).filter(e => e.bufferName && e.bufferName !== currentBufferName);
+    if (entries.length) showPushToast(entries[entries.length - 1]);
+  } catch (err) {
+  } finally { pushInboxBusy = false; }
+}
+pollPushInbox();
+setInterval(pollPushInbox, 3000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pollPushInbox(); });
 // A tap handled live must also clear the durable copy, or the next
 // resume would replay it.
 async function openSessionFromPush(name, via) {
