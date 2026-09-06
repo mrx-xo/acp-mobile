@@ -705,6 +705,7 @@ body {
   font-family: var(--mono); user-select: none; -webkit-user-select: none;
 }
 #turn-nav.visible { display: flex; }
+#turn-nav.over-history { z-index: 129; }
 #turn-nav button {
   background: none; border: none; padding: 2px 12px; cursor: pointer;
   color: var(--fg-mute); font-size: 26px; font-weight: 700; line-height: 1;
@@ -718,11 +719,11 @@ body {
 #turn-nav-mode { font-size: 13px; letter-spacing: 1px; padding: 4px 12px; }
 #turn-nav-mode.alternate { color: var(--orange); }
 #turn-nav-mode.alternate span { color: var(--aqua); }
-.msg.turn-nav-hit-prompt, .msg.turn-nav-hit-response {
+:is(.msg, .pv-msg).turn-nav-hit-prompt, :is(.msg, .pv-msg).turn-nav-hit-response {
   transition: box-shadow 0.15s ease-out;
 }
-.msg.turn-nav-hit-prompt { box-shadow: 0 0 0 2px var(--orange), 0 0 12px var(--orange); }
-.msg.turn-nav-hit-response { box-shadow: 0 0 0 2px var(--aqua), 0 0 12px var(--aqua); }
+:is(.msg, .pv-msg).turn-nav-hit-prompt { box-shadow: 0 0 0 2px var(--orange), 0 0 12px var(--orange); }
+:is(.msg, .pv-msg).turn-nav-hit-response { box-shadow: 0 0 0 2px var(--aqua), 0 0 12px var(--aqua); }
 
 /* Swipe navigation indicator */
 #swipe-indicator {
@@ -1420,11 +1421,6 @@ input, textarea, #fbv-content, .msg, .msg * {
 <div id="swipe-indicator"></div>
 <div id="thinking"><span class="spinner" id="spinner-glyph">⠋</span><span class="label">thinking…</span></div>
 <button id="scroll-btn">&darr;</button>
-<div id="turn-nav">
-  <button id="turn-nav-up" aria-label="Previous">&uarr;</button>
-  <button id="turn-nav-mode" aria-label="Navigation mode"></button>
-  <button id="turn-nav-down" aria-label="Next">&darr;</button>
-</div>
 <div id="attach-row"></div>
 <div id="input-area">
   <button id="attach-btn" aria-label="Attach image">+</button>
@@ -1446,6 +1442,14 @@ input, textarea, #fbv-content, .msg, .msg * {
   <button id="cm-clone">Clone</button>
   <button id="cm-turn-nav">Show turn nav</button>
   <button id="cm-kill" style="color:var(--red)">Kill session</button>
+</div>
+<!-- Turn nav sits at the root: it floats over the chat AND over the
+     History overlay, and #chat-view is display:none while History is
+     open from the Orrery. -->
+<div id="turn-nav">
+  <button id="turn-nav-up" aria-label="Previous">&uarr;</button>
+  <button id="turn-nav-mode" aria-label="Navigation mode"></button>
+  <button id="turn-nav-down" aria-label="Next">&darr;</button>
 </div>
 <div id="settings">
   <div id="settings-head">
@@ -4646,18 +4650,30 @@ function turnNavPrefs(vertical, horizontal) {
     horizontal: TURN_NAV_HORIZONTAL.includes(horizontal) ? horizontal : 'right',
   };
 }
-// Inline style for the fixed cluster. Bottom keeps it above the composer
-// and the scroll-to-bottom button (14 + 44 + 10); top tucks it under the
-// chat header, which already includes the safe-area inset.
+// Inline style for the fixed cluster. layout.clear is the px of chrome to
+// stay above at the bottom (composer + scroll button in a chat, the search
+// dock in History); layout.header is the px of header at the top, which
+// already includes the safe-area inset.
 function turnNavPlacement(prefs, layout) {
   const bottom = prefs.vertical === 'bottom';
   const right = prefs.horizontal === 'right';
   return {
     top: bottom ? 'auto' : (layout.header + 12) + 'px',
-    bottom: bottom ? (layout.composer + 14 + 44 + 10) + 'px' : 'auto',
+    bottom: bottom ? layout.clear + 'px' : 'auto',
     left: right ? 'auto' : '12px',
     right: right ? '12px' : 'auto',
   };
+}
+// The nav serves two surfaces: the live chat and a History transcript.
+// A transcript is read-only browsing, so the nav comes on by itself; a
+// live chat stays uncluttered until the chat menu turns it on.
+function turnNavDefaultEnabled(surface) {
+  return surface === 'history';
+}
+// .msg (chat) and .pv-msg (transcript) share the user/system/agent split.
+function turnNavKind(classes) {
+  const has = c => Array.prototype.includes.call(classes, c);
+  return has('user') ? 'user' : has('system') ? 'system' : 'agent';
 }
 // --- Turn nav: end ---
 
@@ -4668,18 +4684,23 @@ function turnNavPlacement(prefs, layout) {
   const modeBtn = document.getElementById('turn-nav-mode');
   const stored = localStorage.getItem('acp-turn-nav');
   let mode = TURN_NAV_MODES.includes(stored) ? stored : 'prompt';
-  let enabled = false;
+  const SURFACES = {
+    chat: { scroller: messagesEl, selector: '.msg' },
+    history: { scroller: document.getElementById('history-body'), selector: '.pv-msg' },
+  };
+  let surface = 'chat';
+  const enabled = { chat: turnNavDefaultEnabled('chat'), history: turnNavDefaultEnabled('history') };
   let prefs = turnNavPrefs(localStorage.getItem('acp-turn-nav-v'),
                            localStorage.getItem('acp-turn-nav-h'));
   let lastItems = [];
+  const scroller = () => SURFACES[surface].scroller;
 
   function items() {
-    const base = messagesEl.getBoundingClientRect().top - messagesEl.scrollTop;
+    const el0 = scroller();
+    const base = el0.getBoundingClientRect().top - el0.scrollTop;
     const out = [];
-    messagesEl.querySelectorAll('.msg').forEach(el => {
-      const kind = el.classList.contains('user') ? 'user'
-        : el.classList.contains('system') ? 'system' : 'agent';
-      out.push({kind, top: Math.round(el.getBoundingClientRect().top - base), el});
+    el0.querySelectorAll(SURFACES[surface].selector).forEach(el => {
+      out.push({kind: turnNavKind(el.classList), top: Math.round(el.getBoundingClientRect().top - base), el});
     });
     return out;
   }
@@ -4699,10 +4720,11 @@ function turnNavPlacement(prefs, layout) {
   function refresh() {
     lastItems = items();
     const stops = turnNavStops(lastItems, mode);
-    const show = turnNavShouldShow(enabled, stops.length);
+    const show = turnNavShouldShow(enabled[surface], stops.length);
     navEl.classList.toggle('visible', show);
+    navEl.classList.toggle('over-history', surface === 'history');
     if (!show) return;
-    const top = messagesEl.scrollTop;
+    const top = scroller().scrollTop;
     paintArrow(upBtn, turnNavTarget(stops, top, -1));
     paintArrow(downBtn, turnNavTarget(stops, top, 1));
   }
@@ -4717,9 +4739,9 @@ function turnNavPlacement(prefs, layout) {
   function jump(dir) {
     lastItems = items();
     const stops = turnNavStops(lastItems, mode);
-    const target = turnNavTarget(stops, messagesEl.scrollTop, dir);
+    const target = turnNavTarget(stops, scroller().scrollTop, dir);
     if (!target) return;
-    messagesEl.scrollTo({ top: Math.max(0, target.top - 8), behavior: 'smooth' });
+    scroller().scrollTo({ top: Math.max(0, target.top - 8), behavior: 'smooth' });
     const hit = lastItems.find(it => it.top === target.top);
     if (hit) {
       const cls = 'turn-nav-hit-' + target.kind;
@@ -4736,13 +4758,25 @@ function turnNavPlacement(prefs, layout) {
     paintMode();
     refresh();
   });
-  messagesEl.addEventListener('scroll', scheduleRefresh, { passive: true });
-  new MutationObserver(scheduleRefresh).observe(messagesEl, { childList: true, subtree: true });
+  Object.values(SURFACES).forEach(({scroller: el}) => {
+    el.addEventListener('scroll', scheduleRefresh, { passive: true });
+    new MutationObserver(scheduleRefresh).observe(el, { childList: true, subtree: true });
+  });
   paintMode();
   refresh();
   window.turnNav = {
-    isEnabled: () => enabled,
-    setEnabled(v) { enabled = !!v; refresh(); },
+    isEnabled: () => enabled[surface],
+    setEnabled(v) { enabled[surface] = !!v; refresh(); },
+    // Switch surfaces; History re-arms itself on every open, chat keeps
+    // whatever the chat menu last chose.
+    attach(next) {
+      if (!(next in SURFACES)) return;
+      surface = next;
+      if (next === 'history') enabled.history = turnNavDefaultEnabled('history');
+      if (window.placeTurnNav) placeTurnNav();
+      refresh();
+    },
+    surface: () => surface,
     prefs: () => prefs,
     setPref(axis, value) {
       const next = Object.assign({}, prefs, {[axis]: value});
@@ -4762,17 +4796,26 @@ function turnNavPlacement(prefs, layout) {
   const inputAreaEl = document.getElementById('input-area');
   const headerEl = document.getElementById('header');
   const navEl = document.getElementById('turn-nav');
+  const histHead = document.getElementById('history-head');
+  const dock = document.getElementById('history-dock');
   const place = () => {
     const h = inputAreaEl.offsetHeight
       + (attachRow.classList.contains('has-items') ? attachRow.offsetHeight : 0);
     scrollBtn.style.bottom = (h + 14) + 'px';
-    Object.assign(navEl.style, turnNavPlacement(turnNav.prefs(),
-      {composer: h, header: headerEl.offsetHeight}));
+    let layout;
+    if (turnNav.surface() === 'history') {
+      // Clear the floating search dock (bottom offset is env()-based, so
+      // measure it) instead of a composer that is not on this surface.
+      const dockClear = dock.classList.contains('visible')
+        ? Math.max(0, window.innerHeight - dock.getBoundingClientRect().top) : 0;
+      layout = {clear: dockClear + 14, header: histHead.offsetHeight};
+    } else {
+      layout = {clear: h + 14 + 44 + 10, header: headerEl.offsetHeight};
+    }
+    Object.assign(navEl.style, turnNavPlacement(turnNav.prefs(), layout));
   };
   window.placeTurnNav = place;
-  new ResizeObserver(place).observe(inputAreaEl);
-  new ResizeObserver(place).observe(attachRow);
-  new ResizeObserver(place).observe(headerEl);
+  [inputAreaEl, attachRow, headerEl, histHead].forEach(el => new ResizeObserver(place).observe(el));
   place();
 })();
 
@@ -5387,6 +5430,8 @@ function setHistoryView(title, backFn, resetScroll = true, resumeTarget = null) 
     ? (resumeTarget.resumeReason || 'This conversation cannot be resumed.')
     : 'Resume this conversation';
   if (resetScroll) historyBody.scrollTop = 0;
+  // Only the transcript view (the one with a resume target) gets the nav.
+  if (typeof turnNav !== 'undefined') turnNav.attach(resumeTarget ? 'history' : 'chat');
 }
 
 // "2026-08-23-16-18-27" -> "Aug 23 16:18"
@@ -5684,6 +5729,7 @@ function closeHistory() {
   ++historyRequestSerial;
   historyEl.classList.remove('visible');
   historySearchInput.blur();
+  if (typeof turnNav !== 'undefined') turnNav.attach('chat');
 }
 
 document.getElementById('nav-history-btn').addEventListener('click', () => {

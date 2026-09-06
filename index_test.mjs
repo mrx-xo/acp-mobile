@@ -266,6 +266,8 @@ function loadTurnNav() {
     turnNavShouldShow: context.turnNavShouldShow,
     turnNavPrefs: plain(context.turnNavPrefs),
     turnNavPlacement: plain(context.turnNavPlacement),
+    turnNavDefaultEnabled: context.turnNavDefaultEnabled,
+    turnNavKind: context.turnNavKind,
   };
 }
 
@@ -347,9 +349,25 @@ test('turn nav prefs default to bottom-right and fall back per axis on garbage',
 
 test('turn nav placement: bottom floats above the scroll button, top hugs the chat header', () => {
   const {turnNavPlacement} = loadTurnNav();
-  const layout = {composer: 80, header: 60};
+  // clear = px of chrome to stay above at the bottom (composer + scroll
+  // button in a chat, the search dock in History); header = px at the top.
+  const layout = {clear: 148, header: 60};
   assert.deepEqual(turnNavPlacement({vertical: 'bottom', horizontal: 'right'}, layout),
     {top: 'auto', bottom: '148px', left: 'auto', right: '12px'});
   assert.deepEqual(turnNavPlacement({vertical: 'top', horizontal: 'left'}, layout),
     {top: '72px', bottom: 'auto', left: '12px', right: 'auto'});
+});
+
+test('turn nav is on by default in a History transcript, off in a live chat', () => {
+  const {turnNavDefaultEnabled} = loadTurnNav();
+  assert.equal(turnNavDefaultEnabled('history'), true);
+  assert.equal(turnNavDefaultEnabled('chat'), false);
+});
+
+test('transcript bubbles classify like chat bubbles', () => {
+  const {turnNavKind} = loadTurnNav();
+  assert.equal(turnNavKind(['pv-msg', 'user']), 'user');
+  assert.equal(turnNavKind(['pv-msg', 'agent']), 'agent');
+  assert.equal(turnNavKind(['msg', 'system']), 'system');
+  assert.equal(turnNavKind(['msg', 'tool']), 'agent');
 });
