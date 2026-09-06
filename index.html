@@ -4774,8 +4774,10 @@ if ('BroadcastChannel' in window) {
   };
 }
 // Probe: does the page see the worker's Cache API writes?
+let probeTicks = 0;
 setInterval(async () => {
   if (document.visibilityState !== 'visible' || !('caches' in window)) return;
+  if (++probeTicks % 5 === 0) pushTrace('page:alive', 'tick ' + probeTicks + ' standalone=' + navigator.standalone);
   try {
     const c = await caches.open('acp-pending');
     const r = await c.match('/last-push');
