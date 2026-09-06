@@ -4588,7 +4588,7 @@ if ('serviceWorker' in navigator) {
   fetchPushKey().catch(() => {});
   navigator.serviceWorker.addEventListener('message', (e) => {
     const m = e.data || {};
-    if (m.type === 'open-session') openSessionFromPush(m.bufferName);
+    if (m.type === 'open-session') openSessionFromPush(m.bufferName, 'worker-message');
   });
   // Spec: worker messages queue until the page opts in.
   if (navigator.serviceWorker.startMessages) navigator.serviceWorker.startMessages();
@@ -4598,14 +4598,22 @@ if ('serviceWorker' in navigator) {
 if ('BroadcastChannel' in window) {
   new BroadcastChannel('acp-push').onmessage = (e) => {
     const m = e.data || {};
-    if (m.type === 'open-session') openSessionFromPush(m.bufferName);
+    if (m.type === 'open-session') openSessionFromPush(m.bufferName, 'broadcast');
   };
 }
 // A tap handled live must also clear the durable copy, or the next
 // resume would replay it.
-async function openSessionFromPush(name) {
+async function openSessionFromPush(name, via) {
+  pushTrace('page:' + via, name);
   try { const c = await caches.open('acp-pending'); await c.delete('/pending-session'); } catch (e) {}
   openSessionByName(name);
+}
+function pushTrace(event, detail) {
+  try {
+    fetch(basePath + '/api/push-trace', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event, detail: String(detail || '') }) }).catch(() => {});
+  } catch (e) {}
 }
 // A push tap leaves its target in the Cache API (sw.js) because the
 // postMessage path dies whenever iOS reloaded the app on focus.  Read and
@@ -4620,6 +4628,7 @@ async function consumePendingSession() {
     if (!r) return;
     const name = (await r.text()).trim();
     await c.delete('/pending-session');
+    pushTrace('page:pending', name + ' visibility=' + document.visibilityState);
     if (name) await openSessionByName(name);
   } catch (e) {
   } finally { pendingSessionBusy = false; }
@@ -4632,7 +4641,7 @@ async function openSessionByName(name) {
     await loadSessions(true);
     s = lastSessions.find(x => x.bufferName === name);
   }
-  if (!s) return;
+  if (!s) { pushTrace('page:no-session', name + ' among ' + lastSessions.length); return; }
   if (currentBufferName === name && chatViewEl.classList.contains('visible')) return;
   selectSession(s);
 }

@@ -22,6 +22,13 @@ self.addEventListener('push', (event) => {
 // it on focus, so a postMessage to the old page is lost and openWindow's
 // URL is not always honored.  The page reads and clears the pending
 // target on every load and resume (see consumePendingSession).
+function trace(event, detail) {
+  try {
+    return fetch('/api/push-trace', { method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: 'sw:' + event, detail: String(detail || '') }) }).catch(() => {});
+  } catch (e) { return Promise.resolve(); }
+}
 const PENDING_CACHE = 'acp-pending';
 const PENDING_KEY = '/pending-session';
 async function rememberPendingSession(bufferName) {
@@ -35,18 +42,26 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const bufferName = (event.notification.data && event.notification.data.bufferName) || '';
   event.waitUntil((async () => {
+    await trace('notificationclick', bufferName);
     await rememberPendingSession(bufferName);
     // Second channel to an open page that does not depend on matchAll
     // finding the window (iOS is not reliable there).
-    try { new BroadcastChannel('acp-push').postMessage({ type: 'open-session', bufferName }); } catch (e) {}
+    let bc = 'ok';
+    try { new BroadcastChannel('acp-push').postMessage({ type: 'open-session', bufferName }); } catch (e) { bc = 'error ' + e; }
     const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    await trace('clients', wins.length + ' window(s), broadcast ' + bc + ' ' +
+      wins.map((w) => (w.visibilityState || '?') + (w.focused ? ' focused' : '')).join(','));
     if (wins.length) {
       const win = wins[0];
-      if ('focus' in win) { try { await win.focus(); } catch (e) {} }
+      let focus = 'ok';
+      if ('focus' in win) { try { await win.focus(); } catch (e) { focus = 'error ' + e; } }
       win.postMessage({ type: 'open-session', bufferName });
+      await trace('posted', 'focus ' + focus);
       return;
     }
     const url = bufferName ? '/?session=' + encodeURIComponent(bufferName) : '/';
-    await self.clients.openWindow(url);
+    let open = 'ok';
+    try { await self.clients.openWindow(url); } catch (e) { open = 'error ' + e; }
+    await trace('openWindow', open);
   })());
 });

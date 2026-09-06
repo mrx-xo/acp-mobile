@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -420,4 +421,30 @@ func linkURL(serveOrigin, tailnetHost, port, authKey string) string {
 	default:
 		return fmt.Sprintf("http://127.0.0.1:%s?authkey=%s", port, authKey)
 	}
+}
+
+// POST /api/push-trace {event, detail}: the phone reports push-tap steps
+// (worker and page side) so a "tap did nothing" can be read from the
+// server log instead of guessed at.  Text only, truncated, never fails.
+func handlePushTrace(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Event  string `json:"event"`
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if len(req.Event) > 64 {
+		req.Event = req.Event[:64]
+	}
+	if len(req.Detail) > 512 {
+		req.Detail = req.Detail[:512]
+	}
+	log.Printf("push-trace: %s %s", req.Event, req.Detail)
+	w.WriteHeader(http.StatusNoContent)
 }
