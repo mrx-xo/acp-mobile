@@ -264,6 +264,8 @@ function loadTurnNav() {
     turnNavTarget: plain(context.turnNavTarget),
     turnNavNextMode: context.turnNavNextMode,
     turnNavShouldShow: context.turnNavShouldShow,
+    turnNavPrefs: plain(context.turnNavPrefs),
+    turnNavPlacement: plain(context.turnNavPlacement),
   };
 }
 
@@ -333,4 +335,21 @@ test('turn nav only shows when enabled for this chat and there is somewhere to g
   assert.equal(turnNavShouldShow(false, 5), false);
   assert.equal(turnNavShouldShow(true, 1), false);
   assert.equal(turnNavShouldShow(true, 2), true);
+});
+
+test('turn nav prefs default to bottom-right and fall back per axis on garbage', () => {
+  const {turnNavPrefs} = loadTurnNav();
+  assert.deepEqual(turnNavPrefs(null, null), {vertical: 'bottom', horizontal: 'right'});
+  assert.deepEqual(turnNavPrefs('top', 'left'), {vertical: 'top', horizontal: 'left'});
+  assert.deepEqual(turnNavPrefs('sideways', 'left'), {vertical: 'bottom', horizontal: 'left'});
+  assert.deepEqual(turnNavPrefs('top', 'middle'), {vertical: 'top', horizontal: 'right'});
+});
+
+test('turn nav placement: bottom floats above the scroll button, top hugs the chat header', () => {
+  const {turnNavPlacement} = loadTurnNav();
+  const layout = {composer: 80, header: 60};
+  assert.deepEqual(turnNavPlacement({vertical: 'bottom', horizontal: 'right'}, layout),
+    {top: 'auto', bottom: '148px', left: 'auto', right: '12px'});
+  assert.deepEqual(turnNavPlacement({vertical: 'top', horizontal: 'left'}, layout),
+    {top: '72px', bottom: 'auto', left: '12px', right: 'auto'});
 });

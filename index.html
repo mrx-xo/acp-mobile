@@ -983,6 +983,53 @@ input, textarea, #fbv-content, .msg, .msg * {
 }
 #nav-pins-btn svg { display: block; }
 #nav-history-btn svg { display: block; }
+#nav-settings-btn svg { display: block; }
+/* Settings: app-wide preferences (mirrors the #pins overlay) */
+#settings {
+  position: fixed; inset: 0; z-index: 128; background: var(--bg0);
+  display: none; flex-direction: column;
+}
+#settings.visible { display: flex; }
+#settings-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+  border-bottom: 1px solid var(--bg2); flex-shrink: 0;
+}
+#settings-title {
+  flex: 1; font-size: 12px; font-family: var(--mono); color: var(--fg-mute);
+}
+#settings-close {
+  background: none; border: none; color: var(--fg);
+  font-size: 26px; line-height: 1; padding: 2px 6px 2px 10px; cursor: pointer;
+}
+#settings-body {
+  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 18px 18px calc(24px + env(safe-area-inset-bottom));
+}
+.set-section { margin-bottom: 28px; }
+.set-section h2 {
+  margin: 0 0 10px; font-size: 12px; font-weight: 700; letter-spacing: 1px;
+  text-transform: uppercase; font-family: var(--mono); color: var(--fg-mute);
+}
+.set-mute { font-size: 14px; color: var(--fg-mute); font-family: var(--mono); }
+.set-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 0; gap: 12px;
+}
+.set-row + .set-row { border-top: 1px solid var(--bg1); }
+.set-row label { font-size: 15px; color: var(--fg); }
+/* Segmented two-way toggle; the chosen half takes the orange accent */
+.seg {
+  display: inline-flex; border: 1px solid var(--bg2); border-radius: 8px;
+  overflow: hidden; flex-shrink: 0;
+}
+.seg button {
+  background: none; border: none; color: var(--fg-mute); cursor: pointer;
+  padding: 7px 14px; font-size: 13px; font-family: var(--mono);
+  -webkit-tap-highlight-color: transparent;
+}
+.seg button + button { border-left: 1px solid var(--bg2); }
+.seg button.on { background: var(--bg1); color: var(--orange); }
 /* History: browse agent-recall transcripts (mirrors the #pins overlay) */
 #history {
   position: fixed; inset: 0; z-index: 128; background: var(--bg0);
@@ -1322,6 +1369,7 @@ input, textarea, #fbv-content, .msg, .msg * {
     <span id="nav-spin"></span>
     <button class="nav-btn" id="nav-history-btn" aria-label="Chat history"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button>
     <button class="nav-btn" id="nav-pins-btn" aria-label="Pinned messages"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg></button>
+    <button class="nav-btn" id="nav-settings-btn" aria-label="Settings"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
   </div>
   <div id="ptr">↻</div>
   <div id="nav-list"></div>
@@ -1398,6 +1446,35 @@ input, textarea, #fbv-content, .msg, .msg * {
   <button id="cm-clone">Clone</button>
   <button id="cm-turn-nav">Show turn nav</button>
   <button id="cm-kill" style="color:var(--red)">Kill session</button>
+</div>
+<div id="settings">
+  <div id="settings-head">
+    <span id="settings-title">Settings</span>
+    <button id="settings-close" aria-label="Close">&times;</button>
+  </div>
+  <div id="settings-body">
+    <section class="set-section">
+      <h2>Theme</h2>
+      <div class="set-mute">Not yet.</div>
+    </section>
+    <section class="set-section">
+      <h2>Turn nav</h2>
+      <div class="set-row">
+        <label>Vertical</label>
+        <div class="seg" data-pref="vertical">
+          <button type="button" data-val="top">Top</button>
+          <button type="button" data-val="bottom">Bottom</button>
+        </div>
+      </div>
+      <div class="set-row">
+        <label>Horizontal</label>
+        <div class="seg" data-pref="horizontal">
+          <button type="button" data-val="left">Left</button>
+          <button type="button" data-val="right">Right</button>
+        </div>
+      </div>
+    </section>
+  </div>
 </div>
 <div id="history">
   <div id="history-head">
@@ -4559,6 +4636,29 @@ function turnNavTarget(stops, viewportTop, dir, slack) {
 function turnNavShouldShow(enabled, stopCount) {
   return !!enabled && stopCount >= 2;
 }
+// Where the arrows sit, chosen on the Settings page. Each axis falls back
+// on its own so one bad stored value cannot drag the other to default.
+const TURN_NAV_VERTICAL = ['top', 'bottom'];
+const TURN_NAV_HORIZONTAL = ['left', 'right'];
+function turnNavPrefs(vertical, horizontal) {
+  return {
+    vertical: TURN_NAV_VERTICAL.includes(vertical) ? vertical : 'bottom',
+    horizontal: TURN_NAV_HORIZONTAL.includes(horizontal) ? horizontal : 'right',
+  };
+}
+// Inline style for the fixed cluster. Bottom keeps it above the composer
+// and the scroll-to-bottom button (14 + 44 + 10); top tucks it under the
+// chat header, which already includes the safe-area inset.
+function turnNavPlacement(prefs, layout) {
+  const bottom = prefs.vertical === 'bottom';
+  const right = prefs.horizontal === 'right';
+  return {
+    top: bottom ? 'auto' : (layout.header + 12) + 'px',
+    bottom: bottom ? (layout.composer + 14 + 44 + 10) + 'px' : 'auto',
+    left: right ? 'auto' : '12px',
+    right: right ? '12px' : 'auto',
+  };
+}
 // --- Turn nav: end ---
 
 (function () {
@@ -4569,6 +4669,8 @@ function turnNavShouldShow(enabled, stopCount) {
   const stored = localStorage.getItem('acp-turn-nav');
   let mode = TURN_NAV_MODES.includes(stored) ? stored : 'prompt';
   let enabled = false;
+  let prefs = turnNavPrefs(localStorage.getItem('acp-turn-nav-v'),
+                           localStorage.getItem('acp-turn-nav-h'));
   let lastItems = [];
 
   function items() {
@@ -4641,22 +4743,36 @@ function turnNavShouldShow(enabled, stopCount) {
   window.turnNav = {
     isEnabled: () => enabled,
     setEnabled(v) { enabled = !!v; refresh(); },
+    prefs: () => prefs,
+    setPref(axis, value) {
+      const next = Object.assign({}, prefs, {[axis]: value});
+      prefs = turnNavPrefs(next.vertical, next.horizontal);
+      localStorage.setItem('acp-turn-nav-v', prefs.vertical);
+      localStorage.setItem('acp-turn-nav-h', prefs.horizontal);
+      if (window.placeTurnNav) placeTurnNav();
+    },
   };
 })();
 
 // Keep the scroll-to-bottom button floating just above the composer,
 // whatever height it currently has (safe-area, grown textarea,
-// attachment chips) instead of a hardcoded offset that overlaps.
+// attachment chips) instead of a hardcoded offset that overlaps. The turn
+// nav follows the corner chosen in Settings.
 (function () {
   const inputAreaEl = document.getElementById('input-area');
+  const headerEl = document.getElementById('header');
+  const navEl = document.getElementById('turn-nav');
   const place = () => {
     const h = inputAreaEl.offsetHeight
       + (attachRow.classList.contains('has-items') ? attachRow.offsetHeight : 0);
     scrollBtn.style.bottom = (h + 14) + 'px';
-    document.getElementById('turn-nav').style.bottom = (h + 14 + 44 + 10) + 'px';
+    Object.assign(navEl.style, turnNavPlacement(turnNav.prefs(),
+      {composer: h, header: headerEl.offsetHeight}));
   };
+  window.placeTurnNav = place;
   new ResizeObserver(place).observe(inputAreaEl);
   new ResizeObserver(place).observe(attachRow);
+  new ResizeObserver(place).observe(headerEl);
   place();
 })();
 
@@ -5068,6 +5184,7 @@ document.getElementById('mm-copy').addEventListener('click', () => {
 // stored in localStorage as the rendered bubble HTML so the pin
 // survives replays/reloads without needing a stable message id ---
 const pinsEl = document.getElementById('pins');
+const settingsEl = document.getElementById('settings');
 const pinsBody = document.getElementById('pins-body');
 
 function pinsKey() {
@@ -5254,7 +5371,7 @@ let historyRootState = {
 function syncHistoryDock() {
   const hidden = orreryEl.classList.contains('hidden') ||
     pinsEl.classList.contains('visible') || spSheet.classList.contains('visible') ||
-    pvSheet.classList.contains('visible');
+    pvSheet.classList.contains('visible') || settingsEl.classList.contains('visible');
   historyDock.classList.toggle('visible', !hidden);
 }
 
@@ -5614,6 +5731,30 @@ document.getElementById('pins-close').addEventListener('click', () => {
   pinsEl.classList.remove('visible');
   syncHistoryDock();
 });
+// --- Settings overlay ---
+function paintSettings() {
+  const prefs = turnNav.prefs();
+  settingsEl.querySelectorAll('.seg').forEach(seg => {
+    const cur = prefs[seg.dataset.pref];
+    seg.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.val === cur));
+  });
+}
+function closeSettings() {
+  settingsEl.classList.remove('visible');
+  syncHistoryDock();
+}
+document.getElementById('nav-settings-btn').addEventListener('click', () => {
+  paintSettings();
+  settingsEl.classList.add('visible');
+  syncHistoryDock();
+});
+document.getElementById('settings-close').addEventListener('click', closeSettings);
+settingsEl.querySelectorAll('.seg button').forEach(b => {
+  b.addEventListener('click', () => {
+    turnNav.setPref(b.closest('.seg').dataset.pref, b.dataset.val);
+    paintSettings();
+  });
+});
 mmPin.addEventListener('click', () => {
   if (mmTarget) togglePin(mmTarget);
   closeMsgMenu();
@@ -5638,6 +5779,7 @@ document.addEventListener('keydown', (e) => {
   if (readerEl.classList.contains('visible')) closeReader();
   else if (msgMenu.classList.contains('visible')) closeMsgMenu();
   else if (chatMenu.classList.contains('visible')) closeChatMenu();
+  else if (settingsEl.classList.contains('visible')) closeSettings();
   else if (pinsEl.classList.contains('visible')) {
     pinsEl.classList.remove('visible');
     syncHistoryDock();
