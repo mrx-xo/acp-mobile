@@ -1707,39 +1707,14 @@ func handleLabel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	esc := func(v string) string {
-		v = strings.ReplaceAll(v, `\`, `\\`)
-		return strings.ReplaceAll(v, `"`, `\"`)
-	}
-	expr := fmt.Sprintf(`(mr-x/agent-label-set "%s" "%s")`, esc(req.BufferName), esc(req.Label))
-
-	out, err := evalEmacs("emacsclient", "--eval", expr)
-	if err != nil {
-		log.Printf("label: %v: %s", err, out)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": strings.TrimSpace(string(out))})
-		return
-	}
-	if strings.TrimSpace(string(out)) == "nil" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "no such buffer"})
+	_, err := callElisp(r.Context(), "mr-x/agent-label-set",
+		elispStr(req.BufferName), elispStr(req.Label))
+	if writeElispError(w, "label", err, "no such buffer") {
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-}
-
-// pushExpr builds the Lisp call that arms/disarms phone push for a buffer.
-func pushExpr(bufferName string, enabled bool) string {
-	esc := strings.ReplaceAll(strings.ReplaceAll(bufferName, `\`, `\\`), `"`, `\"`)
-	flag := "nil"
-	if enabled {
-		flag = "t"
-	}
-	return fmt.Sprintf(`(agent-shell-push-set "%s" %s)`, esc, flag)
 }
 
 // handlePush arms/disarms phone push for a convo via the Emacs daemon —
@@ -1764,20 +1739,13 @@ func handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := evalEmacs("emacsclient", "--eval", pushExpr(req.BufferName, req.Enabled))
+	out, err := callElisp(r.Context(), "agent-shell-push-set",
+		elispStr(req.BufferName), elispBool(req.Enabled))
+	if writeElispError(w, "push", err, "no such buffer") {
+		return
+	}
+	state := strings.Trim(out, `"`)
 	w.Header().Set("Content-Type", "application/json")
-	if err != nil {
-		log.Printf("push: %v: %s", err, out)
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": strings.TrimSpace(string(out))})
-		return
-	}
-	state := strings.Trim(strings.TrimSpace(string(out)), `"`)
-	if state == "nil" {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "no such buffer"})
-		return
-	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "push": state == "on"})
 }
 
@@ -1834,25 +1802,9 @@ func handleKill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Escape for elisp string
-	escaped := strings.ReplaceAll(req.BufferName, `\`, `\\`)
-	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
-	expr := fmt.Sprintf(`(meta-agent-shell-close-session "%s")`, escaped)
-
-	out, err := evalEmacs("emacsclient", "--eval", expr)
-	if err != nil {
-		log.Printf("kill: %v: %s", err, out)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("%v: %s", err, strings.TrimSpace(string(out)))})
-		return
-	}
-
-	result := strings.TrimSpace(string(out))
-	if result == "nil" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "session not found or already closed"})
+	_, err := callElisp(r.Context(), "meta-agent-shell-close-session",
+		elispStr(req.BufferName))
+	if writeElispError(w, "kill", err, "session not found or already closed") {
 		return
 	}
 

@@ -92,12 +92,12 @@ func TestHandlePushRejectsEmptyBufferName(t *testing.T) {
 }
 
 func TestPushExprIsQuotedLispCall(t *testing.T) {
-	got := pushExpr(`Claude Agent @ "x"`, true)
+	got := elispExpr("agent-shell-push-set", elispStr(`Claude Agent @ "x"`), elispBool(true))
 	want := `(agent-shell-push-set "Claude Agent @ \"x\"" t)`
 	if got != want {
 		t.Fatalf("expr = %s, want %s", got, want)
 	}
-	if off := pushExpr("b", false); off != `(agent-shell-push-set "b" nil)` {
+	if off := elispExpr("agent-shell-push-set", elispStr("b"), elispBool(false)); off != `(agent-shell-push-set "b" nil)` {
 		t.Fatalf("off expr = %s", off)
 	}
 }
