@@ -1566,10 +1566,49 @@ func TestStandaloneViewportRestoreAfterKeyboardDismiss(t *testing.T) {
 		t.Fatalf("short standalone viewport should be poked to screen height then cleared, got %v", state)
 	}
 
+	// The page also nudges on pageshow and on becoming visible, both of
+	// which the harness can fire while the page is being brought up. Let
+	// those passes (500ms and 1500ms after the event) finish before
+	// measuring the focusout path alone.
 	full := openComposerTestPage(t, 874, 874)
+	full.evalObject(t, `new Promise(r => setTimeout(() => r({}), 2200))`)
 	state = full.evalObject(t, probe)
 	if state["poked"] != "" {
-		t.Fatalf("full-height viewport must not be poked, got %v", state)
+		t.Fatalf("full-height viewport must not be poked on focusout, got %v", state)
+	}
+}
+
+// Launch and resume leave the standalone view painting about 60pt short
+// with every JS-readable height still correct, so those transitions poke
+// the root unconditionally: a full-height page still gets the recompute
+// on pageshow, and it is cleared again afterwards.
+func TestStandaloneViewportNudgeOnPageshow(t *testing.T) {
+	page := openComposerTestPage(t, 874, 874)
+	page.evalObject(t, `new Promise(r => setTimeout(() => r({}), 2200))`)
+	state := page.evalObject(t, `(async () => {
+		Object.defineProperty(navigator, 'standalone', {value: true, configurable: true});
+		window.dispatchEvent(new Event('pageshow'));
+		const started = Date.now();
+		let poked = '';
+		while (Date.now() - started < 1500 && !poked) {
+			poked = document.documentElement.style.height;
+			await new Promise(r => setTimeout(r, 20));
+		}
+		await new Promise(r => setTimeout(r, 1700));
+		return {poked, cleared: document.documentElement.style.height};
+	})()`)
+	if state["poked"] != "874px" || state["cleared"] != "" {
+		t.Fatalf("pageshow should poke the root to screen height then clear it, got %v", state)
+	}
+
+	plain := openComposerTestPage(t, 874, 874)
+	state = plain.evalObject(t, `(async () => {
+		window.dispatchEvent(new Event('pageshow'));
+		await new Promise(r => setTimeout(r, 700));
+		return {poked: document.documentElement.style.height};
+	})()`)
+	if state["poked"] != "" {
+		t.Fatalf("a browser tab (not standalone) must never be poked, got %v", state)
 	}
 }
 
