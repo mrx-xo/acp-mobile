@@ -1621,24 +1621,55 @@ if (window.visualViewport) {
   // or a display:none reflow do nothing; forcing the root element to the
   // screen height for a beat makes WebKit recompute the viewport, and it
   // stays correct after the override is cleared.
+  const editorFocused = () => {
+    const active = document.activeElement;
+    return !!active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+  };
+  const expectedViewportHeight = () => {
+    const portrait = window.innerWidth <= window.innerHeight;
+    return portrait ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
+  };
+  let viewportForceTimer = null;
+  const forceViewportRecompute = () => {
+    if (viewportForceTimer) return;
+    document.documentElement.style.height = expectedViewportHeight() + 'px';
+    viewportForceTimer = setTimeout(() => {
+      viewportForceTimer = null;
+      document.documentElement.style.height = '';
+      settleViewport();
+    }, 300);
+  };
   let viewportRestoreTimer = null;
   const restoreStandaloneViewport = () => {
     clearTimeout(viewportRestoreTimer);
     if (!navigator.standalone) return;
     viewportRestoreTimer = setTimeout(() => {
-      const active = document.activeElement;
-      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return;
-      const portrait = window.innerWidth <= window.innerHeight;
-      const expected = portrait ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
-      if (window.innerHeight >= expected - 1) return;
-      document.documentElement.style.height = expected + 'px';
-      setTimeout(() => {
-        document.documentElement.style.height = '';
-        settleViewport();
-      }, 300);
+      if (editorFocused()) return;
+      if (window.innerHeight >= expectedViewportHeight() - 1) return;
+      forceViewportRecompute();
     }, 700);
   };
   window.addEventListener('focusout', restoreStandaloneViewport);
+
+  // Launch and resume have the same dead band with a different signature:
+  // innerHeight, visualViewport.height and screen.height all agree, yet
+  // every fixed element paints about 60pt above the screen bottom, so the
+  // check above sees nothing wrong. Nothing readable from JS changes when
+  // the recompute lands (measured on the iOS 26.5 simulator, 2026-09-07),
+  // so on those transitions the nudge runs unconditionally. It is a no-op
+  // when the viewport is already right. Two passes: one after first paint,
+  // one after the standalone chrome has finished settling.
+  const nudgeStandaloneViewport = () => {
+    if (!navigator.standalone) return;
+    [500, 1500].forEach(ms => setTimeout(() => {
+      if (!editorFocused()) forceViewportRecompute();
+    }, ms));
+  };
+  window.addEventListener('pageshow', nudgeStandaloneViewport);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') nudgeStandaloneViewport();
+  });
+  nudgeStandaloneViewport();
 }
 
 // Derive base path for proxy-safe URLs (e.g. "/app/acp-mobile/" -> "/app/acp-mobile")
