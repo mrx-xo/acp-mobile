@@ -138,6 +138,7 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
   display: grid; place-items: center; border: none; cursor: pointer;
   color: var(--bg-hard); background: var(--orange);
   box-shadow: 0 4px 18px rgba(0,0,0,0.34);
+  transition: transform 0.19s ease-out;
 }
 #spawn-btn:active { transform: scale(0.94); }
 #spawn-btn svg { display: block; }
@@ -1151,7 +1152,9 @@ input, textarea, #fbv-content, .msg, .msg * {
   background: var(--bg1); border: 1px solid var(--bg2); border-radius: 999px;
   padding: 7px 13px; font-size: 13px; color: var(--fg-dim);
   white-space: nowrap; cursor: pointer; flex-shrink: 0; font-family: var(--mono);
+  transition: transform 0.19s ease-out;
 }
+.sp-chip:active { transform: scale(0.96); }
 .sp-chip.sel { border-color: var(--orange); color: var(--orange); }
 #sp-dir, #sp-name, #sp-task {
   width: 100%; background: var(--bg1); border: none; border-radius: 10px;
@@ -1163,7 +1166,7 @@ input, textarea, #fbv-content, .msg, .msg * {
   width: 100%; margin-top: 16px; background: var(--green); border: none;
   border-radius: 12px; color: var(--bg-hard); font-size: 15px; font-weight: 700;
   padding: 13px; cursor: pointer; font-family: var(--mono);
-  transition: transform 0.12s ease;
+  transition: transform 0.19s ease-out;
 }
 #sp-go:active { transform: scale(0.97); }
 #sp-go:disabled { background: var(--bg1); color: var(--fg-mute); }
@@ -1203,9 +1206,9 @@ input, textarea, #fbv-content, .msg, .msg * {
   min-width: 44px; min-height: 44px; cursor: pointer; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   transition: background 0.15s ease, color 0.15s ease,
-    border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+    border-color 0.15s ease, transform 0.19s ease-out, box-shadow 0.15s ease;
 }
-#attach-btn:active { opacity: 0.7; }
+#attach-btn:active { opacity: 0.7; transform: scale(0.96); }
 #attach-btn.ref-ready {
   background: var(--orange); border-color: var(--orange); color: var(--bg-hard);
   font-size: 20px; font-weight: 700;
@@ -1225,7 +1228,7 @@ input, textarea, #fbv-content, .msg, .msg * {
    Easing is a plain ease-out: the earlier overshoot spring finished ~90%
    of its travel in the first 60ms (3-4 frames), which read as instant. */
 .msg.msg-in {
-  animation: msg-in 0.42s cubic-bezier(0.33, 1, 0.68, 1);
+  animation: msg-in 0.65s cubic-bezier(0.33, 1, 0.68, 1);
 }
 @keyframes msg-in {
   from { opacity: 0; transform: translateY(26px) scale(0.94); }
@@ -1237,9 +1240,9 @@ input, textarea, #fbv-content, .msg, .msg * {
   color: var(--bg-hard); padding: 10px 18px;
   cursor: pointer; flex-shrink: 0; min-width: 60px; min-height: 44px;
   display: flex; align-items: center; justify-content: center;
-  transition: transform 0.12s ease, background 0.15s ease;
+  transition: transform 0.19s ease-out, background 0.15s ease;
 }
-#send:active { background: #98971a; transform: scale(0.92); }
+#send:active { background: #98971a; transform: scale(0.96); }
 /* iOS drops touches that land on the SVG icon while the textarea is
    focused (elementFromPoint returns the <path>, no touch/pointer event is
    dispatched, the field just blurs). Route hits to the button itself. */
@@ -2230,8 +2233,91 @@ function addAgentMsg(text) {
 
 function updateAgentMsg(el, text) {
   el._text = text;
-  el.querySelector('.md').innerHTML = renderAgentMarkdown(text);
+  const md = el.querySelector('.md');
+  const next = document.createElement('div');
+  next.innerHTML = renderAgentMarkdown(text);
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    md.replaceChildren(...next.childNodes);
+    md._streamWords = false;
+  } else {
+    // Seed replayed text without animation when a live response resumes.
+    if (!md._streamWords) {
+      wrapStreamWords(md);
+      md._streamWords = true;
+    }
+    wrapStreamWords(next);
+    patchStreamMarkdown(md, next);
+  }
   if (isAtBottom) scrollToBottom();
+}
+
+// Keep word nodes stable across chunks so a new token cannot restart the
+// animation of words already being read. Code and controls remain untouched.
+function wrapStreamWords(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const texts = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (node.parentElement.closest('pre, code, button, svg, [data-stream-word]')) continue;
+    if (/\S/.test(node.data)) texts.push(node);
+  }
+  for (const node of texts) {
+    const fragment = document.createDocumentFragment();
+    for (const part of node.data.match(/\s+|\S+/g)) {
+      if (/^\s+$/.test(part)) fragment.append(document.createTextNode(part));
+      else {
+        const word = document.createElement('span');
+        word.dataset.streamWord = '';
+        word.textContent = part;
+        fragment.append(word);
+      }
+    }
+    node.replaceWith(fragment);
+  }
+}
+
+function patchStreamMarkdown(root, next) {
+  let revealed = 0;
+  const reveal = node => {
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const words = node.matches('[data-stream-word]') ? [node] : node.querySelectorAll('[data-stream-word]');
+    for (const word of words) {
+      word.animate([{opacity: 0}, {opacity: 1}], {
+        duration: 220, delay: Math.min(revealed++, 4) * 22,
+        easing: 'ease-out', fill: 'backwards'
+      });
+    }
+  };
+  const patch = (parent, incoming) => {
+    const wanted = [...incoming.childNodes];
+    wanted.forEach((node, i) => {
+      const old = parent.childNodes[i];
+      if (old && old.isEqualNode(node)) return;
+      if (!old || old.nodeType !== node.nodeType || old.nodeName !== node.nodeName) {
+        const added = node.cloneNode(true);
+        // A replacement can be existing prose whose Markdown just closed
+        // (for example a link label). Keep that text visible; animate only
+        // appended nodes, whose words have not already been on screen.
+        if (old) old.replaceWith(added);
+        else {
+          parent.append(added);
+          reveal(added);
+        }
+      } else if (node.nodeType === Node.TEXT_NODE) {
+        old.data = node.data;
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        for (const attr of [...old.attributes]) {
+          if (!node.hasAttribute(attr.name)) old.removeAttribute(attr.name);
+        }
+        for (const attr of node.attributes) {
+          if (old.getAttribute(attr.name) !== attr.value) old.setAttribute(attr.name, attr.value);
+        }
+        patch(old, node);
+      }
+    });
+    while (parent.childNodes.length > wanted.length) parent.lastChild.remove();
+  };
+  patch(root, next);
 }
 
 function thoughtMessageId(update) {
@@ -4287,6 +4373,7 @@ function selectSession(session) {
 }
 
 function showChat() {
+  resetChatSwipe();
   orreryEl.classList.add('hidden');
   chatViewEl.classList.add('visible');
   document.getElementById('history').classList.remove('visible');
@@ -4298,6 +4385,7 @@ function showChat() {
 }
 
 function showOrrery() {
+  resetChatSwipe();
   chatViewEl.classList.remove('visible');
   orreryEl.classList.remove('hidden');
   messagesEl.innerHTML = '';
@@ -4554,7 +4642,8 @@ function attachPeekSwipe(d, s, name) {
     d.style.transform = 'translateX(' + dx + 'px)';
   }, { passive: true });
   d.addEventListener('touchend', () => {
-    d.style.transition = 'transform 0.18s ease';
+    d.style.transition = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? 'none' : 'transform 0.34s cubic-bezier(0.22, 1, 0.36, 1)';
     d.style.transform = '';
     if (dragging && dx > 60) showPreview(s, name);
     dragging = false; dx = 0;
@@ -4564,9 +4653,19 @@ function attachPeekSwipe(d, s, name) {
 // iOS-style edge-swipe back: start on the left edge of the chat, drag
 // right, release past threshold → back to the session list. The whole
 // view follows the finger like the native gesture.
+let resetChatSwipe = () => {};
 (function () {
   let sx = 0, sy = 0, dx = 0, state = 'idle'; // idle | armed | dragging
+  let exitAnimation = null;
+  resetChatSwipe = () => {
+    if (exitAnimation) exitAnimation.cancel();
+    exitAnimation = null;
+    chatViewEl.style.transition = '';
+    chatViewEl.style.transform = '';
+    state = 'idle'; dx = 0;
+  };
   chatViewEl.addEventListener('touchstart', (e) => {
+    resetChatSwipe();
     const t = e.touches[0];
     dx = 0;
     state = (t.clientX <= 30) ? 'armed' : 'idle';
@@ -4585,12 +4684,30 @@ function attachPeekSwipe(d, s, name) {
     dx = Math.max(0, mx);
     chatViewEl.style.transform = 'translateX(' + dx + 'px)';
   }, { passive: true });
-  chatViewEl.addEventListener('touchend', () => {
-    chatViewEl.style.transition = 'transform 0.18s ease';
-    chatViewEl.style.transform = '';
-    if (state === 'dragging' && dx > 80) backBtn.click();
+  const finish = cancelled => {
+    const leaving = !cancelled && state === 'dragging' && dx > 80;
+    const duration = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 340;
+    if (leaving) {
+      // Finish the exit before hiding the chat. Keep a cancellable animation
+      // so selecting a different session cannot navigate back later.
+      const animation = chatViewEl.animate([
+        {transform: 'translateX(' + dx + 'px)'},
+        {transform: 'translateX(' + window.innerWidth + 'px)'}
+      ], {duration, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'forwards'});
+      exitAnimation = animation;
+      animation.finished.then(() => {
+        if (exitAnimation !== animation) return;
+        resetChatSwipe();
+        if (chatViewEl.classList.contains('visible')) backBtn.click();
+      }).catch(() => {}); // A new gesture or navigation cancelled the exit.
+    } else {
+      chatViewEl.style.transition = 'transform ' + duration + 'ms cubic-bezier(0.22, 1, 0.36, 1)';
+      chatViewEl.style.transform = '';
+    }
     state = 'idle'; dx = 0;
-  });
+  };
+  chatViewEl.addEventListener('touchend', () => finish(false));
+  chatViewEl.addEventListener('touchcancel', () => finish(true));
 })();
 
 async function showPreview(s, name) {

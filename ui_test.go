@@ -1677,7 +1677,7 @@ func TestSendMotionIsVisibleAndThinkingBarKeepsBubbleInView(t *testing.T) {
 			thinkingVisible: thinkingEl.classList.contains('visible')
 		};
 	})()`)
-	if d := state["duration"].(float64); d < 0.4 {
+	if d := state["duration"].(float64); d < 0.6 {
 		t.Fatalf("send animation too short to register: %v", state)
 	}
 	if p := state["progressAt18"].(float64); p > 0.7 {
