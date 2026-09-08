@@ -2767,6 +2767,32 @@ messagesEl.addEventListener('scroll', () => {
   scrollBtn.classList.toggle('visible', !isAtBottom);
 });
 
+// A replay lands as one paint, but the content keeps growing for a beat
+// afterwards: the Iosevka swap, images and tall code blocks all add
+// height after the first layout. One scrollTop assignment therefore
+// lands short, the bottom drifts away, and the scroll button pops while
+// the view sits above the true end. Hold the bottom until the content
+// stops moving (or the user scrolls up), with instant jumps only.
+let settleObserver = null;
+let settleTimer = null;
+function pinBottomWhileSettling(ms = 1500) {
+  if (settleObserver) settleObserver.disconnect();
+  clearTimeout(settleTimer);
+  scrollToBottom();
+  const pin = () => { if (isAtBottom) scrollToBottom(); };
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(pin);
+  if (typeof ResizeObserver !== 'undefined') {
+    settleObserver = new ResizeObserver(pin);
+    for (const el of messagesEl.children) settleObserver.observe(el);
+  }
+  settleTimer = setTimeout(() => {
+    if (settleObserver) settleObserver.disconnect();
+    settleObserver = null;
+    settleTimer = null;
+    pin();
+  }, ms);
+}
+
 // Terminal-style braille spinner (the rig is a terminal; so is this)
 const SPINNER_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
 let spinnerTimer = null, spinnerIdx = 0;
@@ -3335,7 +3361,7 @@ function flushReplay() {
     showLoadMoreHint();
   }
 
-  scrollToBottom();
+  pinBottomWhileSettling();
 }
 
 function handleMessage(msg) {
