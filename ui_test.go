@@ -1560,16 +1560,17 @@ func TestStandaloneViewportRestoreAfterKeyboardDismiss(t *testing.T) {
 		return {poked, cleared: document.documentElement.style.height};
 	})()`
 
+	// The page also nudges on pageshow and on becoming visible, both of
+	// which the harness can fire while the page is being brought up. Let
+	// those passes (up to 1500ms after the event, 300ms each) finish before
+	// measuring the focusout path alone.
 	short := openComposerTestPage(t, 812, 874)
+	short.evalObject(t, `new Promise(r => setTimeout(() => r({}), 2200))`)
 	state := short.evalObject(t, probe)
 	if state["poked"] != "874px" || state["cleared"] != "" {
 		t.Fatalf("short standalone viewport should be poked to screen height then cleared, got %v", state)
 	}
 
-	// The page also nudges on pageshow and on becoming visible, both of
-	// which the harness can fire while the page is being brought up. Let
-	// those passes (500ms and 1500ms after the event) finish before
-	// measuring the focusout path alone.
 	full := openComposerTestPage(t, 874, 874)
 	full.evalObject(t, `new Promise(r => setTimeout(() => r({}), 2200))`)
 	state = full.evalObject(t, probe)
@@ -1588,17 +1589,30 @@ func TestStandaloneViewportNudgeOnPageshow(t *testing.T) {
 	state := page.evalObject(t, `(async () => {
 		Object.defineProperty(navigator, 'standalone', {value: true, configurable: true});
 		window.dispatchEvent(new Event('pageshow'));
+		// The first pass runs on the next tick and the bottom chrome is
+		// veiled until it clears, so the user never sees the wrong spot.
+		await new Promise(r => setTimeout(r, 30));
+		const pokedAtOnce = document.documentElement.style.height;
+		const veiled = document.documentElement.classList.contains('vp-settling');
+		const dockHidden = getComputedStyle(document.getElementById('history-dock')).opacity === '0';
+		let unveiledAt = -1;
 		const started = Date.now();
-		let poked = '';
-		while (Date.now() - started < 1500 && !poked) {
-			poked = document.documentElement.style.height;
+		while (Date.now() - started < 1500 && unveiledAt < 0) {
+			if (!document.documentElement.classList.contains('vp-settling')) unveiledAt = Date.now() - started;
 			await new Promise(r => setTimeout(r, 20));
 		}
-		await new Promise(r => setTimeout(r, 1700));
-		return {poked, cleared: document.documentElement.style.height};
+		await new Promise(r => setTimeout(r, 2200 - (Date.now() - started)));
+		return {pokedAtOnce, veiled, dockHidden, unveiledAt, cleared: document.documentElement.style.height,
+			stillVeiled: document.documentElement.classList.contains('vp-settling')};
 	})()`)
-	if state["poked"] != "874px" || state["cleared"] != "" {
-		t.Fatalf("pageshow should poke the root to screen height then clear it, got %v", state)
+	if state["pokedAtOnce"] != "874px" || state["veiled"] != true || state["dockHidden"] != true {
+		t.Fatalf("pageshow should poke the root at once and veil the dock meanwhile, got %v", state)
+	}
+	if u := state["unveiledAt"].(float64); u < 0 || u > 700 {
+		t.Fatalf("dock should unveil once the first pass clears (about 300ms), got %v", state)
+	}
+	if state["cleared"] != "" || state["stillVeiled"] != false {
+		t.Fatalf("root height and veil should both be cleared after the passes, got %v", state)
 	}
 
 	plain := openComposerTestPage(t, 874, 874)

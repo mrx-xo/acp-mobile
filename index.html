@@ -113,6 +113,11 @@ body {
   align-items: center; gap: 10px;
 }
 #history-dock.visible { display: flex; }
+/* Standalone launch: the bottom chrome paints in the wrong place until the
+   first viewport recompute lands (see nudgeStandaloneViewport). Keep it
+   out of sight until then, so it appears once, at its final spot. */
+#history-dock, #input-area { transition: opacity 0.18s ease-out; }
+html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; pointer-events: none; transition: none; }
 #history-search-form {
   min-width: 0; flex: 1; height: 48px; border-radius: 24px;
   display: flex; align-items: center; gap: 9px; padding: 0 16px;
@@ -1637,6 +1642,7 @@ if (window.visualViewport) {
       viewportForceTimer = null;
       document.documentElement.style.height = '';
       settleViewport();
+      document.documentElement.classList.remove('vp-settling');
     }, 300);
   };
   let viewportRestoreTimer = null;
@@ -1657,19 +1663,32 @@ if (window.visualViewport) {
   // check above sees nothing wrong. Nothing readable from JS changes when
   // the recompute lands (measured on the iOS 26.5 simulator, 2026-09-07),
   // so on those transitions the nudge runs unconditionally. It is a no-op
-  // when the viewport is already right. Two passes: one after first paint,
-  // one after the standalone chrome has finished settling.
-  const nudgeStandaloneViewport = () => {
+  // when the viewport is already right. Several passes: at once, then
+  // spaced out to outlast the standalone chrome settling.
+  //
+  // On a launch (first run, pageshow) the bottom chrome additionally stays
+  // invisible (html.vp-settling) until the first pass has cleared, so it
+  // appears once, at its final spot, instead of visibly scooting there. A
+  // deadline lifts the veil even if no pass runs (editor focused). Coming
+  // back from the background only nudges: veiling there would blink chrome
+  // that is already on screen.
+  let vpSettleDeadline = null;
+  const nudgeStandaloneViewport = (veil) => {
     if (!navigator.standalone) return;
-    [500, 1500].forEach(ms => setTimeout(() => {
+    if (veil) {
+      document.documentElement.classList.add('vp-settling');
+      clearTimeout(vpSettleDeadline);
+      vpSettleDeadline = setTimeout(() => document.documentElement.classList.remove('vp-settling'), 1600);
+    }
+    [0, 350, 800, 1500].forEach(ms => setTimeout(() => {
       if (!editorFocused()) forceViewportRecompute();
     }, ms));
   };
-  window.addEventListener('pageshow', nudgeStandaloneViewport);
+  window.addEventListener('pageshow', () => nudgeStandaloneViewport(true));
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') nudgeStandaloneViewport();
+    if (document.visibilityState === 'visible') nudgeStandaloneViewport(false);
   });
-  nudgeStandaloneViewport();
+  nudgeStandaloneViewport(true);
 }
 
 // Derive base path for proxy-safe URLs (e.g. "/app/acp-mobile/" -> "/app/acp-mobile")
