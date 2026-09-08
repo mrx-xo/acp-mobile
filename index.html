@@ -307,6 +307,10 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
 #header .header-status.error { color: var(--red); }
 /* A drop that is still being redialed: busy-yellow, not dead-red. */
 #header .header-status.reconnecting { color: var(--yellow); }
+/* While the socket is down the old transcript stays on screen, but its
+   permission cards belong to a request the new socket will replay
+   fresh. Make them inert so a tap cannot answer a stale id. */
+#messages.reconnecting .msg.permission .perm-btn { pointer-events: none; opacity: 0.5; }
 #header .mode-btn {
   border: none !important; border-radius: 999px;
   padding: 2px 9px; font-size: 10px; font-weight: 600;
@@ -1717,6 +1721,7 @@ let waitForSessionAttempts = 0;
 let reconnectTimer = null;
 let disconnectedAt = null; // Date.now() of the close that started the current outage
 let silenceTimer = null;   // fires when the socket has been quiet for too long
+let reconnectInFlight = false; // retry callback is between its timer and connect()
 let isAtBottom = true;
 let msgIdCounter = 0;
 let projectCwd = null;
@@ -2685,6 +2690,9 @@ function addPermissionMsg(msg, interactive) {
     const buttons = d.querySelectorAll('.perm-btn');
     buttons.forEach(btn => {
       btn.onclick = () => {
+        // A card left on screen through a reconnect is stale; the replay
+        // renders the live request again with fresh buttons.
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
         const optionId = btn.getAttribute('data-option-id');
         // Send response
         ws.send(JSON.stringify({
@@ -2961,6 +2969,7 @@ function cycleMode() {
 // the top of flushReplay, one synchronous paint before the replacement
 // renders, so the old transcript never leaves the screen early.
 function clearMessages() {
+  messagesEl.classList.remove('reconnecting');
   messagesEl.innerHTML = '';
   messagesEl._toolCalls = {};
   messagesEl._lastTool = null;
@@ -2980,6 +2989,13 @@ function connect(pid) {
   let url = proto + '//' + location.host + basePath + '/ws';
   if (pid) url += '?sock=' + pid;
 
+  // One live socket at a time. If a previous dial is still connecting or
+  // open, drop it silently so two sockets never share the handlers,
+  // the replay buffer, or the silence timer.
+  if (ws && ws.readyState !== WebSocket.CLOSING && ws.readyState !== WebSocket.CLOSED) {
+    ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+    ws.close();
+  }
   ws = new WebSocket(url);
 
   ws.onopen = () => {
@@ -3015,6 +3031,7 @@ function connect(pid) {
     clearSilenceTimer();
     statusText.textContent = 'Reconnecting...';
     statusText.className = 'header-status reconnecting';
+    messagesEl.classList.add('reconnecting');
     sendBtn.disabled = true;
     setProcessing(false);
     if (chatViewEl && chatViewEl.classList.contains('visible')) {
@@ -3052,6 +3069,10 @@ function noteAlive() {
 function wakeSocket() {
   if (!chatViewEl || !chatViewEl.classList.contains('visible')) return;
   if (ws && ws.readyState !== WebSocket.CLOSING && ws.readyState !== WebSocket.CLOSED) return;
+  // The retry callback has already fired and is awaiting the session
+  // lookup; it will dial on its own. Safari fires visibilitychange,
+  // pageshow and online together on resume, right in that window.
+  if (reconnectInFlight) return;
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   reconnectAttempts = 0;
   // Time spent frozen in the background is not time the reader watched
@@ -3095,67 +3116,76 @@ function scheduleReconnect() {
   reconnectAttempts++;
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
-    // State resets only. The DOM wipe moved into flushReplay so the
-    // old transcript stays on screen until its replacement is ready.
-    currentAgentMsg = null;
-    currentUserMsg = null;
-    lastSentMsg = null;
-    resetReplayBuffer();
-    clearTimeout(replayTimer);
-    replayTimer = null;
-    closeMsgMenu();
-    closeReader();
-    resetThoughtState();
-    sessionId = null;
-    pendingPermissions = [];
-    // The rig's reload (SPC c y) respawns the client under a new pid —
-    // same session id.  Re-resolve before dialing so the open chat
-    // follows its session onto the new socket instead of dying with
-    // the old pid.  (Observed failure this guards against: 40+ dials
-    // of a dead pid — "ws: no socket for pid N" — freezing the view.)
-    if (currentSessionKey && currentSessionKey.indexOf('pid:') !== 0) {
-      try {
-        const resp = await fetch(basePath + '/api/sessions', { method: 'POST' });
-        const data = await resp.json();
-        const sessions = data.sessions || [];
-        const same = sessions.find(s => sKey(s) === currentSessionKey);
-        if (same) {
-          // Fresh socket for our session — connect eagerly, don't let
-          // earlier failed attempts' backoff delay the reunion.
-          if (same.pid !== currentSockPid) reconnectAttempts = 1;
-          currentSockPid = same.pid;
-        } else if (!sessions.some(s => s.pid === currentSockPid)) {
-          // Our socket is gone and the session hasn't resurfaced yet
-          // (mid-reload on the rig, or killed, or its probe timed out).
-          // Dialing the dead pid just burns retries — re-check on a
-          // fast fixed clock (a rig reload resurfaces in seconds; the
-          // ws backoff would stretch this to minutes).
-          if (waitForSessionAttempts < 10) {
-            waitForSessionAttempts++;
-            statusText.textContent = 'Waiting for session...';
-            statusText.className = 'header-status';
-            // Pin the backoff: reconnectDelay(2) is 4s, so every
-            // re-check lands ~4s apart. Not an outage, so it must not
-            // count toward the Disconnected promotion either.
-            reconnectAttempts = 2;
-            disconnectedAt = null;
-            scheduleReconnect();
-            return;
-          }
-          // ~40s and it never came back — bail to the list, not a freeze.
-          waitForSessionAttempts = 0;
-          showOrrery();
+    reconnectInFlight = true;
+    try { await redial(); } finally { reconnectInFlight = false; }
+  }, delay);
+}
+
+// The body of a retry: reset per-connection state, re-resolve the
+// session's socket, dial. Split out so the in-flight flag above wraps
+// every exit path.
+async function redial() {
+  // State resets only. The DOM wipe moved into flushReplay so the
+  // old transcript stays on screen until its replacement is ready.
+  currentAgentMsg = null;
+  currentUserMsg = null;
+  lastSentMsg = null;
+  resetReplayBuffer();
+  clearTimeout(replayTimer);
+  replayTimer = null;
+  closeMsgMenu();
+  closeReader();
+  resetThoughtState();
+  sessionId = null;
+  pendingPermissions = [];
+  // The rig's reload (SPC c y) respawns the client under a new pid —
+  // same session id.  Re-resolve before dialing so the open chat
+  // follows its session onto the new socket instead of dying with
+  // the old pid.  (Observed failure this guards against: 40+ dials
+  // of a dead pid — "ws: no socket for pid N" — freezing the view.)
+  if (currentSessionKey && currentSessionKey.indexOf('pid:') !== 0) {
+    try {
+      const resp = await fetch(basePath + '/api/sessions', { method: 'POST' });
+      const data = await resp.json();
+      const sessions = data.sessions || [];
+      const same = sessions.find(s => sKey(s) === currentSessionKey);
+      if (same) {
+        // Fresh socket for our session — connect eagerly, don't let
+        // earlier failed attempts' backoff delay the reunion.
+        if (same.pid !== currentSockPid) reconnectAttempts = 1;
+        currentSockPid = same.pid;
+      } else if (!sessions.some(s => s.pid === currentSockPid)) {
+        // Our socket is gone and the session hasn't resurfaced yet
+        // (mid-reload on the rig, or killed, or its probe timed out).
+        // Dialing the dead pid just burns retries — re-check on a
+        // fast fixed clock (a rig reload resurfaces in seconds; the
+        // ws backoff would stretch this to minutes).
+        if (waitForSessionAttempts < 10) {
+          waitForSessionAttempts++;
+          statusText.textContent = 'Waiting for session...';
+          statusText.className = 'header-status';
+          // Pin the backoff: reconnectDelay(2) is 4s, so every
+          // re-check lands ~4s apart. Not an outage, so it must not
+          // count toward the Disconnected promotion either.
+          reconnectAttempts = 2;
+          disconnectedAt = null;
+          reconnectInFlight = false; // scheduleReconnect must not see us as busy
+          scheduleReconnect();
           return;
         }
+        // ~40s and it never came back — bail to the list, not a freeze.
         waitForSessionAttempts = 0;
-      } catch (err) { /* offline — fall through to the old pid */ }
-    }
-    if (currentSockPid) {
-      connect(String(currentSockPid));
-    } else {
-      connect();
-    }
-  }, delay);
+        showOrrery();
+        return;
+      }
+      waitForSessionAttempts = 0;
+    } catch (err) { /* offline — fall through to the old pid */ }
+  }
+  if (currentSockPid) {
+    connect(String(currentSockPid));
+  } else {
+    connect();
+  }
 }
 
 // --- Socket: end ---

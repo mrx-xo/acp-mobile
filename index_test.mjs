@@ -123,6 +123,7 @@ function loadSocketClient(overrides = {}) {
     reconnectTimer: null,
     disconnectedAt: null,
     silenceTimer: null,
+    reconnectInFlight: false,
     currentAgentMsg: null,
     currentUserMsg: null,
     lastSentMsg: null,
@@ -298,6 +299,48 @@ test('visibility wake resets closed-socket backoff but leaves open sockets alone
   assert.equal(context.reconnectTimer, null);
   assert.equal(context.reconnectAttempts, 0);
   assert.equal(sockets.length, 2);
+});
+
+test('a wake during an in-flight retry does not dial a second socket', async () => {
+  // The retry callback awaits the session lookup before dialing. Safari
+  // fires visibilitychange, pageshow and online together on resume,
+  // right inside that window; none of them may stack another dial.
+  let releaseLookup;
+  const lookup = new Promise(resolve => { releaseLookup = resolve; });
+  const {context, clock, sockets, documentListeners, windowListeners} = loadSocketClient({
+    currentSessionKey: 'buffer-a',
+    sKey: session => session.bufferName,
+    fetch: async () => { await lookup; return {ok: true, json: async () => ({sessions: [{bufferName: 'buffer-a', pid: 1}]})}; },
+  });
+  context.connect('1');
+  sockets[0].open();
+  sockets[0].emitClose();
+  // The clock awaits the retry callback, which is parked on the lookup;
+  // do not await it yet, just let the callback run up to the fetch.
+  const advancing = clock.advance(400);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(context.reconnectInFlight, true);
+  assert.equal(sockets.length, 1);
+
+  documentListeners.get('visibilitychange')();
+  windowListeners.get('pageshow')();
+  windowListeners.get('online')();
+  assert.equal(clock.pending().length, 0, 'no second retry timer while a redial is in flight');
+
+  releaseLookup();
+  await advancing;
+  assert.equal(sockets.length, 2, 'exactly one replacement socket');
+  assert.equal(context.reconnectInFlight, false);
+});
+
+test('connect drops a still-connecting socket before dialing a new one', () => {
+  const {context, sockets} = loadSocketClient();
+  context.connect('1');
+  context.connect('1');
+  assert.equal(sockets.length, 2);
+  assert.equal(sockets[0].closeCalls, 1);
+  assert.equal(sockets[0].onclose, null);
+  assert.equal(sockets[1].closeCalls, 0);
 });
 
 function loadHistoryClient(overrides = {}) {

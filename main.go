@@ -2115,9 +2115,12 @@ const pingMessage = `{"jsonrpc":"2.0","method":"acp-mobile/ping"}`
 // keepalive sends pingMessage every pingInterval until done is closed.
 // A failed send closes ws, which unblocks the bridge's reader goroutine
 // and ends the bridge, so a dead TCP path (iOS backgrounding, a wifi to
-// cell handoff on the tailnet) is noticed within one interval, not never.
-// Conn.Write and Codec.Send hold the connection's write mutex, so this
-// goroutine may send concurrently with the relay loop.
+// cell handoff on the tailnet) is noticed within about two intervals,
+// not never: a path that rejects writes fails the next ping, and a path
+// that silently swallows them trips the write deadline armed here once
+// the kernel buffer fills. Conn.Write and Codec.Send hold the
+// connection's write mutex, so this goroutine may send concurrently
+// with the relay loop.
 func keepalive(ws *websocket.Conn, done <-chan struct{}) {
 	t := time.NewTicker(pingInterval)
 	defer t.Stop()
@@ -2126,6 +2129,9 @@ func keepalive(ws *websocket.Conn, done <-chan struct{}) {
 		case <-done:
 			return
 		case <-t.C:
+			// Two intervals, refreshed every tick, so the relay loop's own
+			// writes always see at least one interval of headroom.
+			ws.SetWriteDeadline(time.Now().Add(2 * pingInterval))
 			if err := websocket.Message.Send(ws, pingMessage); err != nil {
 				log.Printf("ws ping: %v", err)
 				ws.Close()
