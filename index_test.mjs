@@ -264,6 +264,7 @@ function loadTurnNav() {
     turnNavTarget: plain(context.turnNavTarget),
     turnNavNextMode: context.turnNavNextMode,
     turnNavShouldShow: context.turnNavShouldShow,
+    turnNavLandmarks: context.turnNavLandmarks,
     turnNavPrefs: plain(context.turnNavPrefs),
     turnNavPlacement: plain(context.turnNavPlacement),
     turnNavDefaultEnabled: context.turnNavDefaultEnabled,
@@ -337,6 +338,15 @@ test('turn nav only shows when enabled for this chat and there is somewhere to g
   assert.equal(turnNavShouldShow(false, 5), false);
   assert.equal(turnNavShouldShow(true, 1), false);
   assert.equal(turnNavShouldShow(true, 2), true);
+});
+
+test('turn nav landmark count ignores the current mode: one prompt plus one response is somewhere to go', () => {
+  const {turnNavLandmarks} = loadTurnNav();
+  const onePrompt = [{kind: 'user', top: 0}, {kind: 'agent', top: 40}, {kind: 'agent', top: 90}];
+  assert.equal(turnNavLandmarks(onePrompt), 2);
+  assert.equal(turnNavLandmarks([{kind: 'user', top: 0}]), 1);
+  assert.equal(turnNavLandmarks([{kind: 'agent', top: 0}]), 1);
+  assert.equal(turnNavLandmarks([]), 0);
 });
 
 test('turn nav prefs default to bottom-right and fall back per axis on garbage', () => {

@@ -4636,9 +4636,16 @@ function turnNavTarget(stops, viewportTop, dir, slack) {
   }
   return null;
 }
+// How many places the nav could land in ANY mode. The visibility rule
+// must not depend on the mode currently selected: in prompt mode a chat
+// with one prompt and a long response has a single stop, and hiding the
+// nav there hid it on every short History transcript.
+function turnNavLandmarks(items) {
+  return turnNavStops(items, 'alternate').length;
+}
 // Off by default on every chat; the chat menu turns it on for this chat.
-function turnNavShouldShow(enabled, stopCount) {
-  return !!enabled && stopCount >= 2;
+function turnNavShouldShow(enabled, landmarkCount) {
+  return !!enabled && landmarkCount >= 2;
 }
 // Where the arrows sit, chosen on the Settings page. Each axis falls back
 // on its own so one bad stored value cannot drag the other to default.
@@ -4720,7 +4727,7 @@ function turnNavKind(classes) {
   function refresh() {
     lastItems = items();
     const stops = turnNavStops(lastItems, mode);
-    const show = turnNavShouldShow(enabled[surface], stops.length);
+    const show = turnNavShouldShow(enabled[surface], turnNavLandmarks(lastItems));
     navEl.classList.toggle('visible', show);
     navEl.classList.toggle('over-history', surface === 'history');
     if (!show) return;
