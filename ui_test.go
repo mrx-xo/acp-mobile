@@ -1556,8 +1556,9 @@ func TestStandaloneViewportRestoreAfterKeyboardDismiss(t *testing.T) {
 			poked = document.documentElement.style.height;
 			await new Promise(r => setTimeout(r, 20));
 		}
+		const repairDelay = Date.now() - started;
 		await new Promise(r => setTimeout(r, 600));
-		return {poked, cleared: document.documentElement.style.height};
+		return {poked, repairDelay, cleared: document.documentElement.style.height};
 	})()`
 
 	// The page also nudges on pageshow and on becoming visible, both of
@@ -1569,6 +1570,26 @@ func TestStandaloneViewportRestoreAfterKeyboardDismiss(t *testing.T) {
 	state := short.evalObject(t, probe)
 	if state["poked"] != "874px" || state["cleared"] != "" {
 		t.Fatalf("short standalone viewport should be poked to screen height then cleared, got %v", state)
+	}
+	// Repair during keyboard dismissal, before the roughly 350ms animation
+	// ends; a delayed repair leaves a gap followed by a second visible jump.
+	if state["repairDelay"].(float64) >= 350 {
+		t.Fatalf("viewport repair must start during keyboard dismissal, got %v", state)
+	}
+	state = short.evalObject(t, `(async () => {
+		openSpawnSheet('/tmp');
+		spDir.focus();
+		spName.focus();
+		await new Promise(r => setTimeout(r, 100));
+		const duringTransfer = document.documentElement.style.height;
+		const focused = document.activeElement === spName;
+		spName.blur();
+		await new Promise(r => setTimeout(r, 100));
+		const afterDismiss = document.documentElement.style.height;
+		return {duringTransfer, focused, afterDismiss};
+	})()`)
+	if state["duringTransfer"] != "" || state["focused"] != true || state["afterDismiss"] != "874px" {
+		t.Fatalf("new-chat field transfer must keep keyboard geometry; dismissal must repair promptly, got %v", state)
 	}
 
 	full := openComposerTestPage(t, 874, 874)

@@ -1649,11 +1649,14 @@ if (window.visualViewport) {
   const restoreStandaloneViewport = () => {
     clearTimeout(viewportRestoreTimer);
     if (!navigator.standalone) return;
+    // Let focus settle when moving between inputs, then repair while the
+    // keyboard is closing. Waiting until after its animation leaves the
+    // bottom controls at the short viewport, followed by a second jump.
     viewportRestoreTimer = setTimeout(() => {
       if (editorFocused()) return;
       if (window.innerHeight >= expectedViewportHeight() - 1) return;
       forceViewportRecompute();
-    }, 700);
+    }, 0);
   };
   window.addEventListener('focusout', restoreStandaloneViewport);
 
