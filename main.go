@@ -2104,6 +2104,37 @@ func phoneTurnEnd(sid string) {
 	}
 }
 
+// pingInterval paces the keepalive notification the bridge sends to the
+// phone. x/net/websocket has no ping/pong frame API, so the JSON
+// notification IS the ping: anything reading the /ws stream must ignore
+// "acp-mobile/ping". A var so tests can shorten it.
+var pingInterval = 25 * time.Second
+
+const pingMessage = `{"jsonrpc":"2.0","method":"acp-mobile/ping"}`
+
+// keepalive sends pingMessage every pingInterval until done is closed.
+// A failed send closes ws, which unblocks the bridge's reader goroutine
+// and ends the bridge, so a dead TCP path (iOS backgrounding, a wifi to
+// cell handoff on the tailnet) is noticed within one interval, not never.
+// Conn.Write and Codec.Send hold the connection's write mutex, so this
+// goroutine may send concurrently with the relay loop.
+func keepalive(ws *websocket.Conn, done <-chan struct{}) {
+	t := time.NewTicker(pingInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.C:
+			if err := websocket.Message.Send(ws, pingMessage); err != nil {
+				log.Printf("ws ping: %v", err)
+				ws.Close()
+				return
+			}
+		}
+	}
+}
+
 func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
@@ -2114,6 +2145,10 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 		return
 	}
 	defer conn.Close()
+
+	pingDone := make(chan struct{})
+	defer close(pingDone)
+	go keepalive(ws, pingDone)
 
 	// Read the replay into memory using a short idle timeout to detect
 	// when the replay burst is done (no explicit end marker from the proxy).

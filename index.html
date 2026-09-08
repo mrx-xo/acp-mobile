@@ -305,6 +305,8 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
   content: "\25CF"; font-size: 11px; color: var(--green);
 }
 #header .header-status.error { color: var(--red); }
+/* A drop that is still being redialed: busy-yellow, not dead-red. */
+#header .header-status.reconnecting { color: var(--yellow); }
 #header .mode-btn {
   border: none !important; border-radius: 999px;
   padding: 2px 9px; font-size: 10px; font-weight: 600;
@@ -1713,6 +1715,8 @@ let processing = false;
 let reconnectAttempts = 0;
 let waitForSessionAttempts = 0;
 let reconnectTimer = null;
+let disconnectedAt = null; // Date.now() of the close that started the current outage
+let silenceTimer = null;   // fires when the socket has been quiet for too long
 let isAtBottom = true;
 let msgIdCounter = 0;
 let projectCwd = null;
@@ -2950,6 +2954,19 @@ function cycleMode() {
 }
 
 // --- WebSocket & ACP protocol ---
+// --- Socket: connect, reconnect, keepalive ---
+// (index_test.mjs extracts this block into a vm; keep the end marker.)
+
+// The one DOM wipe for the chat. On a same-session reconnect it runs at
+// the top of flushReplay, one synchronous paint before the replacement
+// renders, so the old transcript never leaves the screen early.
+function clearMessages() {
+  messagesEl.innerHTML = '';
+  messagesEl._toolCalls = {};
+  messagesEl._lastTool = null;
+  allReplayTurns = [];
+  renderedTurnStart = 0;
+}
 
 function connect(pid) {
   resetThoughtState();
@@ -2970,11 +2987,17 @@ function connect(pid) {
     statusText.className = 'header-status connected';
     reconnectAttempts = 0;
     waitForSessionAttempts = 0;
+    disconnectedAt = null;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    noteAlive(); // an open socket that never speaks is dead too
   };
 
   ws.onmessage = (e) => {
+    noteAlive();
     const msg = JSON.parse(e.data);
+    // The server's keepalive. Never enters the replay buffer or
+    // handleMessage; its only job was to feed the silence timer above.
+    if (msg.method === 'acp-mobile/ping') return;
     if (replayMode) {
       bufferReplayMessage(msg);
       clearTimeout(replayTimer);
@@ -2985,8 +3008,13 @@ function connect(pid) {
   };
 
   ws.onclose = () => {
-    statusText.textContent = 'Disconnected';
-    statusText.className = 'header-status error';
+    // Grace state: a drop that heals in a beat reads as busy, not dead.
+    // scheduleReconnect promotes to Disconnected once retries have
+    // failed for long enough.
+    if (disconnectedAt === null) disconnectedAt = Date.now();
+    clearSilenceTimer();
+    statusText.textContent = 'Reconnecting...';
+    statusText.className = 'header-status reconnecting';
     sendBtn.disabled = true;
     setProcessing(false);
     if (chatViewEl && chatViewEl.classList.contains('visible')) {
@@ -2995,20 +3023,80 @@ function connect(pid) {
   };
 
   ws.onerror = () => {
-    statusText.textContent = 'Connection error';
-    statusText.className = 'header-status error';
+    // Deliberately silent. onclose always follows onerror and owns the
+    // status line; writing "Connection error" here flashed red on every
+    // blip that healed a moment later.
   };
+}
+
+// iOS often leaves readyState at OPEN on a socket the OS already killed,
+// and a stalled TCP path can sit that way for a minute. The server pings
+// every 25s; if nothing at all arrives for SILENCE_MS the socket is
+// presumed dead and closed by hand, which drops into the normal onclose
+// path (Reconnecting..., 400ms redial).
+const SILENCE_MS = 60000;
+function clearSilenceTimer() {
+  if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+}
+function noteAlive() {
+  clearSilenceTimer();
+  silenceTimer = setTimeout(() => {
+    silenceTimer = null;
+    if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+  }, SILENCE_MS);
+}
+
+// Redial at once when the page comes back (foreground, bfcache restore,
+// network return) and the socket is known to be down. A socket iOS
+// killed but still reports OPEN is the silence timer's job, not this.
+function wakeSocket() {
+  if (!chatViewEl || !chatViewEl.classList.contains('visible')) return;
+  if (ws && ws.readyState !== WebSocket.CLOSING && ws.readyState !== WebSocket.CLOSED) return;
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  reconnectAttempts = 0;
+  // Time spent frozen in the background is not time the reader watched
+  // a broken header. Restart the grace clock with the attempt counter,
+  // or a long background stint would flash red on every foreground.
+  if (disconnectedAt !== null) disconnectedAt = Date.now();
+  scheduleReconnect();
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') wakeSocket();
+});
+window.addEventListener('pageshow', wakeSocket);
+window.addEventListener('online', wakeSocket);
+
+// Attempt 0 redials almost at once (an iOS background/foreground or a
+// wifi-to-cell handoff heals in well under a second); later attempts
+// back off 2s, 4s, 8s, ... capped at a minute.
+function reconnectDelay(attempts) {
+  if (attempts <= 0) return 400;
+  return Math.min(60000, 2000 * Math.pow(2, attempts - 1));
+}
+
+// Promote the yellow grace state to red once retries have failed for
+// long enough. Evaluated on every scheduled retry, so no separate timer.
+const RECONNECT_GRACE_MS = 8000;
+const RECONNECT_GRACE_ATTEMPTS = 3;
+function promoteDisconnectedIfStale() {
+  if (disconnectedAt === null) return;
+  if (statusText.classList.contains('error')) return;
+  const stale = Date.now() - disconnectedAt > RECONNECT_GRACE_MS ||
+    reconnectAttempts >= RECONNECT_GRACE_ATTEMPTS;
+  if (!stale) return;
+  statusText.textContent = 'Disconnected';
+  statusText.className = 'header-status error';
 }
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
-  const delay = Math.min(60000, 2000 * Math.pow(2, reconnectAttempts));
+  promoteDisconnectedIfStale();
+  const delay = reconnectDelay(reconnectAttempts);
   reconnectAttempts++;
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
-    messagesEl.innerHTML = '';
-    messagesEl._toolCalls = {};
-    messagesEl._lastTool = null;
+    // State resets only. The DOM wipe moved into flushReplay so the
+    // old transcript stays on screen until its replacement is ready.
     currentAgentMsg = null;
     currentUserMsg = null;
     lastSentMsg = null;
@@ -3019,9 +3107,7 @@ function scheduleReconnect() {
     closeReader();
     resetThoughtState();
     sessionId = null;
-    allReplayTurns = [];
     pendingPermissions = [];
-    renderedTurnStart = 0;
     // The rig's reload (SPC c y) respawns the client under a new pid —
     // same session id.  Re-resolve before dialing so the open chat
     // follows its session onto the new socket instead of dying with
@@ -3048,7 +3134,11 @@ function scheduleReconnect() {
             waitForSessionAttempts++;
             statusText.textContent = 'Waiting for session...';
             statusText.className = 'header-status';
-            reconnectAttempts = 1; // pin backoff: ~4s per re-check
+            // Pin the backoff: reconnectDelay(2) is 4s, so every
+            // re-check lands ~4s apart. Not an outage, so it must not
+            // count toward the Disconnected promotion either.
+            reconnectAttempts = 2;
+            disconnectedAt = null;
             scheduleReconnect();
             return;
           }
@@ -3067,6 +3157,8 @@ function scheduleReconnect() {
     }
   }, delay);
 }
+
+// --- Socket: end ---
 
 function toolOutputText(update) {
   if (update.rawOutput) {
@@ -3437,8 +3529,16 @@ function flushReplay() {
   }
 
   // Store all turns; render only the last chunk
-  allReplayTurns = turns;
   const INITIAL_TURNS = 20;
+  // On a same-session reconnect the previous transcript is still on
+  // screen. Wipe it here, one synchronous paint before the replacement,
+  // and remember where the reader was so a scrolled-up view stays put.
+  // Idempotent on a cold open (messagesEl is already empty).
+  const hadContent = messagesEl.children.length > 0;
+  const wasAtBottom = isAtBottom;
+  const prevScrollTop = messagesEl.scrollTop;
+  clearMessages();
+  allReplayTurns = turns;
   renderedTurnStart = Math.max(0, turns.length - INITIAL_TURNS);
   const renderTurns = turns.slice(renderedTurnStart);
 
@@ -3469,7 +3569,13 @@ function flushReplay() {
     showLoadMoreHint();
   }
 
-  pinBottomWhileSettling();
+  if (hadContent && !wasAtBottom) {
+    // Reconnect while reading history: put the view back where it was
+    // instead of yanking it to the bottom.
+    messagesEl.scrollTop = prevScrollTop;
+  } else {
+    pinBottomWhileSettling();
+  }
 }
 
 function handleMessage(msg) {
@@ -4351,7 +4457,9 @@ function selectSession(session) {
   markViewed(session);
   currentSockPid = session.pid;
   currentSessionKey = sKey(session);
-  messagesEl.innerHTML = '';
+  // A NEW session: wipe before dialing so the old chat never sits under
+  // a different session's header. Only same-session reconnects keep it.
+  clearMessages();
   currentAgentMsg = null;
   currentUserMsg = null;
   resetThoughtState();
@@ -4361,9 +4469,7 @@ function selectSession(session) {
   updateChatHeader();
   document.getElementById('chat-menu-btn').style.display = currentBufferName ? '' : 'none';
   availableModes = [];
-  allReplayTurns = [];
   pendingPermissions = [];
-  renderedTurnStart = 0;
   sendBtn.disabled = true;
   setProcessing(false);
   if (window.turnNav) turnNav.setEnabled(false);
@@ -4388,13 +4494,10 @@ function showOrrery() {
   resetChatSwipe();
   chatViewEl.classList.remove('visible');
   orreryEl.classList.remove('hidden');
-  messagesEl.innerHTML = '';
-  messagesEl._toolCalls = {};
-  messagesEl._lastTool = null;
+  clearMessages();
   currentAgentMsg = null;
   currentUserMsg = null;
   lastSentMsg = null;
-  allReplayTurns = [];
   resetReplayBuffer();
   clearTimeout(replayTimer);
   replayTimer = null;
@@ -4412,6 +4515,8 @@ function showOrrery() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  clearSilenceTimer();
+  disconnectedAt = null;
   loadSessions();
 }
 

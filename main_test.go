@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,138 @@ import (
 	"golang.org/x/net/html"
 	"golang.org/x/net/websocket"
 )
+
+// newSilentBridgeServer keeps its Unix peer silent until test cleanup.
+func newSilentBridgeServer(t *testing.T) (*httptest.Server, <-chan struct{}) {
+	t.Helper()
+	// Keep the socket path below Unix-domain path limits on macOS.
+	dir, err := os.MkdirTemp("", "acp-ping-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sockPath := filepath.Join(dir, "peer.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	peerDone := make(chan struct{})
+	go func() {
+		defer close(peerDone)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		<-stop
+	}()
+
+	started := make(chan struct{})
+	done := make(chan struct{})
+	srv := httptest.NewServer(websocket.Handler(func(ws *websocket.Conn) {
+		close(started)
+		defer close(done)
+		bridgeWebSocket(ws, sockPath)
+	}))
+	t.Cleanup(func() {
+		close(stop)
+		ln.Close()
+		<-peerDone
+		srv.Close()
+		select {
+		case <-started:
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Error("bridge did not return during cleanup")
+			}
+		default:
+		}
+	})
+	return srv, done
+}
+
+func TestBridgeSendsKeepalivePing(t *testing.T) {
+	previousInterval := pingInterval
+	pingInterval = 20 * time.Millisecond
+	t.Cleanup(func() { pingInterval = previousInterval })
+	srv, _ := newSilentBridgeServer(t)
+
+	dialedAt := time.Now()
+	ws, err := websocket.Dial(strings.Replace(srv.URL, "http://", "ws://", 1), "", srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { ws.Close() })
+	if err := ws.SetReadDeadline(dialedAt.Add(500 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		var frame string
+		if err := websocket.Message.Receive(ws, &frame); err != nil {
+			t.Fatalf("receive keepalive: %v", err)
+		}
+		receivedAfter := time.Since(dialedAt)
+		for _, line := range strings.Split(frame, "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var msg struct {
+				JSONRPC string `json:"jsonrpc"`
+				Method  string `json:"method"`
+			}
+			if err := json.Unmarshal([]byte(line), &msg); err != nil {
+				t.Fatalf("decode notification: %v", err)
+			}
+			if msg.Method != "acp-mobile/ping" {
+				t.Fatalf("received %q before keepalive from silent peer", line)
+			}
+			if msg.JSONRPC != "2.0" {
+				t.Fatalf("keepalive jsonrpc = %q, want 2.0", msg.JSONRPC)
+			}
+			// Replay cannot finish before its 150ms idle read expires.
+			if receivedAfter >= 100*time.Millisecond {
+				t.Fatalf("first ping arrived after %v, want less than 100ms", receivedAfter)
+			}
+			return
+		}
+	}
+}
+
+func TestBridgeReturnsAfterClientClose(t *testing.T) {
+	previousInterval := pingInterval
+	pingInterval = 20 * time.Millisecond
+	t.Cleanup(func() { pingInterval = previousInterval })
+	srv, done := newSilentBridgeServer(t)
+	before := runtime.NumGoroutine()
+
+	ws, err := websocket.Dial(strings.Replace(srv.URL, "http://", "ws://", 1), "", srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { ws.Close() })
+	closedAt := time.Now()
+	if err := ws.Close(); err != nil {
+		t.Fatalf("close client: %v", err)
+	}
+	budget := 2*pingInterval + 200*time.Millisecond
+	timer := time.NewTimer(time.Until(closedAt.Add(budget)))
+	defer timer.Stop()
+	select {
+	case <-done:
+		if elapsed := time.Since(closedAt); elapsed > budget {
+			t.Fatalf("bridge returned after %v, want at most %v", elapsed, budget)
+		}
+	case <-timer.C:
+		t.Fatalf("bridge did not return within %v after client close", budget)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if after := runtime.NumGoroutine(); after > before+2 {
+		t.Errorf("goroutines after client close = %d, want <= %d (before %d)", after, before+2, before)
+	}
+}
 
 func installFakeEmacsclient(t *testing.T, output string) string {
 	t.Helper()

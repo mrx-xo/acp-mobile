@@ -33,6 +33,273 @@ class FakeElement {
   querySelectorAll() { return []; }
 }
 
+function loadSocketClient(overrides = {}) {
+  const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const start = html.indexOf('// --- Socket: connect, reconnect, keepalive ---');
+  const end = html.indexOf('// --- Socket: end ---', start);
+  assert.notEqual(start, -1, 'socket block should exist');
+  assert.notEqual(end, -1, 'socket block should have an end marker');
+
+  let now = 1000;
+  let nextID = 1;
+  const timers = new Map();
+  const nextTimer = () => [...timers.values()].sort((a, b) =>
+    a.at - b.at || a.id - b.id)[0];
+  const clock = {
+    setTimeout(fn, delay = 0) {
+      const id = nextID++;
+      timers.set(id, {id, at: now + delay, fn});
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+    nextDelay() {
+      const next = nextTimer();
+      return next ? next.at - now : null;
+    },
+    pending() {
+      return [...timers.values()].map(({id, at}) => ({id, at}));
+    },
+    async advance(ms) {
+      const target = now + ms;
+      for (let timer = nextTimer(); timer && timer.at <= target; timer = nextTimer()) {
+        now = timer.at;
+        timers.delete(timer.id);
+        await timer.fn();
+      }
+      now = target;
+    },
+  };
+  class FakeDate extends Date {
+    static now() { return now; }
+  }
+  const sockets = [];
+  class FakeWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+    constructor(url) {
+      this.url = url;
+      this.readyState = FakeWebSocket.CONNECTING;
+      this.closeCalls = 0;
+      sockets.push(this);
+    }
+    open() {
+      this.readyState = FakeWebSocket.OPEN;
+      this.onopen();
+    }
+    close() {
+      this.closeCalls++;
+      this.readyState = FakeWebSocket.CLOSING;
+      // Tests decide when the browser delivers the close event.
+    }
+    emitClose() {
+      this.readyState = FakeWebSocket.CLOSED;
+      this.onclose();
+    }
+  }
+  const statusClasses = [];
+  const statusText = {
+    textContent: '',
+    classList: new FakeClassList(),
+    get className() { return statusClasses.at(-1) || ''; },
+    set className(value) { statusClasses.push(value); },
+  };
+  const documentListeners = new Map();
+  const windowListeners = new Map();
+  const calls = {resetReplayBuffer: 0, buffered: [], handled: []};
+  const chatViewEl = new FakeElement('chat');
+  chatViewEl.classList.add('visible');
+  const context = {
+    ws: null,
+    messagesEl: new FakeElement('messages'),
+    statusText,
+    sendBtn: new FakeElement('send'),
+    chatViewEl,
+    allReplayTurns: [],
+    renderedTurnStart: 0,
+    reconnectAttempts: 0,
+    waitForSessionAttempts: 0,
+    reconnectTimer: null,
+    disconnectedAt: null,
+    silenceTimer: null,
+    currentAgentMsg: null,
+    currentUserMsg: null,
+    lastSentMsg: null,
+    replayMode: false,
+    replayTimer: null,
+    sessionId: null,
+    pendingPermissions: [],
+    currentSessionKey: null,
+    currentSockPid: '1',
+    basePath: '',
+    location: {protocol: 'http:', host: 'x'},
+    document: {
+      visibilityState: 'visible',
+      addEventListener: (name, fn) => documentListeners.set(name, fn),
+    },
+    window: {
+      addEventListener: (name, fn) => windowListeners.set(name, fn),
+    },
+    WebSocket: FakeWebSocket,
+    __sockets: sockets,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    Date: FakeDate,
+    setProcessing: () => {},
+    resetThoughtState: () => {},
+    resetReplayBuffer: () => { calls.resetReplayBuffer++; },
+    closeMsgMenu: () => {},
+    closeReader: () => {},
+    bufferReplayMessage: msg => calls.buffered.push(msg),
+    handleMessage: msg => calls.handled.push(msg),
+    flushReplay: () => {},
+    showOrrery: () => {},
+    sKey: session => session.sessionId,
+    fetch: async () => ({ok: true, json: async () => ({sessions: []})}),
+    console,
+    Math,
+    JSON,
+    ...overrides,
+  };
+  vm.createContext(context);
+  vm.runInContext(html.slice(start, end), context, {filename: 'index.html#socket'});
+  return {context, clock, sockets, statusClasses, calls, documentListeners, windowListeners};
+}
+
+test('reconnectDelay starts fast and caps exponential backoff at 60 seconds', () => {
+  const {context} = loadSocketClient();
+  assert.equal(context.reconnectDelay(0), 400);
+  assert.equal(context.reconnectDelay(1), 2000);
+  assert.equal(context.reconnectDelay(2), 4000);
+  assert.equal(context.reconnectDelay(30), 60000);
+});
+
+test('a close followed by an open within two seconds never shows an error', async () => {
+  const {context, clock, sockets, statusClasses} = loadSocketClient();
+  context.connect('1');
+  sockets[0].open();
+  sockets[0].emitClose();
+  assert.equal(context.statusText.className, 'header-status reconnecting');
+  assert.equal(context.statusText.textContent, 'Reconnecting...');
+
+  await clock.advance(400);
+  assert.equal(sockets.length, 2);
+  sockets[1].open();
+  assert.equal(context.statusText.className, 'header-status connected');
+  assert.equal(context.statusText.textContent, 'Connected');
+  assert.equal(statusClasses.some(value => value.split(/\s+/).includes('error')), false);
+});
+
+test('three failed retries promote the status to Disconnected', async () => {
+  const {context, clock, sockets} = loadSocketClient();
+  context.connect('1');
+  sockets[0].open();
+  sockets[0].emitClose();
+
+  for (let retry = 1; retry <= 3; retry++) {
+    assert.equal(context.statusText.className, 'header-status reconnecting');
+    const delay = clock.nextDelay();
+    assert.notEqual(delay, null, 'a retry must be scheduled');
+    await clock.advance(delay);
+    assert.equal(sockets.length, retry + 1);
+    sockets[retry].emitClose();
+  }
+  assert.equal(context.statusText.className, 'header-status error');
+  assert.equal(context.statusText.textContent, 'Disconnected');
+});
+
+test('reconnect resets replay state without blanking messages before flushReplay', async () => {
+  const {context, clock, sockets, calls} = loadSocketClient();
+  context.connect('1');
+  sockets[0].open();
+  context.messagesEl.children.push(new FakeElement(), new FakeElement());
+  context.sessionId = 'old-session';
+  const resetsBeforeRetry = calls.resetReplayBuffer;
+  sockets[0].emitClose();
+  assert.equal(context.messagesEl.children.length, 2);
+
+  await clock.advance(400);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sockets.length, 2);
+  assert.equal(context.messagesEl.children.length, 2);
+  assert.ok(calls.resetReplayBuffer > resetsBeforeRetry);
+  assert.equal(context.sessionId, null);
+
+  context.clearMessages();
+  assert.equal(context.messagesEl.children.length, 0);
+});
+
+test('keepalive pings bypass both replay buffering and live message handling', () => {
+  const {context, sockets, calls} = loadSocketClient();
+  context.connect('1');
+  sockets[0].open();
+  const ping = {data: JSON.stringify({jsonrpc: '2.0', method: 'acp-mobile/ping'})};
+  context.replayMode = true;
+  sockets[0].onmessage(ping);
+  assert.equal(calls.buffered.length, 0);
+  assert.equal(calls.handled.length, 0);
+
+  context.replayMode = false;
+  sockets[0].onmessage(ping);
+  assert.equal(calls.buffered.length, 0);
+  assert.equal(calls.handled.length, 0);
+  sockets[0].onmessage({data: JSON.stringify({method: 'session/update'})});
+  assert.equal(calls.handled.length, 1);
+  assert.equal(calls.handled[0].method, 'session/update');
+});
+
+test('60 seconds of silence closes an open socket and pings renew the deadline', async () => {
+  const silent = loadSocketClient();
+  silent.context.connect('1');
+  silent.sockets[0].open();
+  await silent.clock.advance(59999);
+  assert.equal(silent.sockets[0].closeCalls, 0);
+  await silent.clock.advance(1);
+  assert.equal(silent.sockets[0].closeCalls, 1);
+
+  const active = loadSocketClient();
+  active.context.connect('1');
+  active.sockets[0].open();
+  await active.clock.advance(59000);
+  active.sockets[0].onmessage({
+    data: JSON.stringify({jsonrpc: '2.0', method: 'acp-mobile/ping'}),
+  });
+  await active.clock.advance(59000);
+  assert.equal(active.sockets[0].closeCalls, 0);
+  await active.clock.advance(1001);
+  assert.equal(active.sockets[0].closeCalls, 1);
+});
+
+test('visibility wake resets closed-socket backoff but leaves open sockets alone', async () => {
+  const {context, clock, sockets, documentListeners, windowListeners} = loadSocketClient();
+  assert.equal(typeof windowListeners.get('pageshow'), 'function');
+  assert.equal(typeof windowListeners.get('online'), 'function');
+  const visibilityChanged = documentListeners.get('visibilitychange');
+  assert.equal(typeof visibilityChanged, 'function');
+  context.connect('1');
+  sockets[0].open();
+  sockets[0].emitClose();
+  assert.equal(context.reconnectAttempts, 1);
+  context.reconnectAttempts = 5;
+  context.document.visibilityState = 'visible';
+  visibilityChanged();
+  assert.equal(clock.nextDelay(), 400);
+  assert.equal(clock.pending().length, 1);
+  assert.equal(context.reconnectAttempts, 1);
+
+  await clock.advance(400);
+  assert.equal(sockets.length, 2);
+  sockets[1].open();
+  const pendingBeforeWake = clock.pending();
+  visibilityChanged();
+  context.wakeSocket();
+  assert.deepEqual(clock.pending(), pendingBeforeWake);
+  assert.equal(context.reconnectTimer, null);
+  assert.equal(context.reconnectAttempts, 0);
+  assert.equal(sockets.length, 2);
+});
+
 function loadHistoryClient(overrides = {}) {
   const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
   const start = html.indexOf('// --- History: browse agent-recall transcripts ---');

@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -18,6 +20,146 @@ import (
 
 	"golang.org/x/net/websocket"
 )
+
+func TestReconnectKeepsTranscriptAndShowsGraceState(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "acp-reconnect-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sockPath := filepath.Join(dir, "peer.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan net.Conn)
+	parked := make(chan chan struct{}, 1)
+	stop := make(chan struct{})
+	peerDone := make(chan struct{})
+	t.Cleanup(func() {
+		close(stop)
+		_ = ln.Close()
+		select {
+		case <-peerDone:
+		case <-time.After(10 * time.Second):
+			t.Error("timed out stopping fake unix peer")
+		}
+	})
+	go func() {
+		defer close(peerDone)
+		for generation := 1; ; generation++ {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			release := make(chan struct{})
+			select {
+			case parked <- release:
+			case <-stop:
+				_ = conn.Close()
+				return
+			}
+			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_, err = fmt.Fprintf(conn,
+				`{"jsonrpc":"2.0","id":0,"result":{"sessionId":"s1"}}`+"\n"+
+					`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hello"}}}}`+"\n"+
+					`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"reply generation-%d"}}}}`+"\n"+
+					`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"turn_complete","stopReason":"end_turn"}}}`+"\n", generation)
+			if err != nil {
+				_ = conn.Close()
+				t.Errorf("write replay generation %d: %v", generation, err)
+				return
+			}
+			select {
+			case accepted <- conn:
+			case <-stop:
+				_ = conn.Close()
+				return
+			}
+			select {
+			case <-release:
+			case <-stop:
+			}
+			_ = conn.Close()
+		}
+	}()
+	nextConn := func() net.Conn {
+		t.Helper()
+		select {
+		case conn := <-accepted:
+			return conn
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for fake unix peer connection")
+			return nil
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexHTML)
+	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"sessions":[]}`)
+	})
+	mux.Handle("/ws", websocket.Handler(func(ws *websocket.Conn) {
+		bridgeWebSocket(ws, sockPath)
+	}))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	page := openChromePage(t, srv.URL)
+	page.waitFor(t, `typeof connect === 'function'`)
+	page.eval(t, `currentSockPid = 1; currentSessionKey = 'pid:1'; showChat(); connect('1');`)
+	page.waitFor(t, `document.querySelectorAll('#messages > .msg').length >= 2 && statusText.className === 'header-status connected'`)
+	firstText, ok := page.eval(t, `document.querySelector('#messages > .msg.agent')?.textContent || ''`).(string)
+	if !ok || !strings.Contains(firstText, "reply generation-1") {
+		t.Fatalf("initial agent text = %q, want first replay generation", firstText)
+	}
+	first := nextConn()
+
+	page.eval(t, `
+		window.__minKids = messagesEl.children.length;
+		window.__sawError = false;
+		new MutationObserver(() => {
+			window.__minKids = Math.min(window.__minKids, messagesEl.children.length);
+			if (statusText.className.includes('error')) window.__sawError = true;
+		}).observe(document.getElementById('header'), {subtree: true, attributes: true, characterData: true, childList: true});
+		new MutationObserver(() => {
+			window.__minKids = Math.min(window.__minKids, messagesEl.children.length);
+		}).observe(messagesEl, {childList: true});
+	`)
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(<-parked)
+	page.waitFor(t, `statusText.textContent === 'Reconnecting...' && statusText.className === 'header-status reconnecting'`)
+	if kids := page.eval(t, `messagesEl.children.length`).(float64); kids < 2 {
+		t.Fatalf("transcript has %v children during reconnect grace state, want at least 2", kids)
+	}
+
+	page.waitFor(t, `
+		[...document.querySelectorAll('#messages > .msg.agent')].some(el => el.textContent.includes('reply generation-2')) &&
+		statusText.className === 'header-status connected'
+	`)
+	state := page.evalObject(t, `({minKids: window.__minKids, sawError: window.__sawError})`)
+	if state["minKids"].(float64) < 2 {
+		t.Fatalf("transcript shrank during reconnect: minimum child count = %v, want at least 2", state["minKids"])
+	}
+	if state["sawError"] != false {
+		t.Fatalf("reconnect displayed an error status: %v", state)
+	}
+	second := nextConn()
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(<-parked)
+}
 
 func TestSentImageRemainsVisibleInUserMessage(t *testing.T) {
 	mux := http.NewServeMux()
