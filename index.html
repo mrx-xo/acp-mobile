@@ -1158,11 +1158,12 @@ input, textarea, #fbv-content, .msg, .msg * {
 /* Project combobox: #sp-dir is both the typed path and the filter; the
    list under it scrolls on its own so the sheet keeps its shape. */
 #sp-projects {
-  display: flex; flex-direction: column; margin-top: 6px;
+  display: none; flex-direction: column; margin-top: 6px;
   max-height: 228px; overflow-y: auto; overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   border: 1px solid var(--bg1); border-radius: 10px;
 }
+#sp-projects.open { display: flex; }
 #sp-projects:empty { display: none; }
 .sp-row {
   display: flex; align-items: center; gap: 10px; width: 100%;
@@ -4720,13 +4721,15 @@ let spProjectQuery = '';
 // pointerup unless the finger moved (a scroll cancels the pointer
 // instead). The synthetic click that follows a touch is ignored; the
 // timestamp is shared because a pick re-renders the list, so the click
-// lands on a fresh element, possibly a different row.
+// lands on a fresh element, possibly a different row. A mouse gets the
+// same focus guard (the list closes on blur, so a mousedown that stole
+// focus would close it before the click) and picks on click.
 let spTapSuppressUntil = 0;
 function onTapPick(el, fn) {
   let start = null;
   el.addEventListener('pointerdown', e => {
-    if (e.pointerType !== 'touch') return;
     e.preventDefault();
+    if (e.pointerType !== 'touch') return;
     start = {x: e.clientX, y: e.clientY};
   });
   el.addEventListener('pointerup', e => {
@@ -4761,7 +4764,14 @@ function pickSpawnProject(path) {
   spDir.value = path;
   spProjectQuery = '';
   renderSpawnProjects();
+  closeSpawnProjects();
+  spDir.blur();
 }
+
+// The list is a dropdown: open while the path box has focus or is being
+// typed in, closed on a pick or when focus leaves.
+function openSpawnProjects() { spProjects.classList.add('open'); }
+function closeSpawnProjects() { spProjects.classList.remove('open'); }
 
 // Rows: live first, then rig order. The typed text filters by name,
 // path, or the ~ form; an exact pick shows the whole list again with
@@ -4863,6 +4873,7 @@ function openSpawnSheet(cwd) {
   ];
   spDir.value = cwd || live[0] || '';
   spProjectQuery = '';
+  closeSpawnProjects();
   renderSpawnProjects();
   spPreset = '';
   renderSpawnPresets();
@@ -4878,7 +4889,10 @@ function openSpawnSheet(cwd) {
 spDir.addEventListener('input', () => {
   spProjectQuery = spDir.value;
   renderSpawnProjects();
+  openSpawnProjects();
 });
+spDir.addEventListener('focus', openSpawnProjects);
+spDir.addEventListener('blur', closeSpawnProjects);
 
 function hideSpawnSheet() {
   spScrim.classList.remove('visible');

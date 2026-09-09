@@ -1076,17 +1076,28 @@ test('project combobox lists live first and the typed path filters by name, path
   assert.equal(dir.value, 'nothing-here');
 });
 
-test('picking a row fills the path box and shows the whole list again with that row marked', async () => {
+test('picking a row fills the path box, collapses the list, and reopening shows the whole list with that row marked', async () => {
   const {context, elements} = loadSpawnSheet({fetch: projectsReply});
   context.openSpawnSheet(null);
   await context.loadSpawnProjects();
   const projects = elements.get('sp-projects');
   const dir = elements.get('sp-dir');
+  let blurred = 0;
+  dir.blur = () => { blurred += 1; };
+  assert.equal(projects.classList.contains('open'), false, 'closed until the box is focused');
+  dir.listeners.get('focus')();
+  assert.equal(projects.classList.contains('open'), true);
   dir.value = 'dot';
   dir.listeners.get('input')();
   assert.deepEqual(rowPaths(projects), ['/home/.dotfiles']);
   projects.children[0].listeners.get('click')();
   assert.equal(dir.value, '/home/.dotfiles');
+  assert.equal(projects.classList.contains('open'), false, 'a pick collapses the list');
+  assert.equal(blurred, 1, 'a pick drops the keyboard');
+  dir.listeners.get('focus')();
+  assert.equal(projects.classList.contains('open'), true);
+  dir.listeners.get('blur')();
+  assert.equal(projects.classList.contains('open'), false, 'leaving the box closes the list');
   assert.deepEqual(rowPaths(projects), ['/work/mobile', '/home/.dotfiles', '/home/.emacs-sandbox']);
   assert.deepEqual(rowFlags(projects), ['live', 'sel', '']);
 });
@@ -1113,12 +1124,13 @@ test('a touch tap picks on pointerup without a click, a drag does not pick, the 
   dir.value = 'x';
   projects.children[0].listeners.get('click')();
   assert.equal(dir.value, 'x');
-  // A mouse pointerdown is left alone; the click does the pick (once
-  // the touch suppression window is over).
+  // A mouse pointerdown only guards focus (the list closes on blur);
+  // the click does the pick once the touch suppression window is over.
   now += 1000;
   const mouseRow = projects.children[2];
   mouseRow.listeners.get('pointerdown')({pointerType: 'mouse', preventDefault() { prevented += 1; }});
-  assert.equal(prevented, 1);
+  assert.equal(prevented, 2);
+  assert.equal(dir.value, 'x', 'a mouse pointerdown must not pick');
   mouseRow.listeners.get('click')();
   assert.equal(dir.value, '/home/.emacs-sandbox');
 });
