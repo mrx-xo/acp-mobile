@@ -1163,12 +1163,13 @@ input, textarea, #fbv-content, .msg, .msg * {
 }
 .sp-chip:active { transform: scale(0.96); }
 .sp-chip.sel { border-color: var(--orange); color: var(--orange); }
-#sp-dir, #sp-name, #sp-task {
+#sp-dir, #sp-name, #sp-task, #sp-filter {
   width: 100%; background: var(--bg1); border: none; border-radius: 10px;
   color: var(--fg); padding: 11px 14px; font-size: 16px;
   font-family: var(--mono); resize: none; caret-color: var(--orange);
 }
-#sp-dir:focus, #sp-name:focus, #sp-task:focus { outline: 1px solid var(--bg2); }
+#sp-dir:focus, #sp-name:focus, #sp-task:focus, #sp-filter:focus { outline: 1px solid var(--bg2); }
+#sp-filter { padding: 8px 12px; font-size: 14px; margin-bottom: 8px; }
 #sp-go {
   width: 100%; margin-top: 16px; background: var(--green); border: none;
   border-radius: 12px; color: var(--bg-hard); font-size: 15px; font-weight: 700;
@@ -1564,7 +1565,8 @@ input, textarea, #fbv-content, .msg, .msg * {
     <button id="sp-close">&times;</button>
   </div>
   <div id="sp-body">
-    <div class="sp-label">PROJECT</div>
+    <div class="sp-label">PROJECT <span class="sp-hint">(rig list + live convos, * = live)</span></div>
+    <input id="sp-filter" placeholder="filter projects" autocapitalize="off" autocorrect="off">
     <div id="sp-projects"></div>
     <input id="sp-dir" placeholder="/path/to/project" autocapitalize="off" autocorrect="off">
     <div class="sp-label">LABEL <span class="sp-hint">(optional — names it here and on the rig)</span></div>
@@ -4660,12 +4662,13 @@ function navigateBack() {
 }
 
 // --- Spawn sheet ---
-// Project chips from known cwds, preset chips from the rig, optional
+// Project chips from the rig and live cwds, preset chips from the rig, optional
 // label + first prompt. On success, waits for the new session's socket
 // and opens it.
 const spScrim = document.getElementById('spawn-scrim');
 const spSheet = document.getElementById('spawn-sheet');
 const spProjects = document.getElementById('sp-projects');
+const spFilter = document.getElementById('sp-filter');
 const spPresets = document.getElementById('sp-presets');
 const spDir = document.getElementById('sp-dir');
 const spName = document.getElementById('sp-name');
@@ -4680,6 +4683,43 @@ const DEFAULT_PRESET = {key: '', label: 'default'};
 let spawnPresets = [];
 let spPreset = '';
 let spawnPresetsLoad = 0;
+let spawnProjects = [];
+let spawnProjectsLoad = 0;
+
+async function fetchSpawnProjects() {
+  const resp = await fetch(basePath + '/api/projects', {method: 'POST'});
+  if (!resp.ok) throw new Error('projects ' + resp.status);
+  const data = await resp.json();
+  if (!Array.isArray(data.projects)) throw new Error('projects: bad reply');
+  return data.projects.filter(p => p && typeof p.name === 'string' && typeof p.path === 'string');
+}
+
+function renderSpawnProjects(filter = '') {
+  const needle = filter.trim().toLowerCase();
+  spProjects.innerHTML = '';
+  const ordered = [...spawnProjects].sort((a, b) => Number(b.live) - Number(a.live));
+  for (const p of ordered) {
+    if (needle && !((p.name + ' ' + p.path).toLowerCase().includes(needle))) continue;
+    const chip = document.createElement('button');
+    chip.className = 'sp-chip' + (p.path === spDir.value ? ' sel' : '');
+    chip.textContent = (p.live ? '* ' : '') + shortPath(p.path);
+    chip.title = p.name + ' ' + p.path;
+    chip.onclick = () => { spDir.value = p.path; renderSpawnProjects(spFilter.value); };
+    spProjects.appendChild(chip);
+  }
+}
+
+async function loadSpawnProjects() {
+  const token = ++spawnProjectsLoad;
+  try {
+    const projects = await fetchSpawnProjects();
+    if (token !== spawnProjectsLoad) return;
+    spawnProjects = projects;
+    renderSpawnProjects(spFilter.value);
+  } catch (err) {
+    console.warn('projects unavailable:', err.message);
+  }
+}
 
 async function fetchSpawnPresets() {
   const resp = await fetch(basePath + '/api/presets', {method: 'POST'});
@@ -4721,30 +4761,28 @@ async function loadSpawnPresets() {
 }
 
 function openSpawnSheet(cwd) {
-  const cwds = [...new Set(lastSessions.map(x => x.cwd).filter(Boolean))];
-  spProjects.innerHTML = '';
-  for (const c of cwds) {
-    const chip = document.createElement('button');
-    chip.className = 'sp-chip' + (c === cwd ? ' sel' : '');
-    chip.textContent = shortPath(c);
-    chip.onclick = () => {
-      spDir.value = c;
-      [...spProjects.children].forEach(el => el.classList.remove('sel'));
-      chip.classList.add('sel');
-    };
-    spProjects.appendChild(chip);
-  }
-  spDir.value = cwd || cwds[0] || '';
-  if (!cwd && cwds[0]) spProjects.firstChild && spProjects.firstChild.classList.add('sel');
+  const live = [...new Set(lastSessions.map(x => x.cwd).filter(Boolean))];
+  const known = new Set(spawnProjects.map(p => p.path));
+  spawnProjects = [
+    ...spawnProjects.map(p => ({...p, live: live.includes(p.path)})),
+    ...live.filter(path => !known.has(path)).map(path => ({name: shortPath(path), path, live: true})),
+  ];
+  spDir.value = cwd || live[0] || '';
+  spFilter.value = '';
+  renderSpawnProjects();
   spPreset = '';
   renderSpawnPresets();
   loadSpawnPresets();
+  loadSpawnProjects();
   spName.value = ''; spTask.value = '';
   spGo.disabled = false; spGo.textContent = 'spawn';
   spScrim.classList.add('visible');
   spSheet.classList.add('visible');
   syncHistoryDock();
 }
+
+spFilter.addEventListener('input', () => renderSpawnProjects(spFilter.value));
+spDir.addEventListener('input', () => renderSpawnProjects(spFilter.value));
 
 function hideSpawnSheet() {
   spScrim.classList.remove('visible');

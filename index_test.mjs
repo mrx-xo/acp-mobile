@@ -1025,3 +1025,47 @@ test('spawn sheet drops malformed preset entries and sends only the key', async 
   await context.spawnAndOpen({cwd: '/tmp/x', name: '', task: '', preset: get('spPreset')});
   assert.deepEqual(bodies, [{cwd: '/tmp/x', name: '', task: '', preset: 's'}]);
 });
+
+test('spawn sheet renders live projects first and filters by name or path', async () => {
+  const {context, elements} = loadSpawnSheet({
+    fetch: async url => {
+      if (url === '/api/projects') {
+        return {ok: true, json: async () => ({projects: [
+          {name: 'dotfiles', path: '/home/dotfiles', live: false},
+          {name: 'mobile', path: '/work/mobile', live: true},
+        ]})};
+      }
+      return {ok: true, json: async () => ({presets: []})};
+    },
+  });
+  context.openSpawnSheet(null);
+  await context.loadSpawnProjects();
+  const projects = elements.get('sp-projects');
+  assert.deepEqual(chipLabels(projects), ['* /work/mobile', '/home/dotfiles']);
+  elements.get('sp-filter').value = 'dotfiles';
+  elements.get('sp-filter').listeners.get('input')();
+  assert.deepEqual(chipLabels(projects), ['/home/dotfiles']);
+  elements.get('sp-filter').value = '/work';
+  elements.get('sp-filter').listeners.get('input')();
+  assert.deepEqual(chipLabels(projects), ['* /work/mobile']);
+  projects.children[0].onclick();
+  assert.equal(elements.get('sp-dir').value, '/work/mobile');
+});
+
+test('a stale project reply cannot overwrite a newer spawn-sheet open', async () => {
+  const replies = [deferred(), deferred()];
+  let projectCalls = 0;
+  const {context, elements} = loadSpawnSheet({
+    fetch: async url => {
+      if (url === '/api/projects') return {ok: true, json: async () => ({projects: await replies[projectCalls++].promise})};
+      return {ok: true, json: async () => ({presets: []})};
+    },
+  });
+  context.openSpawnSheet(null);
+  context.openSpawnSheet(null);
+  replies[1].resolve([{name: 'fresh', path: '/fresh', live: false}]);
+  await new Promise(resolve => setImmediate(resolve));
+  replies[0].resolve([{name: 'stale', path: '/stale', live: false}]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(chipLabels(elements.get('sp-projects')), ['/fresh']);
+});
