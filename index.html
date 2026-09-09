@@ -4616,8 +4616,10 @@ function navigateBack() {
   showOrrery();
 }
 
-// Spawn sheet: project chips from known cwds, optional label + first
-// prompt. On success, waits for the new session's socket and opens it.
+// --- Spawn sheet ---
+// Project chips from known cwds, preset chips from the rig, optional
+// label + first prompt. On success, waits for the new session's socket
+// and opens it.
 const spScrim = document.getElementById('spawn-scrim');
 const spSheet = document.getElementById('spawn-sheet');
 const spProjects = document.getElementById('sp-projects');
@@ -4627,21 +4629,53 @@ const spName = document.getElementById('sp-name');
 const spTask = document.getElementById('sp-task');
 const spGo = document.getElementById('sp-go');
 
-// Display copies of the rig's mr-x/agent-shell-presets (emacs.org) —
-// only the char key travels; Emacs resolves it, so this list lagging
-// behind a rig edit shows a stale label at worst.
-const SPAWN_PRESETS = [
-  {key: '',  label: 'default'},
-  {key: 'f', label: 'Fable · Bypass'},
-  {key: 'o', label: 'Opus · Bypass'},
-  {key: 's', label: 'Sonnet · Accept'},
-  {key: 'p', label: 'Opus · Plan'},
-  {key: 'h', label: 'Haiku · Auto'},
-  {key: 'a', label: 'Astra · Full'},
-  {key: 'c', label: 'Sol · Full'},
-  {key: 'x', label: 'Sol Max · Full'},
-];
+// Preset chips mirror the rig's mr-x/agent-shell-presets through
+// /api/presets (syzygy-presets-json), so the phone never carries a copy
+// that drifts. 'default' is the phone's own entry: no preset, the rig's
+// preferred config. Only the char key travels on spawn.
+const DEFAULT_PRESET = {key: '', label: 'default'};
+let spawnPresets = [];
 let spPreset = '';
+let spawnPresetsLoad = 0;
+
+async function fetchSpawnPresets() {
+  const resp = await fetch(basePath + '/api/presets', {method: 'POST'});
+  if (!resp.ok) throw new Error('presets ' + resp.status);
+  const data = await resp.json();
+  if (!Array.isArray(data.presets)) throw new Error('presets: bad reply');
+  return data.presets.filter(p => p && typeof p.key === 'string' && p.key.length === 1);
+}
+
+function renderSpawnPresets() {
+  spPresets.innerHTML = '';
+  for (const p of [DEFAULT_PRESET, ...spawnPresets]) {
+    const chip = document.createElement('button');
+    chip.className = 'sp-chip' + (p.key === spPreset ? ' sel' : '');
+    chip.textContent = p.label;
+    if (p.model) chip.title = p.model + ' / ' + p.mode;
+    chip.onclick = () => {
+      spPreset = p.key;
+      [...spPresets.children].forEach(el => el.classList.remove('sel'));
+      chip.classList.add('sel');
+    };
+    spPresets.appendChild(chip);
+  }
+}
+
+// Refresh the chips from the rig. The last good list stays up while the
+// fetch is in flight or fails; a reply from an older open is dropped.
+async function loadSpawnPresets() {
+  const token = ++spawnPresetsLoad;
+  try {
+    const presets = await fetchSpawnPresets();
+    if (token !== spawnPresetsLoad) return;
+    spawnPresets = presets;
+    if (spPreset && !spawnPresets.some(p => p.key === spPreset)) spPreset = '';
+    renderSpawnPresets();
+  } catch (err) {
+    console.warn('presets unavailable:', err.message);
+  }
+}
 
 function openSpawnSheet(cwd) {
   const cwds = [...new Set(lastSessions.map(x => x.cwd).filter(Boolean))];
@@ -4660,18 +4694,8 @@ function openSpawnSheet(cwd) {
   spDir.value = cwd || cwds[0] || '';
   if (!cwd && cwds[0]) spProjects.firstChild && spProjects.firstChild.classList.add('sel');
   spPreset = '';
-  spPresets.innerHTML = '';
-  for (const p of SPAWN_PRESETS) {
-    const chip = document.createElement('button');
-    chip.className = 'sp-chip' + (p.key === spPreset ? ' sel' : '');
-    chip.textContent = p.label;
-    chip.onclick = () => {
-      spPreset = p.key;
-      [...spPresets.children].forEach(el => el.classList.remove('sel'));
-      chip.classList.add('sel');
-    };
-    spPresets.appendChild(chip);
-  }
+  renderSpawnPresets();
+  loadSpawnPresets();
   spName.value = ''; spTask.value = '';
   spGo.disabled = false; spGo.textContent = 'spawn';
   spScrim.classList.add('visible');
@@ -4830,6 +4854,7 @@ async function refreshForkEntry(btn) {
 
 function spawnAgent() { openSpawnSheet(null); }
 function spawnInProject(cwd) { openSpawnSheet(cwd); }
+// --- Spawn sheet: end ---
 
 async function killSession() {
   if (!currentBufferName) {

@@ -108,3 +108,18 @@ func writeElispError(w http.ResponseWriter, what string, err error, notFoundMsg 
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 	return true
 }
+
+// callElispJSON evaluates FN with ARGS and decodes the base64-armored
+// JSON the newer bridges print (see syzygy-bridge.el).  A bare nil
+// result is still errElispNotFound; garbled output is a daemon error.
+func callElispJSON(ctx context.Context, fn string, args ...elispArg) ([]byte, error) {
+	out, err := callElisp(ctx, fn, args...)
+	if err != nil {
+		return nil, err
+	}
+	decoded, err := unquoteElispBase64(out)
+	if err != nil {
+		return nil, &elispError{err: err, output: out}
+	}
+	return []byte(decoded), nil
+}

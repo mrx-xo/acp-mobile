@@ -315,6 +315,7 @@ func main() {
 	mux.HandleFunc("/api/sessions", handleSessions)
 	mux.HandleFunc("/api/statuses", handleStatuses)
 	mux.HandleFunc("/api/spawn", handleSpawn)
+	mux.HandleFunc("/api/presets", handlePresets)
 	mux.HandleFunc("/api/kill", handleKill)
 	mux.HandleFunc("/api/label", handleLabel)
 	mux.HandleFunc("/api/push", handlePush)
@@ -847,6 +848,16 @@ func spawnArgs(req spawnRequest) []string {
 	return args
 }
 
+// validPresetKey accepts one ASCII letter, either case: the rig's preset
+// keys are chars like ?f and ?F.
+func validPresetKey(key string) bool {
+	if len(key) != 1 {
+		return false
+	}
+	c := key[0]
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
 func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -870,7 +881,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 	}
 	// Preset is a single char key into the rig's mr-x/agent-shell-presets;
 	// Emacs resolves it (and errors on unknown keys).
-	if req.Preset != "" && (len(req.Preset) != 1 || req.Preset[0] < 'a' || req.Preset[0] > 'z') {
+	if req.Preset != "" && !validPresetKey(req.Preset) {
 		http.Error(w, "invalid preset", http.StatusBadRequest)
 		return
 	}

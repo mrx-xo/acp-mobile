@@ -26,6 +26,11 @@ class FakeElement {
   set innerHTML(value) { this._innerHTML = value; this.children = []; }
   get innerHTML() { return this._innerHTML; }
   appendChild(child) { this.children.push(child); return child; }
+  get firstChild() { return this.children[0] || null; }
+  set className(value) {
+    this.classList.values = new Set(String(value).split(/\s+/).filter(Boolean));
+  }
+  get className() { return [...this.classList.values].join(' '); }
   addEventListener(name, fn) { this.listeners.set(name, fn); }
   blur() {}
   focus() {}
@@ -690,4 +695,151 @@ test('transcript bubbles classify like chat bubbles', () => {
   assert.equal(turnNavKind(['pv-msg', 'agent']), 'agent');
   assert.equal(turnNavKind(['msg', 'system']), 'system');
   assert.equal(turnNavKind(['msg', 'tool']), 'agent');
+});
+
+// --- Spawn sheet ---
+
+function loadSpawnSheet(overrides = {}) {
+  const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const start = html.indexOf('// --- Spawn sheet ---');
+  const end = html.indexOf('// --- Spawn sheet: end ---', start);
+  assert.notEqual(start, -1, 'spawn sheet block should exist');
+  assert.notEqual(end, -1, 'spawn sheet block should have an end marker');
+  const source = html.slice(start, end);
+
+  const elements = new Map();
+  const element = id => {
+    if (!elements.has(id)) elements.set(id, new FakeElement(id));
+    return elements.get(id);
+  };
+  const context = {
+    console: {warn: () => {}},
+    document: {
+      getElementById: element,
+      createElement: () => new FakeElement(),
+    },
+    basePath: '',
+    lastSessions: [],
+    shortPath: value => String(value),
+    sKey: session => session.bufferName,
+    syncHistoryDock: () => {},
+    loadSessions: async () => {},
+    selectSession: () => {},
+    closeChatMenu: () => {},
+    currentBufferName: null,
+    fetch: async () => { throw new Error('unexpected fetch'); },
+    alert: () => {},
+    setTimeout: fn => { fn(); return 1; },
+    clearTimeout: () => {},
+    setInterval: () => 1,
+    clearInterval: () => {},
+    Array,
+    Set,
+    Error,
+    JSON,
+    Promise,
+    ...overrides,
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context, {filename: 'index.html#spawn'});
+  // Top-level let/const stay in the script scope, not on the context.
+  const get = name => vm.runInContext(name, context);
+  const set = (name, value) => vm.runInContext(`${name} = ${JSON.stringify(value)}`, context);
+  return {context, elements, get, set};
+}
+
+const presetsReply = presets => async (url, options) => {
+  assert.equal(url, '/api/presets');
+  assert.equal(options.method, 'POST');
+  return {ok: true, json: async () => ({presets})};
+};
+
+const chipLabels = el => el.children.map(chip => chip.textContent);
+
+test('spawn sheet shows the rig presets after default, in rig order', async () => {
+  const {context, elements, get} = loadSpawnSheet({
+    fetch: presetsReply([
+      {key: 'f', label: 'Fable 5.1 \u00b7 Bypass', model: 'fable[1m]', mode: 'bypassPermissions'},
+      {key: 'F', label: 'Fable 5 \u00b7 Bypass', model: 'claude-fable-5[1m]', mode: 'bypassPermissions'},
+      {key: 'a', label: 'Astra \u00b7 Full', model: 'gpt-6-astra', mode: 'agent-full-access'},
+    ]),
+  });
+  context.openSpawnSheet(null);
+  const presets = elements.get('sp-presets');
+  assert.deepEqual(chipLabels(presets), ['default']);
+  await context.loadSpawnPresets();
+  assert.deepEqual(chipLabels(presets), [
+    'default', 'Fable 5.1 \u00b7 Bypass', 'Fable 5 \u00b7 Bypass', 'Astra \u00b7 Full',
+  ]);
+  assert.equal(presets.children[0].classList.contains('sel'), true);
+  presets.children[2].onclick();
+  assert.equal(get('spPreset'), 'F');
+  assert.equal(presets.children[2].classList.contains('sel'), true);
+  assert.equal(presets.children[0].classList.contains('sel'), false);
+});
+
+test('spawn sheet keeps the last good presets when the rig is unreachable', async () => {
+  let fail = false;
+  const {context, elements} = loadSpawnSheet({
+    fetch: async (url, options) => {
+      if (fail) throw new Error('offline');
+      return presetsReply([{key: 'o', label: 'Opus \u00b7 Bypass', model: 'opus', mode: 'bypassPermissions'}])(url, options);
+    },
+  });
+  context.openSpawnSheet(null);
+  await context.loadSpawnPresets();
+  const presets = elements.get('sp-presets');
+  assert.deepEqual(chipLabels(presets), ['default', 'Opus \u00b7 Bypass']);
+  fail = true;
+  context.openSpawnSheet(null);
+  await context.loadSpawnPresets();
+  assert.deepEqual(chipLabels(presets), ['default', 'Opus \u00b7 Bypass']);
+});
+
+test('a preset reply from an older open cannot overwrite a newer one', async () => {
+  const first = deferred();
+  const second = deferred();
+  let calls = 0;
+  const {context, elements} = loadSpawnSheet({
+    fetch: async () => {
+      calls += 1;
+      const presets = await (calls === 1 ? first.promise : second.promise);
+      return {ok: true, json: async () => ({presets})};
+    },
+  });
+  context.openSpawnSheet(null);
+  const stale = context.loadSpawnPresets();
+  context.openSpawnSheet(null);
+  const fresh = context.loadSpawnPresets();
+  second.resolve([{key: 'h', label: 'Haiku \u00b7 Auto', model: 'haiku', mode: 'auto'}]);
+  await fresh;
+  first.resolve([{key: 'x', label: 'stale', model: 'x', mode: 'x'}]);
+  await stale;
+  assert.deepEqual(chipLabels(elements.get('sp-presets')), ['default', 'Haiku \u00b7 Auto']);
+});
+
+test('spawn sheet drops malformed preset entries and sends only the key', async () => {
+  const bodies = [];
+  const {context, get, set} = loadSpawnSheet({
+    fetch: async (url, options) => {
+      if (url === '/api/presets') {
+        return {ok: true, json: async () => ({presets: [
+          {key: 'ff', label: 'two chars'},
+          null,
+          {label: 'no key'},
+          {key: 's', label: 'Sonnet \u00b7 Accept', model: 'sonnet', mode: 'acceptEdits'},
+        ]})};
+      }
+      bodies.push(JSON.parse(options.body));
+      return {json: async () => ({ok: true})};
+    },
+    loadSessions: async () => {},
+  });
+  context.openSpawnSheet(null);
+  await context.loadSpawnPresets();
+  assert.deepEqual(get('spawnPresets').map(p => p.key), ['s']);
+  set('spPreset', 's');
+  set('SPAWN_POLL_MS', 0);
+  await context.spawnAndOpen({cwd: '/tmp/x', name: '', task: '', preset: get('spPreset')});
+  assert.deepEqual(bodies, [{cwd: '/tmp/x', name: '', task: '', preset: 's'}]);
 });
