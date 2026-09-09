@@ -486,6 +486,19 @@ func recordPush(bufferName, title, message string, at int64) {
 	}
 }
 
+// pushesSince returns inbox entries after SINCE (unix ms), oldest first.
+func pushesSince(since int64) []pushEntry {
+	pushInbox.mu.Lock()
+	defer pushInbox.mu.Unlock()
+	out := []pushEntry{}
+	for _, e := range pushInbox.entries {
+		if e.At > since {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // POST /api/push-inbox {since} -> {now, entries} with entries after SINCE
 // (unix ms).  The page passes the previous response's now.
 func handlePushInbox(w http.ResponseWriter, r *http.Request) {

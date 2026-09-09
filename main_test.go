@@ -1785,3 +1785,36 @@ func TestTranscriptInfoKeepsResumeReadiness(t *testing.T) {
 		t.Fatalf("unavailable reason dropped: %s", out)
 	}
 }
+
+func TestHandleStatusesCarriesPushesAndRefreshesPresence(t *testing.T) {
+	resetPushInbox()
+	resetPresence()
+	recordPush("Claude Agent @ a", "a", "Finished", 1000)
+	recordPush("Claude Agent @ b", "b", "Finished", 3000)
+	w := httptest.NewRecorder()
+	handleStatuses(w, httptest.NewRequest(http.MethodPost, "/api/statuses", strings.NewReader(`{"pushSince":2000}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body)
+	}
+	var resp struct {
+		Now    int64 `json:"now"`
+		Pushes []struct {
+			BufferName string `json:"bufferName"`
+		} `json:"pushes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Now <= 0 || len(resp.Pushes) != 1 || resp.Pushes[0].BufferName != "Claude Agent @ b" {
+		t.Fatalf("reply = %s", w.Body)
+	}
+	if v, b := presenceFresh(); !v || b != "" {
+		t.Fatalf("statuses poll must mark the Orrery visible, got %v %q", v, b)
+	}
+	// No body still works (older page, first load).
+	w = httptest.NewRecorder()
+	handleStatuses(w, httptest.NewRequest(http.MethodPost, "/api/statuses", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("no-body status = %d", w.Code)
+	}
+}

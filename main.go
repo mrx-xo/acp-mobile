@@ -682,12 +682,21 @@ func handleStatuses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
+	// The Orrery polls only while visible: that is a presence heartbeat.
+	setPresence(true, "")
+	var req struct {
+		PushSince int64 `json:"pushSince"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&req)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"statuses": currentStatuses(),
 		"version":  buildID,
+		"now":      nowFunc().UnixMilli(),
+		"pushes":   pushesSince(req.PushSince),
 	})
 }
 
