@@ -1844,7 +1844,10 @@ func TestJumpToBottomLandsOnRealBottomAndFollows(t *testing.T) {
 		setProcessing(false);
 		for (let i = 0; i < 60; i++) addAgentMsg('line ' + i);
 		messagesEl.scrollTop = 0;
-		await new Promise(r => setTimeout(r, 150));   // let the scroll event mark us away from the bottom
+		// The scroll event that flags "away from the bottom" lands on a later
+		// frame; under load that frame can be well past 150ms. Wait for the
+		// flag itself rather than a fixed sleep.
+		for (let i = 0; i < 80 && isAtBottom; i++) await new Promise(r => setTimeout(r, 25));
 		const shownBefore = scrollBtn.classList.contains('visible') && !isAtBottom;
 		scrollBtn.click();
 		// Read synchronously: an instant snap has already landed and flagged
@@ -1911,6 +1914,113 @@ func TestReplayAnsweredPermissionDoesNotLookBusy(t *testing.T) {
 	}
 	if waiting["processing"] != true || waiting["resolved"] != false || waiting["buttons"].(float64) < 1 {
 		t.Fatalf("permission that ends the replay must stay interactive and busy, got %v", waiting)
+	}
+}
+
+func TestAgentInitiatedActivityDoesNotLookBusy(t *testing.T) {
+	page := openComposerTestPage(t, 844, 844)
+	state := page.evalObject(t, `(() => {
+		const upd = (update) => ({jsonrpc: '2.0', method: 'session/update', params: {sessionId: 's1', update}});
+		const resp = (id, result) => ({jsonrpc: '2.0', id, result});
+		const run = (records) => {
+			messagesEl.innerHTML = ''; showChat(); sessionId = null; pendingPermissions = []; setProcessing(false);
+			replayMode = true; resetReplayBuffer();
+			for (const r of records) bufferReplayMessage(r);
+			flushReplay();
+			return {processing, promptTurnOpen};
+		};
+		const trailingRecords = [
+			resp(0, {sessionId: 's1'}),
+			upd({sessionUpdate: 'user_message_chunk', content: {type: 'text', text: 'run it'}}),
+			upd({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'on it'}}),
+			upd({sessionUpdate: 'turn_complete', stopReason: 'end_turn'}),
+			upd({sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Terminal', status: 'pending'}),
+			upd({sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed'}),
+			upd({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'background job finished'}})
+		];
+		const trailing = run(trailingRecords);
+		const open = run([
+			resp(0, {sessionId: 's1'}),
+			upd({sessionUpdate: 'user_message_chunk', content: {type: 'text', text: 'run it'}}),
+			upd({sessionUpdate: 'tool_call', toolCallId: 't2', title: 'Terminal', status: 'pending'})
+		]);
+		run(trailingRecords);
+		handleMessage(upd({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'more'}}));
+		const liveTrailing = processing;
+		handleMessage(upd({sessionUpdate: 'user_message_chunk', content: {type: 'text', text: 'from the rig'}}));
+		handleMessage(upd({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'reply'}}));
+		const liveOpen = processing;
+		handleMessage(upd({sessionUpdate: 'turn_complete', stopReason: 'end_turn'}));
+		const liveComplete = processing;
+		return {trailing, open, liveTrailing, liveOpen, liveComplete};
+	})()`)
+	trailing := state["trailing"].(map[string]interface{})
+	open := state["open"].(map[string]interface{})
+	if trailing["processing"] != false || trailing["promptTurnOpen"] != false {
+		t.Fatalf("trailing replay activity must stay idle with a closed prompt turn, got %v", trailing)
+	}
+	if open["processing"] != true || open["promptTurnOpen"] != true {
+		t.Fatalf("open replay turn with a pending tool must stay busy, got %v", open)
+	}
+	if state["liveTrailing"] != false {
+		t.Fatalf("live agent activity after completed replay must stay idle, got %v", state)
+	}
+	if state["liveOpen"] != true {
+		t.Fatalf("live user prompt followed by agent activity must become busy, got %v", state)
+	}
+	if state["liveComplete"] != false {
+		t.Fatalf("live turn_complete must return to idle, got %v", state)
+	}
+}
+
+func TestComposerDraftStaysWithItsChat(t *testing.T) {
+	page := openComposerTestPage(t, 844, 844)
+	state := page.evalObject(t, `(() => {
+		connect = () => {}; loadSessions = () => {}; localStorage.clear();
+		const A = {pid: 1, bufferName: 'Claude Agent @ a', cwd: '/tmp'};
+		const B = {pid: 2, bufferName: 'Claude Agent @ b', cwd: '/tmp'};
+		selectSession(A);
+		promptEl.value = 'half typed for a';
+		promptEl.oninput();
+		const storedA = localStorage.getItem('acp-draft:Claude Agent @ a');
+		showOrrery();
+		selectSession(B);
+		const boxInB = promptEl.value;
+		promptEl.value = 'note for b';
+		promptEl.oninput();
+		showOrrery();
+		selectSession(A);
+		const boxBackInA = promptEl.value;
+		selectSession(B);
+		const boxBackInB = promptEl.value;
+		sessionId = 'sb'; ws = {readyState: 1, send: () => {}}; setProcessing(false);
+		sendPrompt();
+		const boxAfterSend = promptEl.value;
+		const storedBAfterSend = localStorage.getItem('acp-draft:Claude Agent @ b');
+		selectSession(A);
+		const boxAStill = promptEl.value;
+		return {storedA, boxInB, boxBackInA, boxBackInB, boxAfterSend, storedBAfterSend, boxAStill};
+	})()`)
+	if state["storedA"] != "half typed for a" {
+		t.Fatalf("typing in A must store A's draft, got %v", state)
+	}
+	if state["boxInB"] != "" {
+		t.Fatalf("first switch to B must show an empty composer, got %v", state)
+	}
+	if state["boxBackInA"] != "half typed for a" {
+		t.Fatalf("returning to A through the orrery must restore A's draft, got %v", state)
+	}
+	if state["boxBackInB"] != "note for b" {
+		t.Fatalf("switching back to B must restore B's draft, got %v", state)
+	}
+	if state["boxAfterSend"] != "" {
+		t.Fatalf("sending from B must clear the composer, got %v", state)
+	}
+	if state["storedBAfterSend"] != nil {
+		t.Fatalf("sending from B must remove B's stored draft, got %v", state)
+	}
+	if state["boxAStill"] != "half typed for a" {
+		t.Fatalf("returning to A after sending from B must preserve A's draft, got %v", state)
 	}
 }
 

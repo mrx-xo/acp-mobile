@@ -1716,6 +1716,12 @@ let currentUserMsg = null;
 let thoughtMsgsById = new Map();
 let currentAnonymousThought = null;
 let processing = false;
+// A turn counts as "generating" only when a prompt opened it. Agent
+// activity with no prompt behind it (a background task finishing after
+// the turn re-invokes the model) has no request, so nothing ever emits a
+// turn_complete for it; treating those chunks as busy left the thinking
+// bar and Stop button stuck until the next real turn.
+let promptTurnOpen = false;
 let reconnectAttempts = 0;
 let waitForSessionAttempts = 0;
 let reconnectTimer = null;
@@ -3358,7 +3364,11 @@ function flushReplay() {
   };
   // Track the *latest* turn boundary in replay order.  A historical
   // turn_complete must not make a newer, still-running turn look idle.
+  // Only a user prompt opens a turn; agent or tool chunks alone (an
+  // agent-initiated continuation) never make the replay look busy.
   let replayBusy = false;
+  const replayActivity = () => { if (promptTurnOpen) replayBusy = true; };
+  promptTurnOpen = false;
 
   for (const msg of msgs) {
     // Responses: handle silently for state (sessionId, modes, etc.)
@@ -3396,7 +3406,7 @@ function flushReplay() {
         }
       }
       if (msg.result && msg.result.stopReason) {
-        replayBusy = false;
+        replayBusy = false; promptTurnOpen = false;
         currentAnonymousThoughtTurn = null;
         flushPendingAgent();
       }
@@ -3440,7 +3450,7 @@ function flushReplay() {
 
     switch (kind) {
       case 'agent_message_chunk':
-        replayBusy = true;
+        replayActivity();
         pendingText += text;
         break;
       case 'agent_thought_chunk': {
@@ -3471,7 +3481,7 @@ function flushReplay() {
         break;
       }
       case 'tool_call': {
-        replayBusy = true;
+        replayActivity();
         const tcId = update.toolCallId;
         // Check if we already have a turn for this toolCallId — update it instead of adding duplicate
         let found = false;
@@ -3491,7 +3501,7 @@ function flushReplay() {
         break;
       }
       case 'tool_call_update': {
-        replayBusy = true;
+        replayActivity();
         // Merge into the parent tool turn instead of creating a separate turn.
         // This prevents orphaned tool_updates when the INITIAL_TURNS window
         // or load-more batches split a tool from its update.
@@ -3514,7 +3524,7 @@ function flushReplay() {
         break;
       }
       case 'user_message_chunk':
-        replayBusy = true;
+        replayBusy = true; promptTurnOpen = true;
         flushPendingAgent();
         pendingUserTurn = appendUserContentBlock(
           pendingUserTurn,
@@ -3522,10 +3532,10 @@ function flushReplay() {
             ? {type: 'text', text: update.text} : null));
         break;
       case 'turn_complete':
-        replayBusy = false;
+        replayBusy = false; promptTurnOpen = false;
         break;
       case 'available_commands_update':
-        replayBusy = false;
+        replayBusy = false; promptTurnOpen = false;
         if (sessionId) sendBtn.disabled = false;
         break;
       case 'current_mode_update':
@@ -3543,8 +3553,9 @@ function flushReplay() {
   limitReplayImageMemory(turns);
 
   // The last lifecycle marker in the ordered replay is authoritative.
-  // Empty/new sessions remain idle; a trailing user/tool/message update
-  // without turn_complete means the turn is still running.
+  // Empty/new sessions remain idle; a trailing user prompt whose turn has
+  // no turn_complete yet means the turn is still running. Trailing agent
+  // or tool activity with no prompt behind it does not.
   setProcessing(replayBusy);
 
   // A permission is still waiting only if it ends the replay: the
@@ -3555,6 +3566,7 @@ function flushReplay() {
   const lastTurn = turns[turns.length - 1];
   if (lastTurn && lastTurn.type === 'permission') {
     lastTurn.interactive = true;
+    promptTurnOpen = true;
     setProcessing(true);
   }
 
@@ -3625,6 +3637,7 @@ function handleMessage(msg) {
         errText += ' [' + msg.error.code + ']';
       }
       addErrorMsg(errText);
+      promptTurnOpen = false;
       setProcessing(false);
       return;
     }
@@ -3655,6 +3668,7 @@ function handleMessage(msg) {
     if (msg.result && msg.result.stopReason) {
       currentAgentMsg = null;
       endAnonymousThoughtRun();
+      promptTurnOpen = false;
       setProcessing(false);
       // Mark last sent user message as delivered
       if (lastSentMsg) { markSent(lastSentMsg); lastSentMsg = null; }
@@ -3687,7 +3701,7 @@ function handleMessage(msg) {
 
     switch (kind) {
       case 'agent_message_chunk':
-        setProcessing(true);
+        if (promptTurnOpen) setProcessing(true);
         if (!currentAgentMsg) {
           currentAgentMsg = addAgentMsg('');
         }
@@ -3701,14 +3715,14 @@ function handleMessage(msg) {
           endAnonymousThoughtRun();
           break;
         }
-        setProcessing(true);
+        if (promptTurnOpen) setProcessing(true);
         appendThoughtDelta(update, thoughtText);
         break;
       }
 
       case 'tool_call': {
         currentAgentMsg = null;
-        setProcessing(true);
+        if (promptTurnOpen) setProcessing(true);
         const tcId = update.toolCallId;
         // If we already have an element for this toolCallId, update it in place
         const existing = tcId && messagesEl._toolCalls && messagesEl._toolCalls[tcId];
@@ -3737,6 +3751,7 @@ function handleMessage(msg) {
 
       case 'user_message_chunk':
         currentAgentMsg = null;
+        promptTurnOpen = true; // a prompt from the rig or another phone
         {
           const block = normalizeUserContentBlock(
             update.content || (typeof update.text === 'string'
@@ -3754,14 +3769,14 @@ function handleMessage(msg) {
 
       case 'turn_complete':
         currentAgentMsg = null;
-        setProcessing(false);
+        promptTurnOpen = false; setProcessing(false);
         if (lastSentMsg) { markSent(lastSentMsg); lastSentMsg = null; }
         flushMessageQueue();
         break;
 
       case 'available_commands_update':
         if (sessionId) sendBtn.disabled = false;
-        setProcessing(false);
+        promptTurnOpen = false; setProcessing(false);
         flushMessageQueue();
         break;
 
@@ -3959,6 +3974,27 @@ attachInput.addEventListener('change', async (e) => {
   attachInput.value = '';
 });
 
+// --- Composer drafts: one per chat ---
+// Half-typed text belongs to the chat it was typed in. Stash it under the
+// session key when leaving, restore it when that chat opens again, and
+// mirror it to localStorage so a reload or a self-update keeps it.
+const DRAFT_PREFIX = 'acp-draft:';
+function stashDraft() {
+  if (!currentSessionKey) return;
+  const text = promptEl.value;
+  try {
+    if (text) localStorage.setItem(DRAFT_PREFIX + currentSessionKey, text);
+    else localStorage.removeItem(DRAFT_PREFIX + currentSessionKey);
+  } catch (_) { /* storage full or disabled: the draft still lives in the box */ }
+}
+function restoreDraft() {
+  let text = '';
+  try { text = (currentSessionKey && localStorage.getItem(DRAFT_PREFIX + currentSessionKey)) || ''; } catch (_) {}
+  promptEl.value = text;
+  promptEl.style.height = 'auto';
+  if (text) promptEl.style.height = Math.min(promptEl.scrollHeight, 120) + 'px';
+}
+
 function sendPrompt() {
   const text = promptEl.value.trim();
   if ((!text && pendingImages.length === 0 && pendingRefs.length === 0) || !sessionId) return;
@@ -3968,6 +4004,7 @@ function sendPrompt() {
 
   promptEl.value = '';
   promptEl.style.height = 'auto';
+  stashDraft(); // sent: the stored draft for this chat goes away
 
   if (processing) {
     // Images keep waiting in the composer; text refs belong to this queued turn.
@@ -3990,6 +4027,7 @@ function sendPromptText(text, refs) {
   renderAttachRow();
   const payloadText = formatReferencedPrompt(text, refs || []);
   lastSentMsg = addUserMsg(formatReferencedPrompt(text, refs || []), 'sending', imgs);
+  promptTurnOpen = true;
   setProcessing(true);
 
   const blocks = imgs.map(i => ({ type: 'image', data: i.data, mimeType: i.mimeType }));
@@ -4056,6 +4094,7 @@ promptEl.onkeydown = (e) => {
 promptEl.oninput = () => {
   promptEl.style.height = 'auto';
   promptEl.style.height = Math.min(promptEl.scrollHeight, 120) + 'px';
+  stashDraft();
 };
 
 // --- File browser ---
@@ -4485,8 +4524,10 @@ function makeSessionCard(s, name) {
 
 function selectSession(session) {
   markViewed(session);
+  stashDraft(); // the chat being left keeps its own half-typed text
   currentSockPid = session.pid;
   currentSessionKey = sKey(session);
+  restoreDraft();
   // A NEW session: wipe before dialing so the old chat never sits under
   // a different session's header. Only same-session reconnects keep it.
   clearMessages();
@@ -4521,6 +4562,7 @@ function showChat() {
 }
 
 function showOrrery() {
+  stashDraft();
   resetChatSwipe();
   chatViewEl.classList.remove('visible');
   orreryEl.classList.remove('hidden');
