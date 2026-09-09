@@ -8,6 +8,11 @@ class FakeClassList {
   add(...names) { names.forEach(name => this.values.add(name)); }
   remove(...names) { names.forEach(name => this.values.delete(name)); }
   contains(name) { return this.values.has(name); }
+  toggle(name, force) {
+    const on = force === undefined ? !this.values.has(name) : !!force;
+    if (on) this.values.add(name); else this.values.delete(name);
+    return on;
+  }
 }
 
 class FakeElement {
@@ -1430,4 +1435,90 @@ test('catalogueFlow returns null without posting when the first prompt is cancel
     url: '/api/catalogue?sessionId=s1',
     method: 'GET',
   }]);
+});
+
+// --- Catalogue and pin: response ordering (a slow read must not undo a write) ---
+test('a catalogue GET that was in flight before a save cannot overwrite the saved state', async () => {
+  const slowGet = deferred();
+  const {context} = loadHistoryClient({
+    fetch: async (url, options) => {
+      if (!options || !options.method) return slowGet.promise;
+      return {ok: true, text: async () => JSON.stringify({sessionId: 's1', catalogued: '2026-09-08T10:00:00Z', note: 'saved', tags: ['a'], allTags: ['a']})};
+    },
+  });
+  const read = context.fetchCatalogueState('s1');
+  await context.saveCatalogue('s1', 'saved', ['a']);
+  slowGet.resolve({ok: true, text: async () => JSON.stringify({sessionId: 's1', catalogued: '', note: '', tags: [], allTags: []})});
+  await read;
+  assert.equal(vm.runInContext("catalogueStates.get('s1').note", context), 'saved');
+});
+
+test('catalogueFlow neither prompts nor saves once the caller is no longer current', async () => {
+  let prompts = 0;
+  let posts = 0;
+  let current = true;
+  const {context} = loadHistoryClient({
+    window: {prompt: () => { prompts += 1; return 'x'; }},
+    fetch: async (url, options) => {
+      if (options && options.method === 'POST') posts += 1;
+      current = false; // the user navigated away while the read was in flight
+      return {ok: true, text: async () => JSON.stringify({sessionId: 's1', catalogued: '', note: '', tags: [], allTags: []})};
+    },
+  });
+  assert.equal(await context.catalogueFlow('s1', () => current), null);
+  assert.equal(prompts, 0);
+  assert.equal(posts, 0);
+});
+
+test('going back to a narrowed History list after a catalogue change reruns the query', async () => {
+  const searches = [];
+  const {context, elements} = loadHistoryClient({
+    fetch: async (url, options) => {
+      if (url === '/api/transcript-search') {
+        searches.push(JSON.parse(options.body));
+        return {ok: true, json: async () => ({results: [{file: '/t.md', sessionId: 's1', catalogued: '2026-09-08T10:00:00Z', project: 'p', timestamp: '2026-09-08-10-00-00'}], truncated: false})};
+      }
+      if (url.indexOf('/api/transcript?') === 0) return {ok: true, json: async () => ({content: ''})};
+      throw new Error('unexpected ' + url);
+    },
+  });
+  await context.searchHistory('#');
+  assert.equal(searches.length, 1);
+  const row = vm.runInContext('historyRootState.list[0]', context);
+  await context.openTranscript(row, '');
+  context.rememberCatalogueState({sessionId: 's1', catalogued: '', note: '', tags: []});
+  elements.get('history-back').listeners.get('click')();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(searches.length, 2);
+  assert.deepEqual(searches[1], {query: '', catalogued: true, tags: []});
+});
+
+function loadOrreryPins(overrides = {}) {
+  const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const start = html.indexOf('// --- Orrery pins: chats the phone keeps at the top ---');
+  const end = html.indexOf('function renderSessions(', start);
+  assert.notEqual(start, -1, 'orrery pins block should exist');
+  const context = {
+    basePath: '', lastSessions: [], orreryEl: new FakeElement('orrery'), navListEl: new FakeElement('nav-list'),
+    renderSessions: () => {}, JSON, Promise, Array, Set, Number,
+    fetch: async () => { throw new Error('unexpected fetch'); },
+    ...overrides,
+  };
+  vm.createContext(context);
+  vm.runInContext(html.slice(start, end), context, {filename: 'index.html#orrery-pins'});
+  return context;
+}
+
+test('a pin report that was in flight before a toggle cannot undo the toggle', async () => {
+  const slowGet = deferred();
+  const context = loadOrreryPins({
+    fetch: async (url, options) => options && options.method === 'POST'
+      ? {ok: true, json: async () => ({bufferName: 'chat', pinned: true, pins: ['chat']})}
+      : slowGet.promise,
+  });
+  const report = context.loadOrreryPins();
+  assert.equal(await context.toggleChatPin('chat'), true);
+  slowGet.resolve({ok: true, json: async () => ({pins: []})});
+  await report;
+  assert.equal(context.isChatPinned('chat'), true);
 });

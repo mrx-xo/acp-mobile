@@ -4547,8 +4547,12 @@ async function loadStatuses() {
 // the same pins and a killed chat drops out on its own.  Nothing is
 // persisted, and the Mac's own anchoring is a separate list on purpose.
 let orreryPins = new Set();
+// Every toggle bumps the generation; a report that was requested before
+// the toggle is stale by the time it lands and must not undo it.
+let orreryPinsGeneration = 0;
 function isChatPinned(name) { return !!name && orreryPins.has(name); }
-function acceptOrreryPins(pins) {
+function acceptOrreryPins(pins, generation = orreryPinsGeneration) {
+  if (generation !== orreryPinsGeneration) return;
   const next = new Set(Array.isArray(pins) ? pins : []);
   const same = next.size === orreryPins.size && [...next].every(n => orreryPins.has(n));
   orreryPins = next;
@@ -4559,13 +4563,15 @@ function acceptOrreryPins(pins) {
   }
 }
 async function loadOrreryPins() {
+  const generation = orreryPinsGeneration;
   try {
     const resp = await fetch(basePath + '/api/pin', { cache: 'no-store' });
     if (!resp.ok) return;
-    acceptOrreryPins((await resp.json()).pins);
+    acceptOrreryPins((await resp.json()).pins, generation);
   } catch (_) { /* the rig is away: keep the last known pins */ }
 }
 async function toggleChatPin(bufferName) {
+  const generation = ++orreryPinsGeneration;
   const resp = await fetch(basePath + '/api/pin', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -4573,7 +4579,7 @@ async function toggleChatPin(bufferName) {
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || data.error) throw new Error(data.error || ('HTTP ' + resp.status));
-  acceptOrreryPins(data.pins);
+  acceptOrreryPins(data.pins, generation);
   return !!data.pinned;
 }
 // Pinned first, then whatever order the caller already chose.
@@ -6036,8 +6042,10 @@ cmCatalogue.addEventListener('click', async () => {
   closeChatMenu();
   const id = currentSessionIdForCatalogue();
   if (!id) { alert('This chat has no session id yet.'); return; }
-  try { await catalogueFlow(id); }
-  catch (err) { alert('Catalogue failed: ' + err.message); }
+  const chat = currentBufferName;
+  const stillHere = () => currentBufferName === chat && chatViewEl.classList.contains('visible');
+  try { await catalogueFlow(id, stillHere); }
+  catch (err) { if (stillHere()) alert('Catalogue failed: ' + err.message); }
 });
 cmUncatalogue.addEventListener('click', async () => {
   closeChatMenu();
@@ -6374,8 +6382,13 @@ let historyCataloguedOnly = false;
 // writes it.  catalogueStates caches the last reply per session id so the
 // chat menu can paint before its refresh lands.
 const catalogueStates = new Map();
+// Per-session generation: a write bumps it, so a read that was in flight
+// before the write cannot land afterwards and overwrite the saved state.
+const catalogueGenerations = new Map();
+function catalogueGeneration(id) { return catalogueGenerations.get(id) || 0; }
 function rememberCatalogueState(state) {
   if (state && state.sessionId) catalogueStates.set(state.sessionId, state);
+  if (historyRootState.filter && historyRootState.filter.narrowed) historyRootState.stale = true;
   // History rows and the open transcript carry their own copy.
   const patch = t => {
     if (!t || t.sessionId !== state.sessionId) return;
@@ -6388,6 +6401,10 @@ function rememberCatalogueState(state) {
   return state;
 }
 async function catalogueRequest(method, payload, query = '') {
+  const id = method === 'GET' ? decodeURIComponent(query.replace(/^\?sessionId=/, '')) : payload.sessionId;
+  const generation = method === 'GET'
+    ? catalogueGeneration(id)
+    : (catalogueGenerations.set(id, catalogueGeneration(id) + 1), catalogueGeneration(id));
   const resp = await fetch(basePath + '/api/catalogue' + query, method === 'GET'
     ? { cache: 'no-store' }
     : { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
@@ -6395,6 +6412,7 @@ async function catalogueRequest(method, payload, query = '') {
   let data = {};
   try { data = JSON.parse(text); } catch (_) { /* handled below */ }
   if (!resp.ok || data.error) throw new Error(data.error || text.trim() || ('HTTP ' + resp.status));
+  if (generation !== catalogueGeneration(id)) return data;
   return rememberCatalogueState(data);
 }
 function fetchCatalogueState(id) {
@@ -6418,17 +6436,20 @@ function splitTags(text) {
 }
 // Two prompts, note then tags, prefilled when editing; the tags prompt
 // lists the tags already in use.  Cancel on either leaves the store alone.
-// Resolves to the new state, or null when cancelled.
-async function catalogueFlow(id) {
+// STILL_CURRENT is asked before prompting and before saving, so a flow
+// started on a chat the user has since left neither prompts nor writes.
+// Resolves to the new state, or null when cancelled or no longer current.
+async function catalogueFlow(id, stillCurrent = () => true) {
   let state = catalogueStates.get(id) || null;
   try { state = await fetchCatalogueState(id); }
-  catch (err) { if (!state) throw err; }
+  catch (err) { if (!stillCurrent()) return null; if (!state) throw err; }
+  if (!stillCurrent()) return null;
   const note = window.prompt('Why keep this chat? (note, may be empty)', state.note || '');
   if (note === null) return null;
   const inUse = (state.allTags || []).map(t => '#' + t).join(' ');
   const tags = window.prompt('Tags, comma-separated (may be empty)' + (inUse ? '\nIn use: ' + inUse : ''),
     (state.tags || []).join(', '));
-  if (tags === null) return null;
+  if (tags === null || !stillCurrent()) return null;
   return saveCatalogue(id, note.trim(), splitTags(tags));
 }
 
@@ -6540,11 +6561,12 @@ function repaintHistoryCatalogue(t) {
 async function editHistoryCatalogue(t) {
   if (!t || !t.sessionId) return;
   const serial = historyRequestSerial;
+  const current = () => serial === historyRequestSerial;
   try {
-    const state = await catalogueFlow(t.sessionId);
-    if (!state || serial !== historyRequestSerial) return;
+    const state = await catalogueFlow(t.sessionId, current);
+    if (!state || !current()) return;
     repaintHistoryCatalogue(t);
-  } catch (err) { alert('Catalogue failed: ' + err.message); }
+  } catch (err) { if (current()) alert('Catalogue failed: ' + err.message); }
 }
 async function toggleHistoryCatalogue(t) {
   if (!t || !t.sessionId) return;
@@ -6649,8 +6671,14 @@ function historySearchBody(raw) {
 async function searchHistory(query) {
   const serial = ++historyRequestSerial;
   const body = historySearchBody(query);
-  // The highlighted needle is the text, never the #tag words.
-  historyRootState = { mode: 'search', query: body.query, list: null, truncated: false, scrollTop: 0 };
+  // The highlighted needle is the text, never the #tag words.  The raw
+  // box text and whether the list is narrowed are kept so a catalogue
+  // change can rerun the same query: patching rows cannot tell whether a
+  // row still belongs to a narrowed list.
+  historyRootState = {
+    mode: 'search', query: body.query, list: null, truncated: false, scrollTop: 0,
+    filter: { raw: query, narrowed: body.catalogued || body.tags.length > 0 }, stale: false
+  };
   setHistoryView('History', null);
   historyBody.innerHTML = '<div class="hist-empty">searching…</div>';
   let payload;
@@ -6739,7 +6767,8 @@ async function openTranscript(t, query = '') {
   const serial = ++historyRequestSerial;
   const listView = () => {
     ++historyRequestSerial;
-    renderHistoryRoot();
+    if (historyRootState.stale) searchHistory(historyRootState.filter.raw);
+    else renderHistoryRoot();
   };
   setHistoryView((t.agent || '?') + ' · ' + t.project + ' · ' + fmtHistTs(t.timestamp), listView, true, t);
   historyBody.innerHTML = '<div class="hist-empty">loading…</div>';
@@ -6875,6 +6904,7 @@ historySearchInput.addEventListener('focus', () => {
   if (!historyEl.classList.contains('visible')) {
     historyEl.classList.add('visible');
     if (historyRootState.list === null) loadHistory();
+    else if (historyRootState.stale) searchHistory(historyRootState.filter.raw);
     else renderHistoryRoot();
   }
 });
