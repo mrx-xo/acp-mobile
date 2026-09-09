@@ -5688,7 +5688,7 @@ function turnNavKind(classes) {
   };
 })();
 
-// Keep the scroll-to-bottom button floating just above the composer,
+// Keep the scroll-to-bottom button floating just above the thinking bar and composer,
 // whatever height it currently has (safe-area, grown textarea,
 // attachment chips) instead of a hardcoded offset that overlaps. The turn
 // nav follows the corner chosen in Settings.
@@ -5699,7 +5699,7 @@ function turnNavKind(classes) {
   const histHead = document.getElementById('history-head');
   const dock = document.getElementById('history-dock');
   const place = () => {
-    const h = inputAreaEl.offsetHeight
+    const h = inputAreaEl.offsetHeight + thinkingEl.offsetHeight
       + (attachRow.classList.contains('has-items') ? attachRow.offsetHeight : 0);
     scrollBtn.style.bottom = (h + 14) + 'px';
     let layout;
@@ -5715,7 +5715,7 @@ function turnNavKind(classes) {
     Object.assign(navEl.style, turnNavPlacement(turnNav.prefs(), layout));
   };
   window.placeTurnNav = place;
-  [inputAreaEl, attachRow, headerEl, histHead].forEach(el => new ResizeObserver(place).observe(el));
+  [inputAreaEl, thinkingEl, attachRow, headerEl, histHead].forEach(el => new ResizeObserver(place).observe(el));
   place();
 })();
 
