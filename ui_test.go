@@ -1927,7 +1927,7 @@ func TestAgentInitiatedActivityDoesNotLookBusy(t *testing.T) {
 			replayMode = true; resetReplayBuffer();
 			for (const r of records) bufferReplayMessage(r);
 			flushReplay();
-			return {processing, promptTurnOpen};
+			return {processing, promptTurnOpen: promptTurnOpen()};
 		};
 		const trailingRecords = [
 			resp(0, {sessionId: 's1'}),
@@ -1952,7 +1952,24 @@ func TestAgentInitiatedActivityDoesNotLookBusy(t *testing.T) {
 		const liveOpen = processing;
 		handleMessage(upd({sessionUpdate: 'turn_complete', stopReason: 'end_turn'}));
 		const liveComplete = processing;
-		return {trailing, open, liveTrailing, liveOpen, liveComplete};
+		// A failed unrelated request (set_mode) mid-turn must not end the turn.
+		handleMessage(upd({sessionUpdate: 'user_message_chunk', content: {type: 'text', text: 'again'}}));
+		handleMessage({jsonrpc: '2.0', id: 999, error: {message: 'mode nope'}});
+		handleMessage(upd({sessionUpdate: 'agent_message_chunk', content: {type: 'text', text: 'still going'}}));
+		const liveAfterUnrelatedError = processing;
+		handleMessage(upd({sessionUpdate: 'turn_complete', stopReason: 'end_turn'}));
+		// Own prompts are tracked by id: the previous prompt's response landing
+		// after a follow-up was sent leaves the follow-up's turn open.
+		sessionId = 's1'; window.__sent = []; ws = {readyState: 1, send: raw => window.__sent.push(JSON.parse(raw))};
+		sendPromptText('first', []);
+		sendPromptText('second', []);
+		const [firstId, secondId] = window.__sent.map(m => m.id);
+		handleMessage({jsonrpc: '2.0', id: firstId, result: {stopReason: 'end_turn'}});
+		const busyAfterFirstResponse = processing;
+		handleMessage({jsonrpc: '2.0', id: secondId, result: {stopReason: 'end_turn'}});
+		const idleAfterSecondResponse = processing;
+		return {trailing, open, liveTrailing, liveOpen, liveComplete, liveAfterUnrelatedError,
+			busyAfterFirstResponse, idleAfterSecondResponse};
 	})()`)
 	trailing := state["trailing"].(map[string]interface{})
 	open := state["open"].(map[string]interface{})
@@ -1970,6 +1987,12 @@ func TestAgentInitiatedActivityDoesNotLookBusy(t *testing.T) {
 	}
 	if state["liveComplete"] != false {
 		t.Fatalf("live turn_complete must return to idle, got %v", state)
+	}
+	if state["liveAfterUnrelatedError"] != true {
+		t.Fatalf("a failed unrelated request must not end an open turn, got %v", state)
+	}
+	if state["busyAfterFirstResponse"] != true || state["idleAfterSecondResponse"] != false {
+		t.Fatalf("own prompts must be tracked by id until each response lands, got %v", state)
 	}
 }
 

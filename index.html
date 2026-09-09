@@ -1721,7 +1721,27 @@ let processing = false;
 // the turn re-invokes the model) has no request, so nothing ever emits a
 // turn_complete for it; treating those chunks as busy left the thinking
 // bar and Stop button stuck until the next real turn.
-let promptTurnOpen = false;
+//
+// Two sources open a turn: prompts this phone sent (tracked by request
+// id until their response lands, so a queued follow-up stays open while
+// the previous prompt's response arrives) and prompts seen as
+// user_message_chunk from the rig or another phone (closed by the
+// multiplex's synthetic turn_complete). Unrelated responses, such as a
+// failed session/set_mode, never touch either.
+const localPromptIds = new Set();
+let remoteTurnOpen = false;
+function promptTurnOpen() { return localPromptIds.size > 0 || remoteTurnOpen; }
+function openRemoteTurn() { remoteTurnOpen = true; }
+function closeRemoteTurn() { remoteTurnOpen = false; }
+function sendPromptRequest(blocks) {
+  const id = nextId++;
+  localPromptIds.add(id);
+  ws.send(JSON.stringify({
+    jsonrpc: '2.0', id,
+    method: 'session/prompt',
+    params: { sessionId, prompt: blocks }
+  }));
+}
 let reconnectAttempts = 0;
 let waitForSessionAttempts = 0;
 let reconnectTimer = null;
@@ -2751,14 +2771,8 @@ function addPlanApprovalButtons(toolEl) {
     } else {
       // No pending permission — send as a prompt
       if (sessionId && ws && ws.readyState === 1) {
-        ws.send(JSON.stringify({
-          jsonrpc: '2.0', id: Date.now(),
-          method: 'session/prompt',
-          params: {
-            sessionId: sessionId,
-            prompt: [{ type: 'text', text: approved ? 'Yes, proceed with the plan.' : 'No, reject the plan.' }]
-          }
-        }));
+        sendPromptRequest([{ type: 'text', text: approved ? 'Yes, proceed with the plan.' : 'No, reject the plan.' }]);
+        setProcessing(true);
       }
     }
     approveBtn.disabled = true;
@@ -3367,8 +3381,11 @@ function flushReplay() {
   // Only a user prompt opens a turn; agent or tool chunks alone (an
   // agent-initiated continuation) never make the replay look busy.
   let replayBusy = false;
-  const replayActivity = () => { if (promptTurnOpen) replayBusy = true; };
-  promptTurnOpen = false;
+  const replayActivity = () => { if (remoteTurnOpen) replayBusy = true; };
+  // Replay is the whole truth about this session: prompts this phone
+  // sent before a reload are in it as user chunks like everyone else's.
+  localPromptIds.clear();
+  remoteTurnOpen = false;
 
   for (const msg of msgs) {
     // Responses: handle silently for state (sessionId, modes, etc.)
@@ -3406,7 +3423,7 @@ function flushReplay() {
         }
       }
       if (msg.result && msg.result.stopReason) {
-        replayBusy = false; promptTurnOpen = false;
+        replayBusy = false; remoteTurnOpen = false;
         currentAnonymousThoughtTurn = null;
         flushPendingAgent();
       }
@@ -3524,7 +3541,7 @@ function flushReplay() {
         break;
       }
       case 'user_message_chunk':
-        replayBusy = true; promptTurnOpen = true;
+        replayBusy = true; remoteTurnOpen = true;
         flushPendingAgent();
         pendingUserTurn = appendUserContentBlock(
           pendingUserTurn,
@@ -3532,10 +3549,10 @@ function flushReplay() {
             ? {type: 'text', text: update.text} : null));
         break;
       case 'turn_complete':
-        replayBusy = false; promptTurnOpen = false;
+        replayBusy = false; remoteTurnOpen = false;
         break;
       case 'available_commands_update':
-        replayBusy = false; promptTurnOpen = false;
+        replayBusy = false; // command list changed; not a turn boundary, the flag stays
         if (sessionId) sendBtn.disabled = false;
         break;
       case 'current_mode_update':
@@ -3566,7 +3583,7 @@ function flushReplay() {
   const lastTurn = turns[turns.length - 1];
   if (lastTurn && lastTurn.type === 'permission') {
     lastTurn.interactive = true;
-    promptTurnOpen = true;
+    remoteTurnOpen = true;
     setProcessing(true);
   }
 
@@ -3637,8 +3654,9 @@ function handleMessage(msg) {
         errText += ' [' + msg.error.code + ']';
       }
       addErrorMsg(errText);
-      promptTurnOpen = false;
-      setProcessing(false);
+      // Only a prompt's own failure ends its turn; a failed set_mode does not.
+      localPromptIds.delete(msg.id);
+      if (!promptTurnOpen()) setProcessing(false);
       return;
     }
 
@@ -3668,8 +3686,8 @@ function handleMessage(msg) {
     if (msg.result && msg.result.stopReason) {
       currentAgentMsg = null;
       endAnonymousThoughtRun();
-      promptTurnOpen = false;
-      setProcessing(false);
+      localPromptIds.delete(msg.id);
+      if (!promptTurnOpen()) setProcessing(false);
       // Mark last sent user message as delivered
       if (lastSentMsg) { markSent(lastSentMsg); lastSentMsg = null; }
       flushMessageQueue();
@@ -3701,7 +3719,7 @@ function handleMessage(msg) {
 
     switch (kind) {
       case 'agent_message_chunk':
-        if (promptTurnOpen) setProcessing(true);
+        if (promptTurnOpen()) setProcessing(true);
         if (!currentAgentMsg) {
           currentAgentMsg = addAgentMsg('');
         }
@@ -3715,14 +3733,14 @@ function handleMessage(msg) {
           endAnonymousThoughtRun();
           break;
         }
-        if (promptTurnOpen) setProcessing(true);
+        if (promptTurnOpen()) setProcessing(true);
         appendThoughtDelta(update, thoughtText);
         break;
       }
 
       case 'tool_call': {
         currentAgentMsg = null;
-        if (promptTurnOpen) setProcessing(true);
+        if (promptTurnOpen()) setProcessing(true);
         const tcId = update.toolCallId;
         // If we already have an element for this toolCallId, update it in place
         const existing = tcId && messagesEl._toolCalls && messagesEl._toolCalls[tcId];
@@ -3751,7 +3769,8 @@ function handleMessage(msg) {
 
       case 'user_message_chunk':
         currentAgentMsg = null;
-        promptTurnOpen = true; // a prompt from the rig or another phone
+        openRemoteTurn(); // a prompt from the rig or another phone
+        setProcessing(true);
         {
           const block = normalizeUserContentBlock(
             update.content || (typeof update.text === 'string'
@@ -3769,14 +3788,18 @@ function handleMessage(msg) {
 
       case 'turn_complete':
         currentAgentMsg = null;
-        promptTurnOpen = false; setProcessing(false);
+        closeRemoteTurn();
+        if (!promptTurnOpen()) setProcessing(false);
         if (lastSentMsg) { markSent(lastSentMsg); lastSentMsg = null; }
         flushMessageQueue();
         break;
 
       case 'available_commands_update':
         if (sessionId) sendBtn.disabled = false;
-        promptTurnOpen = false; setProcessing(false);
+        // Command list changed. Not a turn boundary: the visible state
+        // resets as before, but an open turn stays open so the next
+        // chunk shows busy again.
+        setProcessing(false);
         flushMessageQueue();
         break;
 
@@ -3794,6 +3817,8 @@ function handleMessage(msg) {
   if (msg.method === 'session/request_permission' && msg.id !== undefined) {
     currentAgentMsg = null;
     endAnonymousThoughtRun();
+    openRemoteTurn(); // a permission only ever arrives inside a prompt turn
+    setProcessing(true);
     addPermissionMsg(msg, true);
     return;
   }
@@ -3979,17 +4004,21 @@ attachInput.addEventListener('change', async (e) => {
 // session key when leaving, restore it when that chat opens again, and
 // mirror it to localStorage so a reload or a self-update keeps it.
 const DRAFT_PREFIX = 'acp-draft:';
+const drafts = new Map(); // session key -> text; localStorage is the mirror
 function stashDraft() {
   if (!currentSessionKey) return;
   const text = promptEl.value;
+  if (text) drafts.set(currentSessionKey, text); else drafts.delete(currentSessionKey);
   try {
     if (text) localStorage.setItem(DRAFT_PREFIX + currentSessionKey, text);
     else localStorage.removeItem(DRAFT_PREFIX + currentSessionKey);
-  } catch (_) { /* storage full or disabled: the draft still lives in the box */ }
+  } catch (_) { /* storage full or disabled: the in-memory copy still serves this page */ }
 }
 function restoreDraft() {
-  let text = '';
-  try { text = (currentSessionKey && localStorage.getItem(DRAFT_PREFIX + currentSessionKey)) || ''; } catch (_) {}
+  let text = (currentSessionKey && drafts.get(currentSessionKey)) || '';
+  if (!text) {
+    try { text = (currentSessionKey && localStorage.getItem(DRAFT_PREFIX + currentSessionKey)) || ''; } catch (_) {}
+  }
   promptEl.value = text;
   promptEl.style.height = 'auto';
   if (text) promptEl.style.height = Math.min(promptEl.scrollHeight, 120) + 'px';
@@ -4027,18 +4056,12 @@ function sendPromptText(text, refs) {
   renderAttachRow();
   const payloadText = formatReferencedPrompt(text, refs || []);
   lastSentMsg = addUserMsg(formatReferencedPrompt(text, refs || []), 'sending', imgs);
-  promptTurnOpen = true;
   setProcessing(true);
 
   const blocks = imgs.map(i => ({ type: 'image', data: i.data, mimeType: i.mimeType }));
   if (payloadText) blocks.push({ type: 'text', text: payloadText });
 
-  ws.send(JSON.stringify({
-    jsonrpc: '2.0',
-    id: nextId++,
-    method: 'session/prompt',
-    params: { sessionId, prompt: blocks }
-  }));
+  sendPromptRequest(blocks);
 }
 
 function flushMessageQueue() {
@@ -4048,12 +4071,7 @@ function flushMessageQueue() {
     // Message was already displayed when queued, just send it
     currentAgentMsg = null;
     setProcessing(true);
-    ws.send(JSON.stringify({
-      jsonrpc: '2.0',
-      id: nextId++,
-      method: 'session/prompt',
-      params: { sessionId, prompt: [{ type: 'text', text: payloadText }] }
-    }));
+    sendPromptRequest([{ type: 'text', text: payloadText }]);
   }
 }
 
