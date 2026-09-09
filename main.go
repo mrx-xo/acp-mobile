@@ -2336,6 +2336,12 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 	}
 	defer conn.Close()
 
+	unregister := registerPhoneSocket(func(frame string) {
+		// Conn.Write is mutex-guarded in x/net/websocket; safe from here.
+		websocket.Message.Send(ws, frame)
+	})
+	defer unregister()
+
 	pingDone := make(chan struct{})
 	defer close(pingDone)
 	go keepalive(ws, pingDone)

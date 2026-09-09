@@ -576,3 +576,24 @@ func TestHandlePresenceAcceptsNotes(t *testing.T) {
 		t.Fatalf("bad buffer status = %d", w.Code)
 	}
 }
+
+func TestDeliverInAppInjectsToEveryOpenSocket(t *testing.T) {
+	var got []string
+	unregA := registerPhoneSocket(func(s string) { got = append(got, "a:"+s) })
+	unregB := registerPhoneSocket(func(s string) { got = append(got, "b:"+s) })
+	defer unregB()
+	n := deliverInApp(pushEntry{BufferName: "Claude Agent @ x", Title: "x", Message: "Finished", At: 42})
+	if n != 2 || len(got) != 2 {
+		t.Fatalf("reached %d sockets, frames %v", n, got)
+	}
+	for _, f := range got {
+		if !strings.Contains(f, `"method":"acp-mobile/push"`) || !strings.Contains(f, `"bufferName":"Claude Agent @ x"`) || strings.Contains(f, `"id"`) {
+			t.Fatalf("bad frame %s", f)
+		}
+	}
+	unregA()
+	got = nil
+	if n := deliverInApp(pushEntry{BufferName: "y", Message: "m", At: 43}); n != 1 || len(got) != 1 || !strings.HasPrefix(got[0], "b:") {
+		t.Fatalf("after unregister: reached %d, frames %v", n, got)
+	}
+}

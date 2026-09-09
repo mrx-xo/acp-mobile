@@ -606,3 +606,49 @@ func handlePresence(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// Open chat WebSockets, so a push can be injected into the stream the
+// page already reads.  The frame is a JSON-RPC notification with a
+// method acp-multiplex never emits; the page catches it before replay.
+var phoneSockets struct {
+	mu   sync.Mutex
+	next int
+	m    map[int]func(string)
+}
+
+func registerPhoneSocket(send func(string)) func() {
+	phoneSockets.mu.Lock()
+	defer phoneSockets.mu.Unlock()
+	if phoneSockets.m == nil {
+		phoneSockets.m = map[int]func(string){}
+	}
+	id := phoneSockets.next
+	phoneSockets.next++
+	phoneSockets.m[id] = send
+	return func() {
+		phoneSockets.mu.Lock()
+		delete(phoneSockets.m, id)
+		phoneSockets.mu.Unlock()
+	}
+}
+
+func deliverInApp(e pushEntry) int {
+	frame, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "acp-mobile/push",
+		"params":  e,
+	})
+	if err != nil {
+		return 0
+	}
+	phoneSockets.mu.Lock()
+	sends := make([]func(string), 0, len(phoneSockets.m))
+	for _, s := range phoneSockets.m {
+		sends = append(sends, s)
+	}
+	phoneSockets.mu.Unlock()
+	for _, s := range sends {
+		s(string(frame))
+	}
+	return len(sends)
+}
