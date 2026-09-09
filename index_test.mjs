@@ -160,6 +160,10 @@ function loadSocketClient(overrides = {}) {
     Date: FakeDate,
     setProcessing: () => {},
     resetThoughtState: () => {},
+    // Presence/banner wiring lives outside the extracted Socket block;
+    // ws.onmessage calls it first, so the socket block needs a stub that
+    // reports "not a push frame" to reach the real assertions below.
+    handleSocketFrame: () => false,
     resetReplayBuffer: () => { calls.resetReplayBuffer++; },
     closeMsgMenu: () => {},
     closeReader: () => {},

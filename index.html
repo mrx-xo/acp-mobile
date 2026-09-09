@@ -3157,6 +3157,7 @@ function connect(pid) {
     // The server's keepalive. Never enters the replay buffer or
     // handleMessage; its only job was to feed the silence timer above.
     if (msg.method === 'acp-mobile/ping') return;
+    if (handleSocketFrame(msg)) return;
     if (replayMode) {
       bufferReplayMessage(msg);
       clearTimeout(replayTimer);
@@ -4523,7 +4524,9 @@ async function loadStatuses() {
   const serial = ++statusRequestSerial;
   try {
     const resp = await fetch(basePath + '/api/statuses', {
-      method: 'POST', cache: 'no-store'
+      method: 'POST', cache: 'no-store',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ pushSince })
     });
     if (!resp.ok) return;
     const data = await resp.json();
@@ -4531,6 +4534,7 @@ async function loadStatuses() {
       location.reload();
       return;
     }
+    handleStatusPushes(data);
     if (!acceptStatusSnapshot(data.statuses || {}, serial)) return;
     const sessions = applyLatestStatuses(lastSessions);
     const j = JSON.stringify(sessions);
@@ -4723,6 +4727,7 @@ function selectSession(session) {
   sessionId = null;
   projectCwd = session.cwd || null;
   currentBufferName = session.bufferName || null;
+  sendPresence(true);
   updateChatHeader();
   document.getElementById('chat-menu-btn').style.display = currentBufferName ? '' : 'none';
   availableModes = [];
@@ -4776,6 +4781,7 @@ function showOrrery() {
   clearSilenceTimer();
   disconnectedAt = null;
   loadSessions();
+  sendPresence(true, { bufferName: '' });
 }
 
 function navigateBack() {
@@ -5873,35 +5879,50 @@ function showPushToast(entry) {
   pushToastTimer = setTimeout(hidePushToast, 8000);
 }
 pushToast.addEventListener('click', (e) => {
-  if (e.target.closest('.pt-close')) { hidePushToast(); return; }
+  if (e.target.closest('.pt-close')) { const n = pushToastTarget; hidePushToast(); if (n) sendPresence(true, { read: n }); return; }
   const name = pushToastTarget;
   hidePushToast();
   if (name) openSessionByName(name);
 });
-let pushInboxSince = 0;
-let pushInboxBusy = false;
-async function pollPushInbox() {
-  if (pushInboxBusy || document.visibilityState !== 'visible') return;
-  pushInboxBusy = true;
+
+// Presence: tell the server when this page is on screen and which chat
+// it shows.  Event-driven, plus one 20s heartbeat while visible in a
+// chat (the Orrery's statuses poll is its own heartbeat).  The hidden
+// note goes by sendBeacon so iOS suspending the app cannot lose it.
+function sendPresence(visible, extra) {
+  const body = JSON.stringify(Object.assign({ visible: !!visible, bufferName: currentBufferName || '' }, extra || {}));
   try {
-    const resp = await fetch(basePath + '/api/push-inbox', {
-      method: 'POST', cache: 'no-store',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ since: pushInboxSince })
-    });
-    if (!resp.ok) return;
-    const data = await resp.json();
-    const first = pushInboxSince === 0;
-    pushInboxSince = data.now || pushInboxSince;
-    if (first) return;   // nothing from before this page existed
-    const entries = (data.entries || []).filter(e => e.bufferName && e.bufferName !== currentBufferName);
-    if (entries.length) showPushToast(entries[entries.length - 1]);
-  } catch (err) {
-  } finally { pushInboxBusy = false; }
+    if (!visible && navigator.sendBeacon) {
+      navigator.sendBeacon(basePath + '/api/presence', new Blob([body], { type: 'application/json' }));
+      return;
+    }
+    fetch(basePath + '/api/presence', { method: 'POST', headers: {'Content-Type': 'application/json'}, body, keepalive: true }).catch(() => {});
+  } catch (e) {}
 }
-pollPushInbox();
-setInterval(pollPushInbox, 3000);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pollPushInbox(); });
+document.addEventListener('visibilitychange', () => sendPresence(document.visibilityState === 'visible'));
+window.addEventListener('pageshow', () => sendPresence(true));
+window.addEventListener('pagehide', () => sendPresence(false));
+setInterval(() => {
+  if (document.visibilityState === 'visible' && currentBufferName && chatViewEl.classList.contains('visible')) sendPresence(true);
+}, 20000);
+sendPresence(document.visibilityState === 'visible');
+
+// Pushes reach an open page two ways: injected into the chat socket
+// (handleSocketFrame) or on the Orrery's statuses reply (loadStatuses).
+let pushSince = 0;
+function handleSocketFrame(msg) {
+  if (!msg || msg.method !== 'acp-mobile/push') return false;
+  const p = msg.params || {};
+  if (p.bufferName && p.bufferName !== currentBufferName) showPushToast(p);
+  return true;
+}
+function handleStatusPushes(data) {
+  const first = pushSince === 0;
+  if (data.now) pushSince = data.now;
+  if (first) return;
+  const entries = (data.pushes || []).filter(e => e.bufferName && e.bufferName !== currentBufferName);
+  if (entries.length) showPushToast(entries[entries.length - 1]);
+}
 // A tap handled live must also clear the durable copy, or the next
 // resume would replay it.
 async function openSessionFromPush(name, via) {
