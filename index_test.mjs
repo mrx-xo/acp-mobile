@@ -32,6 +32,7 @@ class FakeElement {
   }
   get className() { return [...this.classList.values].join(' '); }
   addEventListener(name, fn) { this.listeners.set(name, fn); }
+  setAttribute(name, value) { this.attributes = {...(this.attributes || {}), [name]: value}; }
   blur() {}
   focus() {}
   querySelector() { return null; }
@@ -954,7 +955,7 @@ test('spawn sheet shows the rig presets after default, in rig order', async () =
     'default', 'Fable 5.1 \u00b7 Bypass', 'Fable 5 \u00b7 Bypass', 'Astra \u00b7 Full',
   ]);
   assert.equal(presets.children[0].classList.contains('sel'), true);
-  presets.children[2].onclick();
+  presets.children[2].listeners.get('click')();
   assert.equal(get('spPreset'), 'F');
   assert.equal(presets.children[2].classList.contains('sel'), true);
   assert.equal(presets.children[0].classList.contains('sel'), false);
@@ -1029,30 +1030,97 @@ test('spawn sheet drops malformed preset entries and sends only the key', async 
   assert.deepEqual(bodies, [{cwd: '/tmp/x', name: '', task: '', preset: 's'}]);
 });
 
-test('spawn sheet renders live projects first and filters by name or path', async () => {
+const rowPaths = el => el.children.map(row =>
+  (row.children.find(c => c.className === 'sp-row-path') || row).textContent);
+const rowFlags = el => el.children.map(row =>
+  ['live', 'sel'].filter(flag => row.classList.contains(flag)).join(' '));
+const tap = (row, dx = 0, dy = 0) => {
+  row.listeners.get('pointerdown')({pointerType: 'touch', clientX: 10, clientY: 10, preventDefault() {}});
+  row.listeners.get('pointerup')({pointerType: 'touch', clientX: 10 + dx, clientY: 10 + dy});
+};
+
+const projectsReply = async url => {
+  if (url === '/api/projects') {
+    return {ok: true, json: async () => ({projects: [
+      {name: 'dotfiles', path: '/home/.dotfiles', live: false},
+      {name: 'sandbox', path: '/home/.emacs-sandbox', live: false},
+      {name: 'mobile', path: '/work/mobile', live: true},
+    ]})};
+  }
+  return {ok: true, json: async () => ({presets: []})};
+};
+
+test('project combobox lists live first and the typed path filters by name, path, or ~ form', async () => {
   const {context, elements} = loadSpawnSheet({
-    fetch: async url => {
-      if (url === '/api/projects') {
-        return {ok: true, json: async () => ({projects: [
-          {name: 'dotfiles', path: '/home/dotfiles', live: false},
-          {name: 'mobile', path: '/work/mobile', live: true},
-        ]})};
-      }
-      return {ok: true, json: async () => ({presets: []})};
-    },
+    fetch: projectsReply,
+    shortPath: value => String(value).replace('/home', '~'),
   });
+  context.openSpawnSheet('/work/mobile');
+  await context.loadSpawnProjects();
+  const projects = elements.get('sp-projects');
+  const dir = elements.get('sp-dir');
+  assert.deepEqual(rowPaths(projects), ['/work/mobile', '~/.dotfiles', '~/.emacs-sandbox']);
+  assert.deepEqual(rowFlags(projects), ['live sel', '', '']);
+  // The name shows only when it is not already the path's base name.
+  assert.equal(projects.children[2].children.some(c => c.className === 'sp-row-name' && c.textContent === 'sandbox'), true);
+  assert.equal(projects.children[1].children.some(c => c.className === 'sp-row-name'), false);
+  dir.value = 'sandbox';
+  dir.listeners.get('input')();
+  assert.deepEqual(rowPaths(projects), ['~/.emacs-sandbox']);
+  dir.value = '~/.dot';
+  dir.listeners.get('input')();
+  assert.deepEqual(rowPaths(projects), ['~/.dotfiles']);
+  dir.value = 'nothing-here';
+  dir.listeners.get('input')();
+  assert.deepEqual(rowPaths(projects), ['no match; spawns in the path as typed']);
+  assert.equal(dir.value, 'nothing-here');
+});
+
+test('picking a row fills the path box and shows the whole list again with that row marked', async () => {
+  const {context, elements} = loadSpawnSheet({fetch: projectsReply});
   context.openSpawnSheet(null);
   await context.loadSpawnProjects();
   const projects = elements.get('sp-projects');
-  assert.deepEqual(chipLabels(projects), ['* /work/mobile', '/home/dotfiles']);
-  elements.get('sp-filter').value = 'dotfiles';
-  elements.get('sp-filter').listeners.get('input')();
-  assert.deepEqual(chipLabels(projects), ['/home/dotfiles']);
-  elements.get('sp-filter').value = '/work';
-  elements.get('sp-filter').listeners.get('input')();
-  assert.deepEqual(chipLabels(projects), ['* /work/mobile']);
-  projects.children[0].onclick();
-  assert.equal(elements.get('sp-dir').value, '/work/mobile');
+  const dir = elements.get('sp-dir');
+  dir.value = 'dot';
+  dir.listeners.get('input')();
+  assert.deepEqual(rowPaths(projects), ['/home/.dotfiles']);
+  projects.children[0].listeners.get('click')();
+  assert.equal(dir.value, '/home/.dotfiles');
+  assert.deepEqual(rowPaths(projects), ['/work/mobile', '/home/.dotfiles', '/home/.emacs-sandbox']);
+  assert.deepEqual(rowFlags(projects), ['live', 'sel', '']);
+});
+
+test('a touch tap picks on pointerup without a click, a drag does not pick, the synthetic click is ignored', async () => {
+  let now = 1000;
+  class FakeDate extends Date { static now() { return now; } }
+  const {context, elements} = loadSpawnSheet({fetch: projectsReply, Date: FakeDate});
+  context.openSpawnSheet(null);
+  await context.loadSpawnProjects();
+  const projects = elements.get('sp-projects');
+  const dir = elements.get('sp-dir');
+  let prevented = 0;
+  const row = projects.children[1];
+  row.listeners.get('pointerdown')({pointerType: 'touch', clientX: 0, clientY: 0, preventDefault() { prevented += 1; }});
+  row.listeners.get('pointerup')({pointerType: 'touch', clientX: 0, clientY: 40});
+  assert.equal(prevented, 1, 'touch pointerdown must cancel the focus change');
+  assert.equal(dir.value, '', 'a 40px drag is a scroll, not a pick');
+  tap(projects.children[1]);
+  assert.equal(dir.value, '/home/.dotfiles');
+  // The browser follows a touch with a click. The pick re-rendered the
+  // list, so that click lands on a fresh element, maybe another row: it
+  // must not pick anything.
+  dir.value = 'x';
+  projects.children[0].listeners.get('click')();
+  assert.equal(dir.value, 'x');
+  // A mouse pointerdown is left alone; the click does the pick (once
+  // the touch suppression window is over).
+  now += 1000;
+  const mouseRow = projects.children[2];
+  mouseRow.listeners.get('pointerdown')({pointerType: 'mouse', preventDefault() { prevented += 1; }});
+  assert.equal(prevented, 1);
+  mouseRow.listeners.get('click')();
+  assert.equal(dir.value, '/home/.emacs-sandbox');
 });
 
 test('a stale project reply cannot overwrite a newer spawn-sheet open', async () => {
@@ -1070,5 +1138,5 @@ test('a stale project reply cannot overwrite a newer spawn-sheet open', async ()
   await new Promise(resolve => setImmediate(resolve));
   replies[0].resolve([{name: 'stale', path: '/stale', live: false}]);
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(chipLabels(elements.get('sp-projects')), ['/fresh']);
+  assert.deepEqual(rowPaths(elements.get('sp-projects')), ['/fresh']);
 });

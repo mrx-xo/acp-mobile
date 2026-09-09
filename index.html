@@ -1130,7 +1130,7 @@ input, textarea, #fbv-content, .msg, .msg * {
 #spawn-sheet {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 140;
   background: var(--bg0); border-top: 1px solid var(--bg2);
-  border-radius: 16px 16px 0 0; max-height: 80dvh;
+  border-radius: 16px 16px 0 0; max-height: 94dvh;
   display: none; flex-direction: column;
   padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
@@ -1151,10 +1151,37 @@ input, textarea, #fbv-content, .msg, .msg * {
 }
 .sp-label:first-child { margin-top: 0; }
 .sp-hint { color: var(--fg-mute); font-weight: 400; letter-spacing: 0; }
-#sp-projects, #sp-presets {
+#sp-presets {
   display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px;
   -webkit-overflow-scrolling: touch;
 }
+/* Project combobox: #sp-dir is both the typed path and the filter; the
+   list under it scrolls on its own so the sheet keeps its shape. */
+#sp-projects {
+  display: flex; flex-direction: column; margin-top: 6px;
+  max-height: 228px; overflow-y: auto; overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--bg1); border-radius: 10px;
+}
+#sp-projects:empty { display: none; }
+.sp-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  background: none; border: none; border-bottom: 1px solid var(--bg1);
+  padding: 10px 12px; font-size: 14px; color: var(--fg-dim);
+  text-align: left; cursor: pointer; font-family: var(--mono);
+  touch-action: pan-y;
+}
+.sp-row:last-child { border-bottom: none; }
+.sp-row:active { background: var(--bg1); }
+.sp-row.sel { color: var(--orange); }
+.sp-row-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  background: var(--bg2);
+}
+.sp-row.live .sp-row-dot { background: var(--orange); }
+.sp-row-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-row-name { color: var(--fg-mute); font-size: 12px; flex-shrink: 0; }
+.sp-row-empty { color: var(--fg-mute); font-size: 12px; padding: 10px 12px; }
 .sp-chip {
   background: var(--bg1); border: 1px solid var(--bg2); border-radius: 999px;
   padding: 7px 13px; font-size: 13px; color: var(--fg-dim);
@@ -1163,13 +1190,12 @@ input, textarea, #fbv-content, .msg, .msg * {
 }
 .sp-chip:active { transform: scale(0.96); }
 .sp-chip.sel { border-color: var(--orange); color: var(--orange); }
-#sp-dir, #sp-name, #sp-task, #sp-filter {
+#sp-dir, #sp-name, #sp-task {
   width: 100%; background: var(--bg1); border: none; border-radius: 10px;
   color: var(--fg); padding: 11px 14px; font-size: 16px;
   font-family: var(--mono); resize: none; caret-color: var(--orange);
 }
-#sp-dir:focus, #sp-name:focus, #sp-task:focus, #sp-filter:focus { outline: 1px solid var(--bg2); }
-#sp-filter { padding: 8px 12px; font-size: 14px; margin-bottom: 8px; }
+#sp-dir:focus, #sp-name:focus, #sp-task:focus { outline: 1px solid var(--bg2); }
 #sp-go {
   width: 100%; margin-top: 16px; background: var(--green); border: none;
   border-radius: 12px; color: var(--bg-hard); font-size: 15px; font-weight: 700;
@@ -1565,10 +1591,9 @@ input, textarea, #fbv-content, .msg, .msg * {
     <button id="sp-close">&times;</button>
   </div>
   <div id="sp-body">
-    <div class="sp-label">PROJECT <span class="sp-hint">(rig list + live convos, * = live)</span></div>
-    <input id="sp-filter" placeholder="filter projects" autocapitalize="off" autocorrect="off">
-    <div id="sp-projects"></div>
-    <input id="sp-dir" placeholder="/path/to/project" autocapitalize="off" autocorrect="off">
+    <div class="sp-label">PROJECT <span class="sp-hint">(type to filter, tap to pick; orange dot = live)</span></div>
+    <input id="sp-dir" placeholder="/path/to/project" role="combobox" aria-controls="sp-projects" aria-autocomplete="list" autocapitalize="off" autocorrect="off">
+    <div id="sp-projects" role="listbox"></div>
     <div class="sp-label">LABEL <span class="sp-hint">(optional — names it here and on the rig)</span></div>
     <input id="sp-name" placeholder="e.g. usenet, muzik" autocapitalize="off">
     <div class="sp-label">PRESET <span class="sp-hint">(model + permission mode)</span></div>
@@ -4662,13 +4687,12 @@ function navigateBack() {
 }
 
 // --- Spawn sheet ---
-// Project chips from the rig and live cwds, preset chips from the rig, optional
-// label + first prompt. On success, waits for the new session's socket
-// and opens it.
+// Project combobox over the rig list and live cwds, preset chips from
+// the rig, optional label + first prompt. On success, waits for the new
+// session's socket and opens it.
 const spScrim = document.getElementById('spawn-scrim');
 const spSheet = document.getElementById('spawn-sheet');
 const spProjects = document.getElementById('sp-projects');
-const spFilter = document.getElementById('sp-filter');
 const spPresets = document.getElementById('sp-presets');
 const spDir = document.getElementById('sp-dir');
 const spName = document.getElementById('sp-name');
@@ -4685,6 +4709,40 @@ let spPreset = '';
 let spawnPresetsLoad = 0;
 let spawnProjects = [];
 let spawnProjectsLoad = 0;
+// What the user has typed since the last pick. Empty means the path box
+// holds a pick (or the preselected cwd), so the list shows everything.
+let spProjectQuery = '';
+
+// iOS: tapping a row while the keyboard is up used to blur the input
+// first; the sheet dropped with the keyboard mid-tap and the click
+// missed, so the pick only landed on a second tap (Send had the same
+// bug). Cancel the focus change on touch pointerdown, then pick on
+// pointerup unless the finger moved (a scroll cancels the pointer
+// instead). The synthetic click that follows a touch is ignored; the
+// timestamp is shared because a pick re-renders the list, so the click
+// lands on a fresh element, possibly a different row.
+let spTapSuppressUntil = 0;
+function onTapPick(el, fn) {
+  let start = null;
+  el.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'touch') return;
+    e.preventDefault();
+    start = {x: e.clientX, y: e.clientY};
+  });
+  el.addEventListener('pointerup', e => {
+    if (e.pointerType !== 'touch' || !start) return;
+    const moved = Math.hypot(e.clientX - start.x, e.clientY - start.y);
+    start = null;
+    if (moved > 12) return;
+    spTapSuppressUntil = Date.now() + 600;
+    fn();
+  });
+  el.addEventListener('pointercancel', () => { start = null; });
+  el.addEventListener('click', () => {
+    if (Date.now() < spTapSuppressUntil) return;
+    fn();
+  });
+}
 
 async function fetchSpawnProjects() {
   const resp = await fetch(basePath + '/api/projects', {method: 'POST'});
@@ -4694,18 +4752,54 @@ async function fetchSpawnProjects() {
   return data.projects.filter(p => p && typeof p.name === 'string' && typeof p.path === 'string');
 }
 
-function renderSpawnProjects(filter = '') {
-  const needle = filter.trim().toLowerCase();
+function projectMatches(p, needle) {
+  return !needle ||
+    (p.name + ' ' + p.path + ' ' + shortPath(p.path)).toLowerCase().includes(needle);
+}
+
+function pickSpawnProject(path) {
+  spDir.value = path;
+  spProjectQuery = '';
+  renderSpawnProjects();
+}
+
+// Rows: live first, then rig order. The typed text filters by name,
+// path, or the ~ form; an exact pick shows the whole list again with
+// that row marked.
+function renderSpawnProjects() {
+  const needle = spProjectQuery.trim().toLowerCase();
   spProjects.innerHTML = '';
   const ordered = [...spawnProjects].sort((a, b) => Number(b.live) - Number(a.live));
+  let shown = 0;
   for (const p of ordered) {
-    if (needle && !((p.name + ' ' + p.path).toLowerCase().includes(needle))) continue;
-    const chip = document.createElement('button');
-    chip.className = 'sp-chip' + (p.path === spDir.value ? ' sel' : '');
-    chip.textContent = (p.live ? '* ' : '') + shortPath(p.path);
-    chip.title = p.name + ' ' + p.path;
-    chip.onclick = () => { spDir.value = p.path; renderSpawnProjects(spFilter.value); };
-    spProjects.appendChild(chip);
+    if (!projectMatches(p, needle)) continue;
+    shown += 1;
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'sp-row' + (p.live ? ' live' : '') + (p.path === spDir.value ? ' sel' : '');
+    row.setAttribute('role', 'option');
+    const dot = document.createElement('span');
+    dot.className = 'sp-row-dot';
+    const pathEl = document.createElement('span');
+    pathEl.className = 'sp-row-path';
+    pathEl.textContent = shortPath(p.path);
+    row.appendChild(dot);
+    row.appendChild(pathEl);
+    const base = (p.path.split('/').filter(Boolean).pop() || '').replace(/^\./, '');
+    if (p.name && p.name !== base && p.name !== shortPath(p.path)) {
+      const nameEl = document.createElement('span');
+      nameEl.className = 'sp-row-name';
+      nameEl.textContent = p.name;
+      row.appendChild(nameEl);
+    }
+    onTapPick(row, () => pickSpawnProject(p.path));
+    spProjects.appendChild(row);
+  }
+  if (!shown && spawnProjects.length) {
+    const empty = document.createElement('div');
+    empty.className = 'sp-row-empty';
+    empty.textContent = 'no match; spawns in the path as typed';
+    spProjects.appendChild(empty);
   }
 }
 
@@ -4715,7 +4809,7 @@ async function loadSpawnProjects() {
     const projects = await fetchSpawnProjects();
     if (token !== spawnProjectsLoad) return;
     spawnProjects = projects;
-    renderSpawnProjects(spFilter.value);
+    renderSpawnProjects();
   } catch (err) {
     console.warn('projects unavailable:', err.message);
   }
@@ -4736,11 +4830,11 @@ function renderSpawnPresets() {
     chip.className = 'sp-chip' + (p.key === spPreset ? ' sel' : '');
     chip.textContent = p.label;
     if (p.model) chip.title = p.model + ' / ' + p.mode;
-    chip.onclick = () => {
+    onTapPick(chip, () => {
       spPreset = p.key;
       [...spPresets.children].forEach(el => el.classList.remove('sel'));
       chip.classList.add('sel');
-    };
+    });
     spPresets.appendChild(chip);
   }
 }
@@ -4768,7 +4862,7 @@ function openSpawnSheet(cwd) {
     ...live.filter(path => !known.has(path)).map(path => ({name: shortPath(path), path, live: true})),
   ];
   spDir.value = cwd || live[0] || '';
-  spFilter.value = '';
+  spProjectQuery = '';
   renderSpawnProjects();
   spPreset = '';
   renderSpawnPresets();
@@ -4781,8 +4875,10 @@ function openSpawnSheet(cwd) {
   syncHistoryDock();
 }
 
-spFilter.addEventListener('input', () => renderSpawnProjects(spFilter.value));
-spDir.addEventListener('input', () => renderSpawnProjects(spFilter.value));
+spDir.addEventListener('input', () => {
+  spProjectQuery = spDir.value;
+  renderSpawnProjects();
+});
 
 function hideSpawnSheet() {
   spScrim.classList.remove('visible');
