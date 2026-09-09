@@ -865,6 +865,7 @@ input, textarea, #fbv-content, .msg, .msg * {
 }
 #chat-menu button + button { border-top: 1px solid var(--bg2); }
 #chat-menu button:active { background: var(--bg2); }
+#chat-menu button:disabled { color: var(--fg-mute); cursor: default; }
 #reader {
   position: fixed; inset: 0; z-index: 131; background: var(--bg0);
   display: none; flex-direction: column;
@@ -1454,6 +1455,7 @@ input, textarea, #fbv-content, .msg, .msg * {
 <div id="chat-menu">
   <button id="cm-pinned">Pinned</button>
   <button id="cm-clone">Clone</button>
+  <button id="cm-fork">Fork</button>
   <button id="cm-turn-nav">Show turn nav</button>
   <button id="cm-kill" style="color:var(--red)">Kill session</button>
 </div>
@@ -4755,6 +4757,77 @@ async function cloneSession() {
   }
 }
 
+// Fork: a new chat that shares this one's history and diverges from
+// here (ACP session/fork through agent-shell-fork on the rig).  The rig
+// answers with the new buffer's name, so the open is by name, not by
+// "whatever session is new"; the poll only waits for the multiplex
+// socket to surface it.
+const forkPending = new Set();
+async function forkSession() {
+  if (!currentBufferName) {
+    alert('No buffer name available for this session');
+    return;
+  }
+  const source = currentBufferName;
+  if (forkPending.has(source)) return;
+  forkPending.add(source);
+  const btn = document.getElementById('cm-fork');
+  btn.disabled = true; btn.textContent = 'Forking\u2026';
+  try {
+    const resp = await fetch(basePath + '/api/fork', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ bufferName: source })
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    let opened = false;
+    for (let i = 0; i < 15 && !opened; i++) {
+      await new Promise(r => setTimeout(r, SPAWN_POLL_MS));
+      await loadSessions(true);
+      if (lastSessions.some(x => x.bufferName === data.bufferName)) {
+        await openSessionByName(data.bufferName);
+        opened = true;
+      }
+    }
+    if (!opened) showToast('Forked as "' + data.bufferName + '"; it will appear in the list shortly');
+  } catch (err) {
+    alert('Fork failed: ' + err.message);
+  } finally {
+    forkPending.delete(source);
+    btn.disabled = false; btn.textContent = 'Fork';
+    closeChatMenu();
+  }
+}
+// Fork support is per agent (claude-code-acp advertises session/fork,
+// codex-acp does not).  Probed once per chat when the menu opens; a
+// positive answer is cached because the capability is fixed at session
+// init, a negative one is re-asked in case the session was still
+// initialising.
+const forkSupport = new Map();
+async function refreshForkEntry(btn) {
+  const name = currentBufferName;
+  if (!name) { btn.disabled = true; btn.textContent = 'Fork'; return; }
+  // A fork already in flight for this chat keeps the entry busy, so
+  // reopening the menu cannot start a second one.
+  if (forkPending.has(name)) { btn.disabled = true; btn.textContent = 'Forking\u2026'; return; }
+  if (forkSupport.get(name)) { btn.disabled = false; btn.textContent = 'Fork'; return; }
+  btn.disabled = true; btn.textContent = 'Fork';
+  try {
+    const resp = await fetch(basePath + '/api/fork?bufferName=' + encodeURIComponent(name));
+    const data = await resp.json();
+    if (name !== currentBufferName) return;
+    if (data.supported) {
+      forkSupport.set(name, true);
+      btn.disabled = false;
+    } else {
+      btn.textContent = 'Fork (not supported by this agent)';
+    }
+  } catch (err) {
+    if (name === currentBufferName) btn.textContent = 'Fork (unavailable)';
+  }
+}
+
 function spawnAgent() { openSpawnSheet(null); }
 function spawnInProject(cwd) { openSpawnSheet(cwd); }
 
@@ -5480,11 +5553,13 @@ bellBtn.addEventListener('click', async () => {
     bellBtn.classList.remove('pending');
   }
 });
-// Chat ⋮ menu: Pinned (only when this chat has pins) + Kill
+// Chat ⋮ menu: Pinned (only when this chat has pins), Clone, Fork (greyed
+// out unless the agent advertises session/fork), turn nav, Kill
 const cmScrim = document.getElementById('cm-scrim');
 const chatMenu = document.getElementById('chat-menu');
 const cmPinned = document.getElementById('cm-pinned');
 const cmTurnNav = document.getElementById('cm-turn-nav');
+const cmFork = document.getElementById('cm-fork');
 function closeChatMenu() {
   cmScrim.classList.remove('visible');
   chatMenu.classList.remove('visible');
@@ -5492,6 +5567,7 @@ function closeChatMenu() {
 document.getElementById('chat-menu-btn').addEventListener('click', () => {
   cmPinned.style.display = loadPins().length ? '' : 'none';
   cmTurnNav.textContent = turnNav.isEnabled() ? 'Hide turn nav' : 'Show turn nav';
+  refreshForkEntry(cmFork);
   cmScrim.classList.add('visible');
   chatMenu.classList.add('visible');
 });
@@ -5502,6 +5578,7 @@ cmPinned.addEventListener('click', () => {
   pinsEl.classList.add('visible');
 });
 document.getElementById('cm-clone').addEventListener('click', () => { cloneSession(); });
+cmFork.addEventListener('click', () => { forkSession(); });
 cmTurnNav.addEventListener('click', () => {
   closeChatMenu();
   turnNav.setEnabled(!turnNav.isEnabled());

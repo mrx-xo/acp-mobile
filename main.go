@@ -318,6 +318,7 @@ func main() {
 	mux.HandleFunc("/api/kill", handleKill)
 	mux.HandleFunc("/api/label", handleLabel)
 	mux.HandleFunc("/api/push", handlePush)
+	mux.HandleFunc("/api/fork", handleFork)
 	mux.HandleFunc("/api/push-key", handlePushKey)
 	mux.HandleFunc("/api/push-subscribe", handlePushSubscribe)
 	mux.HandleFunc("/api/notify", handleNotify)
@@ -1747,6 +1748,64 @@ func handlePush(w http.ResponseWriter, r *http.Request) {
 	state := strings.Trim(out, `"`)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "push": state == "on"})
+}
+
+// handleFork forks a live chat into a new one that shares its history,
+// through syzygy-fork-json in the daemon.  GET ?bufferName= only probes
+// whether the chat's agent advertises session/fork, so the menu can
+// grey the entry out; POST {bufferName} forks and answers with the new
+// chat's name.  The bridge refuses with ok:false (unsupported agent,
+// fork failed to start), which becomes 409 so the phone explains
+// instead of retrying.
+func handleFork(w http.ResponseWriter, r *http.Request) {
+	var bufferName string
+	probe := false
+	switch r.Method {
+	case http.MethodGet:
+		probe = true
+		bufferName = r.URL.Query().Get("bufferName")
+	case http.MethodPost:
+		var req struct {
+			BufferName string `json:"bufferName"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		bufferName = req.BufferName
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if bufferName == "" || !validBufferName.MatchString(bufferName) {
+		http.Error(w, "invalid buffer name", http.StatusBadRequest)
+		return
+	}
+
+	out, err := callElisp(r.Context(), "syzygy-fork-json",
+		elispB64(bufferName), elispBool(probe))
+	if writeElispError(w, "fork", err, "no such chat") {
+		return
+	}
+	body, err := unquoteElispBase64(out)
+	if err != nil {
+		log.Printf("fork: %v", err)
+		http.Error(w, "unreadable reply from the daemon", http.StatusInternalServerError)
+		return
+	}
+	var reply struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(body), &reply); err != nil {
+		log.Printf("fork: %v", err)
+		http.Error(w, "unreadable reply from the daemon", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if !reply.OK {
+		w.WriteHeader(http.StatusConflict)
+	}
+	w.Write([]byte(body))
 }
 
 // evalEmacs runs an emacsclient-backed command, retrying when the eval
