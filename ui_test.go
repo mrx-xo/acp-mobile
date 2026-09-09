@@ -61,10 +61,12 @@ func TestReconnectKeepsTranscriptAndShowsGraceState(t *testing.T) {
 			}
 			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 			_, err = fmt.Fprintf(conn,
-				`{"jsonrpc":"2.0","id":0,"result":{"sessionId":"s1"}}`+"\n"+
+				`{"jsonrpc":"2.0","method":"acp-multiplex/replay_start"}`+"\n"+
+					`{"jsonrpc":"2.0","id":0,"result":{"sessionId":"s1"}}`+"\n"+
 					`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hello"}}}}`+"\n"+
 					`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"reply generation-%d"}}}}`+"\n"+
-					`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"turn_complete","stopReason":"end_turn"}}}`+"\n", generation)
+					`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"turn_complete","stopReason":"end_turn"}}}`+"\n"+
+					`{"jsonrpc":"2.0","method":"acp-multiplex/replay_complete"}`+"\n", generation)
 			if err != nil {
 				_ = conn.Close()
 				t.Errorf("write replay generation %d: %v", generation, err)
@@ -375,7 +377,7 @@ func TestRemoteUserImagesRenderInLiveAndReplayPaths(t *testing.T) {
 		live.afterBoundaryLastText = [...document.querySelectorAll('#messages > .msg.user .text')].at(-1).textContent;
 		allReplayTurns = [{type: 'user', text: '', images: [{data: pixel, mimeType: 'image/png'}]}];
 		replayBuffer = [userUpdate({type: 'image', data: pixel, mimeType: 'image/png'})];
-		replayTimer = setTimeout(() => {}, 10000);
+		beginHistoryLoad();
 		lastSentMsg = liveMessage;
 		openMsgMenu(liveMessage);
 		openReader(liveMessage);
@@ -383,7 +385,7 @@ func TestRemoteUserImagesRenderInLiveAndReplayPaths(t *testing.T) {
 		live.navigatorReset = currentUserMsg === null;
 		live.navigatorReleased = allReplayTurns.length === 0 && replayBuffer.length === 0 &&
 			messagesEl.childElementCount === 0 && readerBody.childElementCount === 0 &&
-			lastSentMsg === null && mmTarget === null && replayTimer === null;
+			lastSentMsg === null && mmTarget === null && historyLoad === null && historyLoadingEl.hidden;
 
 		messagesEl.innerHTML = '';
 		allReplayTurns = [];
@@ -704,6 +706,7 @@ func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
 			connectionCount++
 			connection := connectionCount
 			connectionMu.Unlock()
+			websocket.Message.Send(ws, `{"jsonrpc":"2.0","method":"acp-multiplex/replay_start"}`)
 
 			switch connection {
 			case 1:
@@ -714,6 +717,7 @@ func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
 				}
 				// The test releases this only after observing replayMode=false,
 				// so every remaining frame is guaranteed to use handleMessage.
+				websocket.Message.Send(ws, `{"jsonrpc":"2.0","method":"acp-multiplex/replay_complete"}`)
 				<-liveRelease
 				for _, message := range messages[replayPrefix:] {
 					if err := websocket.Message.Send(ws, message); err != nil {
@@ -727,6 +731,7 @@ func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
 						return
 					}
 				}
+				websocket.Message.Send(ws, `{"jsonrpc":"2.0","method":"acp-multiplex/replay_complete"}`)
 			case 3:
 				// This reload ends its replay with an anonymous thought, then
 				// continues that same logical thought through the live path.
@@ -735,6 +740,7 @@ func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
 						return
 					}
 				}
+				websocket.Message.Send(ws, `{"jsonrpc":"2.0","method":"acp-multiplex/replay_complete"}`)
 				<-anonymousRelease
 				if err := websocket.Message.Send(ws, anonymousLive); err != nil {
 					return
@@ -745,6 +751,7 @@ func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
 						return
 					}
 				}
+				websocket.Message.Send(ws, `{"jsonrpc":"2.0","method":"acp-multiplex/replay_complete"}`)
 			}
 
 			var ignored string
@@ -762,7 +769,10 @@ func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
 	page.call(t, "Emulation.setDeviceMetricsOverride", map[string]interface{}{
 		"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": true,
 	})
+	// Reload is asynchronous: do not click a session card in the old document.
+	page.eval(t, `window.__fixtureReloading = true`)
 	page.call(t, "Page.reload", map[string]interface{}{})
+	page.waitFor(t, `!window.__fixtureReloading && typeof connect === 'function'`)
 	openThoughtFixtureSession(t, page)
 	page.waitFor(t, `replayMode === false`)
 	liveReleaseOnce.Do(func() { close(liveRelease) })
@@ -770,7 +780,10 @@ func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
 	live := thoughtProgressState(t, page)
 	assertThoughtProgressState(t, live)
 
+	// Reload is asynchronous: do not click a session card in the old document.
+	page.eval(t, `window.__fixtureReloading = true`)
 	page.call(t, "Page.reload", map[string]interface{}{})
+	page.waitFor(t, `!window.__fixtureReloading && typeof connect === 'function'`)
 	openThoughtFixtureSession(t, page)
 	page.waitFor(t, `document.querySelector('.msg.agent') && document.querySelector('.msg.agent').textContent.includes('Done.')`)
 	replayed := thoughtProgressState(t, page)
@@ -857,7 +870,10 @@ func TestThoughtProgressRenderingLiveAndReplay(t *testing.T) {
 		t.Fatalf("orrery thought reset = %#v", reset)
 	}
 
+	// Reload is asynchronous: do not click a session card in the old document.
+	page.eval(t, `window.__fixtureReloading = true`)
 	page.call(t, "Page.reload", map[string]interface{}{})
+	page.waitFor(t, `!window.__fixtureReloading && typeof connect === 'function'`)
 	openThoughtFixtureSession(t, page)
 	page.waitFor(t, `replayMode === false && [...document.querySelectorAll('.msg.thought:not([data-message-id])')]
 		.some(el => el._text === 'cached anonymous ')`)
@@ -2057,7 +2073,9 @@ func TestChatMenuCloneSpawnsFromCurrentBufferAndOpensIt(t *testing.T) {
 		lastSessions = [{pid: 1, sessionId: 'old', cwd: '/p'}];
 		SPAWN_POLL_MS = 5;
 		window.__posts = [];
+		const realFetch = window.fetch;
 		window.fetch = async (url, opts) => {
+			if (!url.endsWith('/api/spawn')) return realFetch(url, opts);
 			window.__posts.push({url, body: JSON.parse(opts.body)});
 			return {json: async () => ({ok: true})};
 		};

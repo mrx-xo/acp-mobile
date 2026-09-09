@@ -723,6 +723,12 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
   display: flex; align-items: center; justify-content: center;
 }
 #scroll-btn:active { background: #b16286; }
+#history-loading {
+  position: fixed; bottom: 80px; right: 16px; z-index: 10;
+  padding: 8px 12px; border-radius: 16px;
+  background: var(--bg0); color: var(--fg-mute);
+  font-family: var(--mono); font-size: 12px; pointer-events: none;
+}
 
 /* Turn nav: bare arrows above the scroll button, no chrome so the chat
    stays readable underneath. Each arrow takes the color of the block it
@@ -1542,6 +1548,7 @@ input, textarea, #fbv-content, .msg, .msg * {
 <div id="swipe-indicator"></div>
 <div id="thinking"><span class="spinner" id="spinner-glyph">⠋</span><span class="label">thinking…</span></div>
 <button id="scroll-btn">&darr;</button>
+<div id="history-loading" role="status" aria-live="polite" hidden>Loading chat…</div>
 <div id="attach-row"></div>
 <div id="input-area">
   <button id="attach-btn" aria-label="Attach image">+</button>
@@ -1888,7 +1895,7 @@ let replayMode = false;
 let replayBuffer = [];
 let replayBufferedImageChars = 0;
 let replayBufferedImages = [];
-let replayTimer = null;
+let replayStarted = false;
 let allReplayTurns = [];  // Full history from replay
 let renderedTurnStart = 0; // Index into allReplayTurns of first rendered turn
 // Mode display: look up name from availableModes, fall back to id
@@ -3024,37 +3031,115 @@ function scrollToBottom(smooth) {
   isAtBottom = true;
 }
 
+function updateScrollButton() {
+  scrollBtn.classList.toggle('visible', historyReady && !isAtBottom);
+}
+
 messagesEl.addEventListener('scroll', () => {
+  // Asset layout can move the bottom without a user scroll. Preserve follow
+  // until an actual upward gesture interrupts it during initial layout.
+  if (historyLoad && historyLoad.rendered && historyLoad.follow) return;
   const dist = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop;
   isAtBottom = dist < 60;
-  scrollBtn.classList.toggle('visible', !isAtBottom);
+  updateScrollButton();
 });
 
-// A replay lands as one paint, but the content keeps growing for a beat
-// afterwards: the Iosevka swap, images and tall code blocks all add
-// height after the first layout. One scrollTop assignment therefore
-// lands short, the bottom drifts away, and the scroll button pops while
-// the view sits above the true end. Hold the bottom until the content
-// stops moving (or the user scrolls up), with instant jumps only.
-let settleObserver = null;
-let settleTimer = null;
-function pinBottomWhileSettling(ms = 1500) {
-  if (settleObserver) settleObserver.disconnect();
-  clearTimeout(settleTimer);
-  scrollToBottom();
-  const pin = () => { if (isAtBottom) scrollToBottom(); };
-  if (document.fonts && document.fonts.ready) document.fonts.ready.then(pin);
-  if (typeof ResizeObserver !== 'undefined') {
-    settleObserver = new ResizeObserver(pin);
-    for (const el of messagesEl.children) settleObserver.observe(el);
+// Readiness belongs to one connection. Neither a quiet socket nor a fixed
+// delay proves that history and its rendered assets have reached the bottom.
+let historyReady = true;
+let historyLoad = null;
+const historyLoadingEl = document.getElementById('history-loading');
+
+function cancelHistoryLoad() {
+  if (historyLoad) {
+    clearTimeout(historyLoad.timer);
+    historyLoad.controller.abort();
+    if (historyLoad.observer) historyLoad.observer.disconnect();
   }
-  settleTimer = setTimeout(() => {
-    if (settleObserver) settleObserver.disconnect();
-    settleObserver = null;
-    settleTimer = null;
-    pin();
-  }, ms);
+  historyLoad = null;
+  historyReady = false;
+  historyLoadingEl.hidden = true;
+  messagesEl.removeAttribute('aria-busy');
+  updateScrollButton();
 }
+
+function beginHistoryLoad() {
+  cancelHistoryLoad();
+  const load = {controller: new AbortController(), follow: true, rendered: false, userScrolled: false};
+  historyLoad = load;
+  messagesEl.setAttribute('aria-busy', 'true');
+  load.timer = setTimeout(() => {
+    if (historyLoad === load) historyLoadingEl.hidden = false;
+  }, 300);
+}
+
+function waitForHistoryImage(img, signal) {
+  // Only the newest history window is rendered. Load its images even when
+  // offscreen so lazy loading cannot leave readiness waiting indefinitely.
+  img.loading = 'eager';
+  if (img.complete || signal.aborted) return Promise.resolve();
+  return new Promise(resolve => {
+    const done = () => {
+      img.removeEventListener('load', done);
+      img.removeEventListener('error', done);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    img.addEventListener('load', done);
+    img.addEventListener('error', done);
+    signal.addEventListener('abort', done, {once: true});
+  });
+}
+
+async function finishHistoryLayout(load) {
+  if (!load || historyLoad !== load) return;
+  load.rendered = true;
+  const pin = () => { if (historyLoad === load && load.follow) scrollToBottom(); };
+  load.observer = new ResizeObserver(pin);
+  load.observer.observe(messagesEl);
+  for (const el of messagesEl.children) load.observer.observe(el);
+  pin();
+  const signal = load.controller.signal;
+  const cancelled = new Promise(resolve => signal.addEventListener('abort', resolve, {once: true}));
+  await Promise.race([
+    Promise.all([
+      document.fonts ? document.fonts.ready : Promise.resolve(),
+      ...Array.from(messagesEl.querySelectorAll('img'), img => waitForHistoryImage(img, signal)),
+    ]), cancelled,
+  ]);
+  // Let the asset dimensions and final scroll position reach a painted frame.
+  for (let i = 0; i < 2; i++) {
+    if (historyLoad !== load) return;
+    pin();
+    await new Promise(requestAnimationFrame);
+  }
+  if (historyLoad !== load) return;
+  pin();
+  load.observer.disconnect();
+  clearTimeout(load.timer);
+  load.controller.abort();
+  historyLoad = null;
+  historyReady = true;
+  historyLoadingEl.hidden = true;
+  messagesEl.removeAttribute('aria-busy');
+  isAtBottom = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop < 60;
+  updateScrollButton();
+}
+
+function interruptHistoryFollow() {
+  if (historyLoad) { historyLoad.follow = false; historyLoad.userScrolled = true; }
+}
+messagesEl.addEventListener('wheel', e => { if (e.deltaY < 0) interruptHistoryFollow(); }, {passive: true});
+let historyTouchY = null;
+messagesEl.addEventListener('touchstart', e => { historyTouchY = e.touches[0]?.clientY; }, {passive: true});
+messagesEl.addEventListener('touchmove', e => {
+  const y = e.touches[0]?.clientY;
+  if (historyTouchY != null && y > historyTouchY) interruptHistoryFollow();
+  historyTouchY = y;
+}, {passive: true});
+messagesEl.addEventListener('keydown', e => {
+  if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) interruptHistoryFollow();
+});
 
 // Terminal-style braille spinner (the rig is a terminal; so is this)
 const SPINNER_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
@@ -3124,9 +3209,9 @@ function connect(pid) {
   resetThoughtState();
   currentUserMsg = null;
   replayMode = true;
+  replayStarted = false;
   resetReplayBuffer();
-  clearTimeout(replayTimer);
-  replayTimer = null;
+  beginHistoryLoad();
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let url = proto + '//' + location.host + basePath + '/ws';
@@ -3140,8 +3225,10 @@ function connect(pid) {
     ws.close();
   }
   ws = new WebSocket(url);
+  const socket = ws;
 
   ws.onopen = () => {
+    if (ws !== socket) return;
     statusText.textContent = 'Connected';
     statusText.className = 'header-status connected';
     reconnectAttempts = 0;
@@ -3152,22 +3239,31 @@ function connect(pid) {
   };
 
   ws.onmessage = (e) => {
+    if (ws !== socket) return;
     noteAlive();
     const msg = JSON.parse(e.data);
     // The server's keepalive. Never enters the replay buffer or
     // handleMessage; its only job was to feed the silence timer above.
     if (msg.method === 'acp-mobile/ping') return;
     if (handleSocketFrame(msg)) return;
+    if (msg.method === 'acp-multiplex/replay_start') {
+      replayStarted = true;
+      return;
+    }
+    if (msg.method === 'acp-multiplex/replay_complete') {
+      if (replayMode && replayStarted) flushReplay();
+      return;
+    }
     if (replayMode) {
       bufferReplayMessage(msg);
-      clearTimeout(replayTimer);
-      replayTimer = setTimeout(flushReplay, 80);
     } else {
       handleMessage(msg);
     }
   };
 
   ws.onclose = () => {
+    if (ws !== socket) return;
+    cancelHistoryLoad();
     // Grace state: a drop that heals in a beat reads as busy, not dead.
     // scheduleReconnect promotes to Disconnected once retries have
     // failed for long enough.
@@ -3275,8 +3371,6 @@ async function redial() {
   currentUserMsg = null;
   lastSentMsg = null;
   resetReplayBuffer();
-  clearTimeout(replayTimer);
-  replayTimer = null;
   closeMsgMenu();
   closeReader();
   resetThoughtState();
@@ -3479,7 +3573,6 @@ function loadMoreHistory() {
 // Assembles agent chunks into complete messages, renders once per message turn.
 function flushReplay() {
   replayMode = false;
-  replayTimer = null;
   const msgs = replayBuffer;
   resetReplayBuffer();
 
@@ -3757,7 +3850,11 @@ function flushReplay() {
     // instead of yanking it to the bottom.
     messagesEl.scrollTop = prevScrollTop;
   } else {
-    pinBottomWhileSettling();
+    scrollToBottom();
+  }
+  if (historyLoad) {
+    historyLoad.follow = (!hadContent || wasAtBottom) && !historyLoad.userScrolled;
+    finishHistoryLayout(historyLoad);
   }
 }
 
@@ -4756,6 +4853,7 @@ function showChat() {
 }
 
 function showOrrery() {
+  cancelHistoryLoad();
   stashDraft();
   resetChatSwipe();
   chatViewEl.classList.remove('visible');
@@ -4765,8 +4863,6 @@ function showOrrery() {
   currentUserMsg = null;
   lastSentMsg = null;
   resetReplayBuffer();
-  clearTimeout(replayTimer);
-  replayTimer = null;
   closeMsgMenu();
   closeReader();
   resetThoughtState();
@@ -5711,6 +5807,7 @@ function turnNavKind(classes) {
     const h = inputAreaEl.offsetHeight + thinkingEl.offsetHeight
       + (attachRow.classList.contains('has-items') ? attachRow.offsetHeight : 0);
     scrollBtn.style.bottom = (h + 14) + 'px';
+    historyLoadingEl.style.bottom = (h + 14) + 'px';
     let layout;
     if (turnNav.surface() === 'history') {
       // Clear the floating search dock (bottom offset is env()-based, so
@@ -6113,7 +6210,7 @@ document.getElementById('fbv-back').addEventListener('click', closeFileViewer);
 // Instant snap, not smooth: a smooth scroll animates toward the height at
 // the moment of the tap and stops short once streamed content grows past
 // it. The snap also marks the list at bottom so auto-follow takes over.
-scrollBtn.addEventListener('click', () => scrollToBottom());
+scrollBtn.addEventListener('click', () => { if (historyReady) scrollToBottom(); });
 // iOS: a tap on Send while the keyboard is up used to only dismiss the
 // keyboard (see the #send svg rule for the hit-target half of that bug).
 // Send on the touch pointerdown, before any blur can run; preventDefault

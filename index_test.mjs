@@ -139,7 +139,7 @@ function loadSocketClient(overrides = {}) {
     currentUserMsg: null,
     lastSentMsg: null,
     replayMode: false,
-    replayTimer: null,
+    replayStarted: false,
     sessionId: null,
     pendingPermissions: [],
     currentSessionKey: null,
@@ -160,6 +160,8 @@ function loadSocketClient(overrides = {}) {
     Date: FakeDate,
     setProcessing: () => {},
     resetThoughtState: () => {},
+    beginHistoryLoad: () => {},
+    cancelHistoryLoad: () => {},
     // Presence/banner wiring lives outside the extracted Socket block;
     // ws.onmessage calls it first, so the socket block needs a stub that
     // reports "not a push frame" to reach the real assertions below.

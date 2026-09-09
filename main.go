@@ -2346,57 +2346,7 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 	defer close(pingDone)
 	go keepalive(ws, pingDone)
 
-	// Read the replay into memory using a short idle timeout to detect
-	// when the replay burst is done (no explicit end marker from the proxy).
-	var responses [][]byte
-	var notifications [][]byte
-
-	buf := make([]byte, 0, 64*1024)
-	tmp := make([]byte, 256*1024)
-
-	for {
-		// Short deadline: if no data arrives within 150ms, replay is done.
-		conn.SetDeadline(time.Now().Add(150 * time.Millisecond))
-		n, err := conn.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-			for {
-				nl := bytes.IndexByte(buf, '\n')
-				if nl < 0 {
-					break
-				}
-				line := make([]byte, nl)
-				copy(line, buf[:nl])
-				buf = buf[nl+1:]
-				if len(line) == 0 {
-					continue
-				}
-				if bytes.Contains(line, []byte(`"result"`)) || bytes.Contains(line, []byte(`"error"`)) {
-					responses = append(responses, line)
-				} else {
-					notifications = append(notifications, line)
-				}
-			}
-		}
-		if err != nil {
-			break // timeout or EOF — replay is done
-		}
-	}
-
-	conn.SetDeadline(time.Time{})
-
-	// Send full replay: all responses + all notifications
-	for _, line := range responses {
-		websocket.Message.Send(ws, string(line))
-	}
-	for _, line := range notifications {
-		websocket.Message.Send(ws, string(line))
-	}
-
-	log.Printf("ws: replay %d responses + %d notifications",
-		len(responses), len(notifications))
-
-	// Bridge live traffic
+	// Replay boundaries and live records share one ordered stream.
 	var brMu sync.Mutex
 	inflight := map[string]string{} // request id -> sessionId (this bridge's prompts)
 	var once sync.Once
@@ -2445,19 +2395,30 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 
 	func() {
 		defer once.Do(closeAll)
+		replaying := true
 		// forwardOrHandle checks if a line is a reverse call we handle locally.
 		// If so, sends the response back to the socket. Otherwise forwards to browser.
 		forwardOrHandle := func(line []byte) {
-			if resp := handleReverseCall(line); resp != nil {
-				conn.Write(resp)
-				conn.Write([]byte("\n"))
-				return
-			}
 			var rsp struct {
 				ID     json.RawMessage `json:"id"`
 				Method string          `json:"method"`
 			}
-			if json.Unmarshal(line, &rsp) == nil &&
+			decoded := json.Unmarshal(line, &rsp) == nil
+			if rsp.Method == "acp-multiplex/replay_start" {
+				replaying = true
+			} else if rsp.Method == "acp-multiplex/replay_complete" {
+				replaying = false
+			}
+			// Replayed requests are history; only live reverse calls may
+			// perform filesystem operations or resolve this connection's turns.
+			if !replaying {
+				if resp := handleReverseCall(line); resp != nil {
+					conn.Write(resp)
+					conn.Write([]byte("\n"))
+					return
+				}
+			}
+			if !replaying && decoded &&
 				rsp.Method == "" && len(rsp.ID) > 0 {
 				brMu.Lock()
 				if sid, ok := inflight[string(rsp.ID)]; ok {
@@ -2468,25 +2429,10 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 			}
 			websocket.Message.Send(ws, string(line))
 		}
-		// Flush leftover bytes from replay read
-		for {
-			nl := bytes.IndexByte(buf, '\n')
-			if nl < 0 {
-				break
-			}
-			if nl > 0 {
-				forwardOrHandle(buf[:nl])
-			}
-			buf = buf[nl+1:]
-		}
+		buf := make([]byte, 0, 64*1024)
+		tmp := make([]byte, 256*1024)
 		for {
 			n, err := conn.Read(tmp)
-			if err != nil {
-				if err != io.EOF {
-					log.Printf("ws sock read: %v", err)
-				}
-				return
-			}
 			buf = append(buf, tmp[:n]...)
 			for {
 				nl := bytes.IndexByte(buf, '\n')
@@ -2497,6 +2443,12 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 					forwardOrHandle(buf[:nl])
 				}
 				buf = buf[nl+1:]
+			}
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("ws sock read: %v", err)
+				}
+				return
 			}
 		}
 	}()

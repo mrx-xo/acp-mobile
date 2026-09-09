@@ -107,18 +107,24 @@ func readFixture(path string) ([]string, error) {
 
 func (s *fixtureServer) serve(conn net.Conn, replayDelay, chunkDelay time.Duration) {
 	defer conn.Close()
+	if !sendMessages(conn, []string{`{"jsonrpc":"2.0","method":"acp-multiplex/replay_start"}`}, 0) {
+		return
+	}
 
 	s.mu.Lock()
 	completed := s.completed
 	s.mu.Unlock()
 	if completed {
-		if sendMessages(conn, s.messages, 0) {
+		if sendMessages(conn, s.messages, 0) && sendMessages(conn, []string{`{"jsonrpc":"2.0","method":"acp-multiplex/replay_complete"}`}, 0) {
 			_, _ = io.Copy(io.Discard, conn)
 		}
 		return
 	}
 
 	if !sendMessages(conn, s.messages[:s.prefix], 0) {
+		return
+	}
+	if !sendMessages(conn, []string{`{"jsonrpc":"2.0","method":"acp-multiplex/replay_complete"}`}, 0) {
 		return
 	}
 	time.Sleep(replayDelay)
