@@ -233,6 +233,7 @@ func main() {
 	if _, err := loadOrCreateVAPID(); err != nil {
 		log.Printf("webpush: vapid keys unavailable, phone push disabled: %v", err)
 	}
+	go runEscalation(context.Background())
 
 	mux := http.NewServeMux()
 
@@ -329,7 +330,6 @@ func main() {
 	mux.HandleFunc("/api/notify", handleNotify)
 	mux.HandleFunc("/api/push-trace", handlePushTrace)
 	mux.HandleFunc("/api/presence", handlePresence)
-	mux.HandleFunc("/api/push-inbox", handlePushInbox)
 	mux.HandleFunc("/sw.js", handleServiceWorker)
 	mux.HandleFunc("/manifest.webmanifest", handleManifest)
 	mux.HandleFunc("/api/preview", handlePreview)

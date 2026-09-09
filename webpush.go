@@ -54,6 +54,7 @@ func resetWebPushState() {
 	vapidState.keys = nil
 	vapidState.mu.Unlock()
 	resetPresence()
+	resetParked()
 }
 
 func acpMobileDir() string {
@@ -280,17 +281,30 @@ func handleNotify(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Title) == "" {
 		req.Title = req.BufferName
 	}
-	recordPush(req.BufferName, req.Title, req.Message, time.Now().UnixMilli())
-	sent, dropped, err := notifyAll(r.Context(), req.Title, req.Message, req.BufferName)
+	entry := pushEntry{BufferName: req.BufferName, Title: req.Title, Message: req.Message, At: nowFunc().UnixMilli()}
+	recordPush(entry.BufferName, entry.Title, entry.Message, entry.At)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
+	if visible, onScreen := presenceFresh(); visible {
+		if onScreen == entry.BufferName {
+			log.Printf("webpush: %q on screen, nothing to show (%s)", entry.Message, entry.BufferName)
+			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "onScreen": true})
+			return
+		}
+		parkPush(entry)
+		reached := deliverInApp(entry)
+		log.Printf("webpush: %q -> in-app (%d socket(s)), parked (%s)", entry.Message, reached, entry.BufferName)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "parked": true, "inApp": reached})
+		return
+	}
+	sent, dropped, err := notifyAll(r.Context(), entry.Title, entry.Message, entry.BufferName)
 	if err != nil {
 		log.Printf("webpush: notify: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	log.Printf("webpush: %q -> %d sent, %d dropped (%s)", req.Message, sent, dropped, req.BufferName)
+	log.Printf("webpush: %q -> %d sent, %d dropped (%s)", entry.Message, sent, dropped, entry.BufferName)
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "sent": sent, "dropped": dropped})
 }
 
@@ -499,35 +513,6 @@ func pushesSince(since int64) []pushEntry {
 	return out
 }
 
-// POST /api/push-inbox {since} -> {now, entries} with entries after SINCE
-// (unix ms).  The page passes the previous response's now.
-func handlePushInbox(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var req struct {
-		Since int64 `json:"since"`
-	}
-	if r.Body != nil {
-		_ = json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&req)
-	}
-	pushInbox.mu.Lock()
-	entries := []pushEntry{}
-	for _, e := range pushInbox.entries {
-		if e.At > req.Since {
-			entries = append(entries, e)
-		}
-	}
-	pushInbox.mu.Unlock()
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"now":     time.Now().UnixMilli(),
-		"entries": entries,
-	})
-}
-
 // Presence: is a phone page on screen, and which chat is it showing?
 // Fed by explicit visibility notes from the page and by the Orrery's
 // statuses poll.  One record; one phone; last writer wins.
@@ -651,4 +636,99 @@ func deliverInApp(e pushEntry) int {
 		s(string(frame))
 	}
 	return len(sends)
+}
+
+// Parking.  A push that went in-app (page visible) waits here.  If the
+// page goes away within escalateWindow and the chat was never on screen
+// or dismissed, the Apple push goes out late.  Otherwise it is dropped:
+// the banner had its time.
+const escalateWindow = 20 * time.Second
+
+type parkedPush struct {
+	entry pushEntry
+	read  bool
+	done  bool
+}
+
+var parkedState struct {
+	mu    sync.Mutex
+	items []*parkedPush
+}
+
+func resetParked() {
+	parkedState.mu.Lock()
+	parkedState.items = nil
+	parkedState.mu.Unlock()
+}
+
+func parkPush(e pushEntry) {
+	parkedState.mu.Lock()
+	parkedState.items = append(parkedState.items, &parkedPush{entry: e})
+	parkedState.mu.Unlock()
+}
+
+func init() {
+	markRead = func(bufferName string) {
+		parkedState.mu.Lock()
+		for _, p := range parkedState.items {
+			if p.entry.BufferName == bufferName {
+				p.read = true
+			}
+		}
+		parkedState.mu.Unlock()
+	}
+}
+
+// escalateTick runs one pass; runEscalation calls it every 500ms.  The
+// mutex only ever guards parkedState.items; notifyAll runs after it is
+// released so a slow push service never blocks presence or markRead.
+func escalateTick(ctx context.Context) {
+	visible, onScreen := presenceFresh()
+	now := nowFunc()
+	var toSend []pushEntry
+	parkedState.mu.Lock()
+	kept := parkedState.items[:0]
+	for _, p := range parkedState.items {
+		if p.done {
+			continue
+		}
+		if visible && onScreen == p.entry.BufferName {
+			p.read = true
+		}
+		age := now.Sub(time.UnixMilli(p.entry.At))
+		switch {
+		case p.read:
+			p.done = true
+		case age > escalateWindow:
+			p.done = true
+		case !visible:
+			p.done = true
+			toSend = append(toSend, p.entry)
+		default:
+			kept = append(kept, p)
+		}
+	}
+	parkedState.items = kept
+	parkedState.mu.Unlock()
+	for _, e := range toSend {
+		sent, dropped, err := notifyAll(ctx, e.Title, e.Message, e.BufferName)
+		if err != nil {
+			log.Printf("webpush: escalate %s: %v", e.BufferName, err)
+			continue
+		}
+		log.Printf("webpush: escalated %q -> %d sent, %d dropped (%s)", e.Message, sent, dropped, e.BufferName)
+	}
+}
+
+func runEscalation(ctx context.Context) {
+	t := time.NewTicker(500 * time.Millisecond)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			escalateTick(ctx)
+		}
+	}
 }
