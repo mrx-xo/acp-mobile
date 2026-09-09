@@ -1337,6 +1337,9 @@ func openChromePage(t *testing.T, pageURL string) *chromePage {
 	})
 	cmd := exec.CommandContext(ctx, chrome,
 		"--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+		// Keeps the test browser off the login keychain: without it every run asks
+		// macOS to store a fresh "Chrome Safe Storage" item and pops a Keychain dialog.
+		"--use-mock-keychain",
 		"--disable-background-networking", "--remote-debugging-port=0",
 		"--remote-debugging-address=127.0.0.1", "--remote-allow-origins=*",
 		"--user-data-dir="+profile, "about:blank")
@@ -2119,8 +2122,11 @@ func TestChatMenuCloneSpawnsFromCurrentBufferAndOpensIt(t *testing.T) {
 }
 
 func TestMermaidRendering(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	// Deliberately no t.Setenv("HOME", ...): Chrome needs a real home
+	// directory, and pointing it at a temp dir leaves the target stuck on
+	// about:blank, which shows up as every waitFor timing out.  The config
+	// route is stubbed below instead, so this never reads the real
+	// ~/.acp-mobile either.
 	const diagram = "```mermaid\nflowchart TD\n  A[Start] --> B[Finish]\n```"
 	const broken = "```mermaid\nflowchart TD\n  A[unterminated\n```"
 	var assetMu sync.Mutex
@@ -2144,7 +2150,13 @@ func TestMermaidRendering(t *testing.T) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		http.FileServerFS(assetsFS).ServeHTTP(w, r)
 	})
-	mux.HandleFunc("/api/mermaid-config", handleMermaidConfig)
+	// A fixed config rather than handleMermaidConfig: the page must fetch and
+	// apply the rig's settings, and the test must not care whether this
+	// machine has exported any.  Handler behaviour is TestHandleMermaidConfig.
+	mux.HandleFunc("/api/mermaid-config", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"theme":"base","themeVariables":{"primaryColor":"#3c3836"}}`))
+	})
 	mux.HandleFunc("/api/preview", func(w http.ResponseWriter, r *http.Request) {
 		text := diagram
 		switch r.URL.Query().Get("pid") {
