@@ -5931,7 +5931,7 @@ function handleSocketFrame(msg) {
 }
 function handleStatusPushes(data) {
   const first = pushSince === 0;
-  if (data.now) pushSince = data.now;
+  if (data.now) pushSince = Math.max(pushSince, data.now);
   if (first) return;
   const entries = (data.pushes || []).filter(e => e.bufferName && e.bufferName !== onScreenBufferName());
   if (entries.length) showPushToast(entries[entries.length - 1]);

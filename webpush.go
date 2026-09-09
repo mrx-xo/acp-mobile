@@ -282,15 +282,16 @@ func handleNotify(w http.ResponseWriter, r *http.Request) {
 		req.Title = req.BufferName
 	}
 	entry := pushEntry{BufferName: req.BufferName, Title: req.Title, Message: req.Message, At: nowFunc().UnixMilli()}
-	recordPush(entry.BufferName, entry.Title, entry.Message, entry.At)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
-	if visible, onScreen := presenceFresh(); visible {
-		if onScreen == entry.BufferName {
-			log.Printf("webpush: %q on screen, nothing to show (%s)", entry.Message, entry.BufferName)
-			json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "onScreen": true})
-			return
-		}
+	visible, onScreen := presenceFresh()
+	if visible && onScreen == entry.BufferName {
+		log.Printf("webpush: %q on screen, nothing to show (%s)", entry.Message, entry.BufferName)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "onScreen": true})
+		return
+	}
+	recordPush(entry.BufferName, entry.Title, entry.Message, entry.At)
+	if visible {
 		parkPush(entry)
 		reached := deliverInApp(entry)
 		log.Printf("webpush: %q -> in-app (%d socket(s)), parked (%s)", entry.Message, reached, entry.BufferName)

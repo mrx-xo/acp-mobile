@@ -519,6 +519,9 @@ func TestNotifySendsApplePushWhenNoPageIsVisible(t *testing.T) {
 	if w.Code != http.StatusOK || len(f.calls) != 1 {
 		t.Fatalf("status %d, sent %d", w.Code, len(f.calls))
 	}
+	if len(pushesSince(0)) != 1 {
+		t.Fatalf("inbox should hold the notify entry: %+v", pushesSince(0))
+	}
 }
 
 func TestNotifyParksAndDeliversInAppWhenPageVisible(t *testing.T) {
@@ -550,6 +553,12 @@ func TestNotifyParksAndDeliversInAppWhenPageVisible(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"parked":true`) {
 		t.Fatalf("reply should say parked: %s", w.Body)
 	}
+	if !strings.Contains(w.Body.String(), `"inApp":1`) {
+		t.Fatalf("reply should say inApp:1: %s", w.Body)
+	}
+	if len(pushesSince(0)) != 1 {
+		t.Fatalf("inbox should hold the parked entry: %+v", pushesSince(0))
+	}
 }
 
 func TestNotifyAboutOnScreenChatIsReadAtBirth(t *testing.T) {
@@ -568,7 +577,14 @@ func TestNotifyAboutOnScreenChatIsReadAtBirth(t *testing.T) {
 	nowFunc = func() time.Time { return base }
 	t.Cleanup(func() { nowFunc = time.Now })
 	setPresence(true, "Claude Agent @ a")
-	handleNotify(httptest.NewRecorder(), notifyReq(`{"bufferName":"Claude Agent @ a","title":"a","message":"Finished"}`))
+	w := httptest.NewRecorder()
+	handleNotify(w, notifyReq(`{"bufferName":"Claude Agent @ a","title":"a","message":"Finished"}`))
+	if !strings.Contains(w.Body.String(), `"onScreen":true`) {
+		t.Fatalf("reply should say onScreen:true: %s", w.Body)
+	}
+	if len(pushesSince(0)) != 0 {
+		t.Fatalf("a push about the on-screen chat must never reach the inbox: %+v", pushesSince(0))
+	}
 	// Page goes away right after: nothing to escalate, it was on screen.
 	setPresence(false, "")
 	nowFunc = func() time.Time { return base.Add(2 * time.Second) }
