@@ -5889,8 +5889,17 @@ pushToast.addEventListener('click', (e) => {
 // it shows.  Event-driven, plus one 20s heartbeat while visible in a
 // chat (the Orrery's statuses poll is its own heartbeat).  The hidden
 // note goes by sendBeacon so iOS suspending the app cannot lose it.
+// currentBufferName is not cleared on leaving a chat (other code reads
+// it), so it goes stale the moment the Orrery is shown any way other than
+// showOrrery's own explicit { bufferName: '' } presence call. Every other
+// caller — pageshow, visibilitychange, the banner-close note, the
+// heartbeat, and the push filters below — must ask what chat is actually
+// on screen right now, not trust the stale variable.
+function onScreenBufferName() {
+  return chatViewEl.classList.contains('visible') ? (currentBufferName || '') : '';
+}
 function sendPresence(visible, extra) {
-  const body = JSON.stringify(Object.assign({ visible: !!visible, bufferName: currentBufferName || '' }, extra || {}));
+  const body = JSON.stringify(Object.assign({ visible: !!visible, bufferName: onScreenBufferName() }, extra || {}));
   try {
     if (!visible && navigator.sendBeacon) {
       navigator.sendBeacon(basePath + '/api/presence', new Blob([body], { type: 'application/json' }));
@@ -5903,7 +5912,7 @@ document.addEventListener('visibilitychange', () => sendPresence(document.visibi
 window.addEventListener('pageshow', () => sendPresence(true));
 window.addEventListener('pagehide', () => sendPresence(false));
 setInterval(() => {
-  if (document.visibilityState === 'visible' && currentBufferName && chatViewEl.classList.contains('visible')) sendPresence(true);
+  if (document.visibilityState === 'visible' && onScreenBufferName()) sendPresence(true);
 }, 20000);
 sendPresence(document.visibilityState === 'visible');
 
@@ -5913,14 +5922,15 @@ let pushSince = 0;
 function handleSocketFrame(msg) {
   if (!msg || msg.method !== 'acp-mobile/push') return false;
   const p = msg.params || {};
-  if (p.bufferName && p.bufferName !== currentBufferName) showPushToast(p);
+  if (p.at) pushSince = Math.max(pushSince, p.at);
+  if (p.bufferName && p.bufferName !== onScreenBufferName()) showPushToast(p);
   return true;
 }
 function handleStatusPushes(data) {
   const first = pushSince === 0;
   if (data.now) pushSince = data.now;
   if (first) return;
-  const entries = (data.pushes || []).filter(e => e.bufferName && e.bufferName !== currentBufferName);
+  const entries = (data.pushes || []).filter(e => e.bufferName && e.bufferName !== onScreenBufferName());
   if (entries.length) showPushToast(entries[entries.length - 1]);
 }
 // A tap handled live must also clear the durable copy, or the next

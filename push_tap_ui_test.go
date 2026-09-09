@@ -129,8 +129,10 @@ func TestForegroundPushViaSocketFrameShowsBanner(t *testing.T) {
 	defer server.Close()
 	page := openChromePage(t, server.URL)
 	page.waitFor(t, `typeof handleSocketFrame === 'function' && lastSessions.length === 1`)
-	page.eval(t, `(handleSocketFrame({jsonrpc:'2.0', method:'acp-mobile/push', params:{bufferName:'Claude Agent @ tap-test', title:'tap-test', message:'Finished', at: Date.now()}}), true)`)
+	page.eval(t, `(window.__at = Date.now(), true)`)
+	page.eval(t, `(handleSocketFrame({jsonrpc:'2.0', method:'acp-mobile/push', params:{bufferName:'Claude Agent @ tap-test', title:'tap-test', message:'Finished', at: window.__at}}), true)`)
 	page.waitFor(t, `document.getElementById('push-toast').classList.contains('visible') && document.getElementById('pt-msg').textContent === 'Finished'`)
+	page.waitFor(t, `pushSince >= window.__at`)
 	// Same chat on screen: no banner.
 	page.eval(t, `(hidePushToast(), openSessionByName('Claude Agent @ tap-test'), true)`)
 	page.waitFor(t, `currentBufferName === 'Claude Agent @ tap-test'`)
@@ -155,14 +157,20 @@ func TestPagePostsPresenceOnLoadChatAndDismiss(t *testing.T) {
 	page.waitFor(t, `currentBufferName === 'Claude Agent @ tap-test'`)
 	page.eval(t, `(showPushToast({bufferName:'Codex Agent @ z', title:'z', message:'m'}), document.getElementById('pt-close').click(), true)`)
 	page.eval(t, `(showOrrery(), true)`)
+	// Simulate a pageshow while on the Orrery: currentBufferName is stale
+	// (never cleared), so this must report the chat actually on screen
+	// (none), not the last-visited one.
+	page.eval(t, `(sendPresence(true), true)`)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		presenceMu.Lock()
-		joined := strings.Join(presenceNotes, "\n")
+		notes := append([]string(nil), presenceNotes...)
 		presenceMu.Unlock()
+		joined := strings.Join(notes, "\n")
 		if strings.Contains(joined, `"visible":true,"bufferName":""`) &&
 			strings.Contains(joined, `"bufferName":"Claude Agent @ tap-test"`) &&
-			strings.Contains(joined, `"read":"Codex Agent @ z"`) {
+			strings.Contains(joined, `"read":"Codex Agent @ z"`) &&
+			len(notes) > 0 && notes[len(notes)-1] == `{"visible":true,"bufferName":""}` {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
