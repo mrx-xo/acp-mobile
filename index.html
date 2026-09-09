@@ -4727,7 +4727,10 @@ function selectSession(session) {
   sessionId = null;
   projectCwd = session.cwd || null;
   currentBufferName = session.bufferName || null;
-  sendPresence(true);
+  // showChat() (below) hasn't marked chatViewEl visible yet, so
+  // onScreenBufferName() would still read '' here; name the chat
+  // explicitly rather than depend on that class-timing.
+  sendPresence(true, { bufferName: session.bufferName || '' });
   updateChatHeader();
   document.getElementById('chat-menu-btn').style.display = currentBufferName ? '' : 'none';
   availableModes = [];

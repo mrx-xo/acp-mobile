@@ -155,6 +155,21 @@ func TestPagePostsPresenceOnLoadChatAndDismiss(t *testing.T) {
 	page.waitFor(t, `typeof sendPresence === 'function' && lastSessions.length === 1`)
 	page.eval(t, `(openSessionByName('Claude Agent @ tap-test'), true)`)
 	page.waitFor(t, `currentBufferName === 'Claude Agent @ tap-test'`)
+	// selectSession must name the chat explicitly: chatViewEl isn't marked
+	// visible yet when it posts, so onScreenBufferName() alone would read ''.
+	selectDeadline := time.Now().Add(3 * time.Second)
+	for {
+		presenceMu.Lock()
+		notes := append([]string(nil), presenceNotes...)
+		presenceMu.Unlock()
+		if len(notes) > 0 && notes[len(notes)-1] == `{"visible":true,"bufferName":"Claude Agent @ tap-test"}` {
+			break
+		}
+		if !time.Now().Before(selectDeadline) {
+			t.Fatalf("presence notes after selectSession = %v", notes)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	page.eval(t, `(showPushToast({bufferName:'Codex Agent @ z', title:'z', message:'m'}), document.getElementById('pt-close').click(), true)`)
 	page.eval(t, `(showOrrery(), true)`)
 	// Simulate a pageshow while on the Orrery: currentBufferName is stale
