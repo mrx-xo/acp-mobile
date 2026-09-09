@@ -983,20 +983,23 @@ test('a preset reply from an older open cannot overwrite a newer one', async () 
   const second = deferred();
   let calls = 0;
   const {context, elements} = loadSpawnSheet({
-    fetch: async () => {
+    fetch: async url => {
+      if (url !== '/api/presets') return {ok: true, json: async () => ({projects: []})};
       calls += 1;
       const presets = await (calls === 1 ? first.promise : second.promise);
       return {ok: true, json: async () => ({presets})};
     },
   });
+  // openSpawnSheet itself starts a load: the first open's fetch is the
+  // stale one, the second open's fetch is the fresh one.
   context.openSpawnSheet(null);
-  const stale = context.loadSpawnPresets();
   context.openSpawnSheet(null);
-  const fresh = context.loadSpawnPresets();
+  assert.equal(calls, 2);
   second.resolve([{key: 'h', label: 'Haiku \u00b7 Auto', model: 'haiku', mode: 'auto'}]);
-  await fresh;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(chipLabels(elements.get('sp-presets')), ['default', 'Haiku \u00b7 Auto']);
   first.resolve([{key: 'x', label: 'stale', model: 'x', mode: 'x'}]);
-  await stale;
+  await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(chipLabels(elements.get('sp-presets')), ['default', 'Haiku \u00b7 Auto']);
 });
 
