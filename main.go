@@ -316,6 +316,7 @@ func main() {
 	mux.HandleFunc("/api/statuses", handleStatuses)
 	mux.HandleFunc("/api/spawn", handleSpawn)
 	mux.HandleFunc("/api/presets", handlePresets)
+	registerModelHandlers(mux)
 	mux.HandleFunc("/api/kill", handleKill)
 	mux.HandleFunc("/api/label", handleLabel)
 	mux.HandleFunc("/api/push", handlePush)

@@ -1178,6 +1178,38 @@ input, textarea, #fbv-content, .msg, .msg * {
 #sp-go:active { transform: scale(0.97); }
 #sp-go:disabled { background: var(--bg1); color: var(--fg-mute); }
 
+/* Model picker */
+#model-scrim {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+  display: none; z-index: 139;
+}
+#model-scrim.visible { display: block; }
+#model-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 140;
+  background: var(--bg0); border-top: 1px solid var(--bg2);
+  border-radius: 16px 16px 0 0; max-height: 80dvh;
+  display: none; flex-direction: column;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+#model-sheet.visible { display: flex; }
+#md-head { display: flex; align-items: center; padding: 14px 16px; }
+#md-title { flex: 1; font-size: 14px; font-weight: 700; color: var(--fg); }
+#md-close {
+  background: none; border: none; color: var(--fg-mute);
+  font: inherit; cursor: pointer; padding: 4px 8px;
+}
+#md-body { overflow-y: auto; padding: 0 16px 14px; }
+#md-list { display: flex; flex-direction: column; gap: 8px; }
+.md-row {
+  background: var(--bg1); border: 1px solid var(--bg2); border-radius: 10px;
+  padding: 12px 14px; color: var(--fg-dim); font-family: var(--mono);
+  text-align: left; cursor: pointer; overflow-wrap: anywhere;
+}
+.md-row.sel { border-color: var(--orange); color: var(--orange); }
+.md-row:disabled { cursor: default; opacity: 0.65; }
+.md-description { display: block; margin-top: 4px; color: var(--fg-mute); }
+.md-message { margin: 0; color: var(--fg-mute); }
+
 /* Attachments: image thumbs + quote chips above the composer. */
 #attach-row {
   display: none; gap: 10px; padding: 10px 12px 0; align-items: center;
@@ -1456,6 +1488,7 @@ input, textarea, #fbv-content, .msg, .msg * {
   <button id="cm-pinned">Pinned</button>
   <button id="cm-clone">Clone</button>
   <button id="cm-fork">Fork</button>
+  <button id="cm-model">Model</button>
   <button id="cm-turn-nav">Show turn nav</button>
   <button id="cm-kill" style="color:var(--red)">Kill session</button>
 </div>
@@ -1541,6 +1574,16 @@ input, textarea, #fbv-content, .msg, .msg * {
     <div class="sp-label">FIRST PROMPT <span class="sp-hint">(optional — sent once it's ready)</span></div>
     <textarea id="sp-task" rows="3" placeholder="what's the job?"></textarea>
     <button id="sp-go">spawn</button>
+  </div>
+</div>
+<div id="model-scrim"></div>
+<div id="model-sheet" role="dialog" aria-labelledby="md-title">
+  <div id="md-head">
+    <span id="md-title">Model</span>
+    <button id="md-close" type="button">Close</button>
+  </div>
+  <div id="md-body">
+    <div id="md-list" aria-live="polite"></div>
   </div>
 </div>
 <div id="preview-scrim"></div>
@@ -4856,6 +4899,123 @@ function spawnAgent() { openSpawnSheet(null); }
 function spawnInProject(cwd) { openSpawnSheet(cwd); }
 // --- Spawn sheet: end ---
 
+// --- Model picker ---
+const mdScrim = document.getElementById('model-scrim');
+const mdSheet = document.getElementById('model-sheet');
+const mdList = document.getElementById('md-list');
+let modelPickerToken = 0;
+let modelPickerBuffer = null;
+let modelPickerData = {current: '', models: []};
+let modelPickerBusy = false;
+
+function modelPickerMessage(message) {
+  const line = document.createElement('p');
+  line.className = 'md-message';
+  line.textContent = message;
+  mdList.appendChild(line);
+}
+
+function renderModelRows(data) {
+  mdList.innerHTML = '';
+  for (const model of data.models) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'md-row' + (model.id === data.current ? ' sel' : '');
+    row.textContent = (model.name || model.id) +
+      (model.id === data.current ? ' (current)' : '');
+    row.disabled = modelPickerBusy;
+    if (model.description) {
+      const description = document.createElement('span');
+      description.className = 'md-description';
+      description.textContent = model.description;
+      row.appendChild(description);
+    }
+    row.onclick = () => chooseModel(model.id);
+    mdList.appendChild(row);
+  }
+  if (!data.models.length) modelPickerMessage('No models available for this session.');
+}
+
+function closeModelPicker() {
+  ++modelPickerToken;
+  modelPickerBuffer = null;
+  modelPickerBusy = false;
+  mdScrim.classList.remove('visible');
+  mdSheet.classList.remove('visible');
+}
+
+async function openModelPicker() {
+  closeChatMenu();
+  const token = ++modelPickerToken;
+  const bufferName = currentBufferName;
+  modelPickerBuffer = bufferName;
+  modelPickerBusy = false;
+  modelPickerData = {current: '', models: []};
+  mdList.innerHTML = '';
+  mdScrim.classList.add('visible');
+  mdSheet.classList.add('visible');
+  if (!bufferName) {
+    modelPickerMessage('No buffer name available for this session.');
+    return;
+  }
+  modelPickerMessage('Loading models...');
+  try {
+    const resp = await fetch(basePath + '/api/models', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({bufferName})
+    });
+    if (!resp.ok) throw new Error(resp.status === 404
+      ? 'No such session.' : 'Could not load models (' + resp.status + ').');
+    const data = await resp.json();
+    if (!Array.isArray(data.models)) throw new Error('Invalid models reply.');
+    if (token !== modelPickerToken || bufferName !== currentBufferName) return;
+    modelPickerData = {
+      current: data.current || '',
+      models: data.models.filter(model => model && typeof model.id === 'string' && model.id)
+    };
+    renderModelRows(modelPickerData);
+  } catch (err) {
+    if (token !== modelPickerToken || bufferName !== currentBufferName) return;
+    mdList.innerHTML = '';
+    modelPickerMessage('Models unavailable: ' + err.message);
+  }
+}
+
+async function chooseModel(id) {
+  if (modelPickerBusy || !modelPickerBuffer ||
+      modelPickerBuffer !== currentBufferName ||
+      !modelPickerData.models.some(model => model.id === id)) return;
+  const token = ++modelPickerToken;
+  const bufferName = modelPickerBuffer;
+  modelPickerBusy = true;
+  renderModelRows(modelPickerData);
+  try {
+    const resp = await fetch(basePath + '/api/model', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({bufferName, modelId: id})
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.ok !== true) {
+      throw new Error(data.error || 'Could not switch model (' + resp.status + ').');
+    }
+    if (token !== modelPickerToken || bufferName !== currentBufferName) return;
+    modelPickerData = {...modelPickerData, current: data.current || id};
+    renderModelRows(modelPickerData);
+    setTimeout(() => {
+      if (token === modelPickerToken && bufferName === currentBufferName) closeModelPicker();
+    }, 300);
+  } catch (err) {
+    if (token !== modelPickerToken || bufferName !== currentBufferName) return;
+    modelPickerBusy = false;
+    renderModelRows(modelPickerData);
+    modelPickerMessage('Model switch failed: ' + err.message);
+  }
+}
+
+document.getElementById('md-close').addEventListener('click', closeModelPicker);
+mdScrim.addEventListener('click', closeModelPicker);
+// --- Model picker: end ---
+
 async function killSession() {
   if (!currentBufferName) {
     alert('No buffer name available for this session');
@@ -5604,6 +5764,7 @@ cmPinned.addEventListener('click', () => {
 });
 document.getElementById('cm-clone').addEventListener('click', () => { cloneSession(); });
 cmFork.addEventListener('click', () => { forkSession(); });
+document.getElementById('cm-model').addEventListener('click', openModelPicker);
 cmTurnNav.addEventListener('click', () => {
   closeChatMenu();
   turnNav.setEnabled(!turnNav.isEnabled());

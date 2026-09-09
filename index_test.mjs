@@ -697,6 +697,188 @@ test('transcript bubbles classify like chat bubbles', () => {
   assert.equal(turnNavKind(['msg', 'tool']), 'agent');
 });
 
+// --- Model picker ---
+
+function loadModelPicker(overrides = {}) {
+  const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const start = html.indexOf('// --- Model picker ---');
+  const end = html.indexOf('// --- Model picker: end ---', start);
+  assert.notEqual(start, -1, 'model picker block should exist');
+  assert.notEqual(end, -1, 'model picker block should have an end marker');
+  const elements = new Map();
+  const element = id => {
+    if (!elements.has(id)) elements.set(id, new FakeElement(id));
+    return elements.get(id);
+  };
+  const timers = [];
+  const context = {
+    document: {
+      getElementById: element,
+      createElement: () => new FakeElement(),
+    },
+    basePath: '/phone',
+    currentBufferName: '*Agent @ demo*',
+    closeChatMenu: () => {},
+    fetch: async () => { throw new Error('unexpected fetch'); },
+    setTimeout: (fn, delay) => { timers.push({fn, delay}); return timers.length; },
+    Array, Error, JSON, Promise,
+    ...overrides,
+  };
+  vm.createContext(context);
+  vm.runInContext(html.slice(start, end), context, {filename: 'index.html#models'});
+  return {context, elements, timers};
+}
+
+const modelData = () => ({current: 'first', models: [
+  {id: 'first', name: 'First', description: 'Fast model'},
+  {id: 'second', name: 'Second', description: ''},
+]});
+const modelReply = data => ({ok: true, json: async () => data});
+
+test('model picker lists models in rig order with the current model marked', async () => {
+  let menuClosed = false;
+  const {context, elements} = loadModelPicker({
+    closeChatMenu: () => { menuClosed = true; },
+    fetch: async (url, options) => {
+      assert.equal(url, '/phone/api/models');
+      assert.equal(options.method, 'POST');
+      assert.equal(options.headers['Content-Type'], 'application/json');
+      assert.deepEqual(JSON.parse(options.body), {bufferName: '*Agent @ demo*'});
+      return modelReply(modelData());
+    },
+  });
+  await context.openModelPicker();
+  const rows = elements.get('md-list').children;
+  assert.equal(menuClosed, true);
+  assert.deepEqual(rows.map(row => row.textContent), ['First (current)', 'Second']);
+  assert.equal(rows[0].children[0].textContent, 'Fast model');
+  assert.equal(rows[0].classList.contains('md-row'), true);
+  assert.equal(rows[0].classList.contains('sel'), true);
+  assert.equal(rows[1].classList.contains('sel'), false);
+  assert.equal(elements.get('model-sheet').classList.contains('visible'), true);
+});
+
+test('choosing a model posts the exact body, re-marks, and closes after a delay', async () => {
+  const requests = [];
+  const {context, elements, timers} = loadModelPicker({
+    fetch: async (url, options) => {
+      requests.push({url, options});
+      return modelReply(url.endsWith('/api/models') ? modelData() : {ok: true, current: 'second'});
+    },
+  });
+  await context.openModelPicker();
+  await elements.get('md-list').children[1].onclick();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].url, '/phone/api/model');
+  assert.equal(requests[1].options.method, 'POST');
+  assert.equal(requests[1].options.headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(requests[1].options.body), {
+    bufferName: '*Agent @ demo*', modelId: 'second',
+  });
+  const rows = elements.get('md-list').children;
+  assert.equal(rows[0].classList.contains('sel'), false);
+  assert.equal(rows[1].classList.contains('sel'), true);
+  assert.equal(elements.get('model-sheet').classList.contains('visible'), true);
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 300);
+  timers[0].fn();
+  assert.equal(elements.get('model-sheet').classList.contains('visible'), false);
+  assert.equal(elements.get('model-scrim').classList.contains('visible'), false);
+});
+
+test('a stale model list cannot overwrite a newer open', async () => {
+  const first = deferred();
+  let calls = 0;
+  const {context, elements} = loadModelPicker({
+    fetch: async () => ++calls === 1 ? first.promise : modelReply({
+      current: 'new', models: [{id: 'new', name: 'New', description: ''}],
+    }),
+  });
+  const stale = context.openModelPicker();
+  await context.openModelPicker();
+  first.resolve(modelReply(modelData()));
+  await stale;
+  assert.deepEqual(elements.get('md-list').children.map(row => row.textContent), ['New (current)']);
+});
+
+test('model switch errors stay inline, preserve selection, and allow retry', async () => {
+  for (const httpOK of [true, false]) {
+    const {context, elements, timers} = loadModelPicker({
+      fetch: async url => url.endsWith('/api/models') ? modelReply(modelData()) : {
+        ok: httpOK, status: httpOK ? 200 : 409,
+        json: async () => ({ok: false, error: 'Agent refused'}),
+      },
+    });
+    await context.openModelPicker();
+    await context.chooseModel('second');
+    const rows = elements.get('md-list').children;
+    assert.equal(rows[0].classList.contains('sel'), true);
+    assert.equal(rows[1].classList.contains('sel'), false);
+    assert.equal(rows[1].disabled, false);
+    assert.equal(rows[2].textContent, 'Model switch failed: Agent refused');
+    assert.equal(elements.get('model-sheet').classList.contains('visible'), true);
+    assert.equal(timers.length, 0);
+  }
+});
+
+test('model list failures show a message in the open sheet', async () => {
+  for (const fetch of [
+    async () => ({ok: false, status: 404}),
+    async () => { throw new Error('offline'); },
+  ]) {
+    const {context, elements} = loadModelPicker({fetch});
+    await context.openModelPicker();
+    const messages = elements.get('md-list').children;
+    assert.equal(messages.length, 1);
+    assert.match(messages[0].textContent, /^Models unavailable: (No such session\.|offline)$/);
+    assert.equal(elements.get('model-sheet').classList.contains('visible'), true);
+  }
+});
+
+test('a stale switch reply cannot re-mark or close a newer picker', async () => {
+  const pending = deferred();
+  let writes = 0;
+  const {context, elements, timers} = loadModelPicker({
+    fetch: async url => {
+      if (url.endsWith('/api/models')) return modelReply(modelData());
+      writes++;
+      return pending.promise;
+    },
+  });
+  await context.openModelPicker();
+  const stale = context.chooseModel('second');
+  await context.chooseModel('first');
+  assert.equal(writes, 1, 'duplicate choices are blocked while switching');
+  await context.openModelPicker();
+  pending.resolve(modelReply({ok: true, current: 'second'}));
+  await stale;
+  assert.equal(elements.get('md-list').children[0].classList.contains('sel'), true);
+  assert.equal(elements.get('model-sheet').classList.contains('visible'), true);
+  assert.equal(timers.length, 0);
+});
+
+test('old close timers and replies cannot affect a reopened or closed picker', async () => {
+  const {context, elements, timers} = loadModelPicker({
+    fetch: async url => modelReply(url.endsWith('/api/models') ? modelData() : {ok: true, current: 'second'}),
+  });
+  await context.openModelPicker();
+  await context.chooseModel('second');
+  await context.openModelPicker();
+  timers[0].fn();
+  assert.equal(elements.get('model-sheet').classList.contains('visible'), true);
+  for (const control of ['md-close', 'model-scrim']) {
+    const pending = deferred();
+    context.fetch = () => pending.promise;
+    const loading = context.openModelPicker();
+    elements.get(control).listeners.get('click')();
+    pending.resolve(modelReply(modelData()));
+    await loading;
+    assert.equal(elements.get('model-sheet').classList.contains('visible'), false);
+    assert.equal(elements.get('model-scrim').classList.contains('visible'), false);
+    assert.equal(elements.get('md-list').children[0].textContent, 'Loading models...');
+  }
+});
+
 // --- Spawn sheet ---
 
 function loadSpawnSheet(overrides = {}) {
