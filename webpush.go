@@ -53,6 +53,7 @@ func resetWebPushState() {
 	vapidState.mu.Lock()
 	vapidState.keys = nil
 	vapidState.mu.Unlock()
+	resetPresence()
 }
 
 func acpMobileDir() string {
@@ -512,4 +513,83 @@ func handlePushInbox(w http.ResponseWriter, r *http.Request) {
 		"now":     time.Now().UnixMilli(),
 		"entries": entries,
 	})
+}
+
+// Presence: is a phone page on screen, and which chat is it showing?
+// Fed by explicit visibility notes from the page and by the Orrery's
+// statuses poll.  One record; one phone; last writer wins.
+const presenceMaxAge = 45 * time.Second
+
+var nowFunc = time.Now
+
+var presenceState struct {
+	mu         sync.Mutex
+	visible    bool
+	bufferName string
+	at         time.Time
+}
+
+func resetPresence() {
+	presenceState.mu.Lock()
+	presenceState.visible = false
+	presenceState.bufferName = ""
+	presenceState.at = time.Time{}
+	presenceState.mu.Unlock()
+}
+
+func setPresence(visible bool, bufferName string) {
+	presenceState.mu.Lock()
+	presenceState.visible = visible
+	presenceState.bufferName = bufferName
+	presenceState.at = nowFunc()
+	presenceState.mu.Unlock()
+	if visible && bufferName != "" {
+		markRead(bufferName)
+	}
+}
+
+// presenceFresh reports a visible page and its chat, or false when the
+// last note said hidden or is older than presenceMaxAge (a page evicted
+// without a hidden note must not suppress Apple pushes forever).
+func presenceFresh() (bool, string) {
+	presenceState.mu.Lock()
+	defer presenceState.mu.Unlock()
+	if !presenceState.visible || nowFunc().Sub(presenceState.at) > presenceMaxAge {
+		return false, ""
+	}
+	return true, presenceState.bufferName
+}
+
+// markRead is filled in by the parking code (Task 4).
+var markRead = func(bufferName string) {}
+
+// POST /api/presence {visible, bufferName, read}: visibility note from
+// the page.  read names a chat whose banner was dismissed.
+func handlePresence(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Visible    bool   `json:"visible"`
+		BufferName string `json:"bufferName"`
+		Read       string `json:"read"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 2048)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.BufferName != "" && !validBufferName.MatchString(req.BufferName) {
+		http.Error(w, "invalid buffer name", http.StatusBadRequest)
+		return
+	}
+	if req.Read != "" && !validBufferName.MatchString(req.Read) {
+		http.Error(w, "invalid buffer name", http.StatusBadRequest)
+		return
+	}
+	setPresence(req.Visible, req.BufferName)
+	if req.Read != "" {
+		markRead(req.Read)
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

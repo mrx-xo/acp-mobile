@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
@@ -525,5 +526,53 @@ func TestHandleNotifyRecordsInboxEntryEvenWithoutSubscriptions(t *testing.T) {
 	handlePushInbox(w, httptest.NewRequest(http.MethodPost, "/api/push-inbox", strings.NewReader(`{"since":0}`)))
 	if !strings.Contains(w.Body.String(), `"bufferName":"Claude Agent @ x"`) {
 		t.Fatalf("inbox missing the notify entry: %s", w.Body)
+	}
+}
+
+func TestPresenceNoteIsVisibleUntilStale(t *testing.T) {
+	resetPresence()
+	base := time.Unix(1_700_000_000, 0)
+	nowFunc = func() time.Time { return base }
+	t.Cleanup(func() { nowFunc = time.Now })
+	setPresence(true, "Claude Agent @ a")
+	if v, b := presenceFresh(); !v || b != "Claude Agent @ a" {
+		t.Fatalf("fresh presence = %v %q", v, b)
+	}
+	nowFunc = func() time.Time { return base.Add(presenceMaxAge + time.Second) }
+	if v, _ := presenceFresh(); v {
+		t.Fatal("presence must go stale without a note")
+	}
+}
+
+func TestPresenceHiddenNoteWins(t *testing.T) {
+	resetPresence()
+	setPresence(true, "x")
+	setPresence(false, "")
+	if v, _ := presenceFresh(); v {
+		t.Fatal("hidden note must make presence not visible")
+	}
+}
+
+func TestHandlePresenceAcceptsNotes(t *testing.T) {
+	resetPresence()
+	w := httptest.NewRecorder()
+	handlePresence(w, httptest.NewRequest(http.MethodPost, "/api/presence",
+		strings.NewReader(`{"visible":true,"bufferName":"Codex Agent @ b"}`)))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d: %s", w.Code, w.Body)
+	}
+	if v, b := presenceFresh(); !v || b != "Codex Agent @ b" {
+		t.Fatalf("presence after note = %v %q", v, b)
+	}
+	w = httptest.NewRecorder()
+	handlePresence(w, httptest.NewRequest(http.MethodGet, "/api/presence", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET status = %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	handlePresence(w, httptest.NewRequest(http.MethodPost, "/api/presence",
+		strings.NewReader(`{"visible":true,"bufferName":"evil\"(kill-emacs)"}`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("bad buffer status = %d", w.Code)
 	}
 }
