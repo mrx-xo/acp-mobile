@@ -1152,3 +1152,282 @@ test('a stale project reply cannot overwrite a newer spawn-sheet open', async ()
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(rowPaths(elements.get('sp-projects')), ['/fresh']);
 });
+
+// --- Catalogue: #tag grammar, the Catalogued chip, the transcript-view button ---
+function loadCatalogueHistoryClient(overrides = {}) {
+  const client = loadHistoryClient(overrides);
+  const {context, elements} = client;
+  Object.defineProperty(context, 'historyCataloguedOnly', {
+    get: () => vm.runInContext('historyCataloguedOnly', context),
+    set: value => vm.runInContext(
+      `historyCataloguedOnly = ${Boolean(value)}`, context),
+  });
+  const classes = elements.get('history-catalogue').classList;
+  classes.toggle = (name, force = !classes.contains(name)) => {
+    if (force) classes.add(name);
+    else classes.remove(name);
+    return force;
+  };
+  return client;
+}
+
+test('parseHistoryQuery separates text, normalizes tags and recognizes bare hashes', () => {
+  const {context} = loadHistoryClient();
+  const cases = [
+    ['fix #Syzygy resume #phone', {
+      text: 'fix resume', tags: ['syzygy', 'phone'], catalogued: false,
+    }],
+    ['#', {text: '', tags: [], catalogued: true}],
+    ['#syzygy #syzygy', {
+      text: '', tags: ['syzygy'], catalogued: false,
+    }],
+    ['  ', {text: '', tags: [], catalogued: false}],
+    ['##x', {text: '', tags: ['x'], catalogued: false}],
+  ];
+
+  for (const [raw, expected] of cases) {
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(context.parseHistoryQuery(raw))),
+      expected,
+      JSON.stringify(raw),
+    );
+  }
+});
+
+test('splitTags normalizes comma-separated and whitespace-separated tags and dedupes', () => {
+  const {context} = loadHistoryClient();
+
+  assert.deepEqual(
+    Array.from(context.splitTags('syzygy, Resume,#phone  #resume')),
+    ['syzygy', 'resume', 'phone'],
+  );
+});
+
+test('historySearchBody merges the chip with the bare-hash filter', () => {
+  const {context} = loadCatalogueHistoryClient();
+
+  context.historyCataloguedOnly = true;
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.historySearchBody('hello'))),
+    {query: 'hello', catalogued: true, tags: []},
+  );
+
+  context.historyCataloguedOnly = false;
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.historySearchBody('# hello'))),
+    {query: 'hello', catalogued: true, tags: []},
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.historySearchBody('hello'))),
+    {query: 'hello', catalogued: false, tags: []},
+  );
+});
+
+test('catalogued chip toggles state and aria-pressed and switches empty-box requests', async () => {
+  const requests = [];
+  const {context, elements} = loadCatalogueHistoryClient({
+    fetch: async (url, options) => {
+      requests.push({
+        url,
+        method: options.method,
+        body: options.body === undefined ? null : JSON.parse(options.body),
+      });
+      return {
+        ok: true,
+        json: async () => url === '/api/transcripts'
+          ? []
+          : {results: [], truncated: false},
+      };
+    },
+  });
+  const chip = elements.get('history-catalogued-chip');
+  elements.get('history-search-input').value = '';
+  assert.equal(context.historyCataloguedOnly, false);
+
+  chip.listeners.get('click')();
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(context.historyCataloguedOnly, true);
+  assert.equal(chip.attributes['aria-pressed'], 'true');
+  assert.deepEqual(requests, [{
+    url: '/api/transcript-search',
+    method: 'POST',
+    body: {query: '', catalogued: true, tags: []},
+  }]);
+
+  chip.listeners.get('click')();
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(context.historyCataloguedOnly, false);
+  assert.equal(chip.attributes['aria-pressed'], 'false');
+  assert.deepEqual(requests, [{
+    url: '/api/transcript-search',
+    method: 'POST',
+    body: {query: '', catalogued: true, tags: []},
+  }, {
+    url: '/api/transcripts',
+    method: 'POST',
+    body: null,
+  }]);
+});
+
+test('runHistoryQuery searches a tag without requiring text or the chip', async () => {
+  const requests = [];
+  const {context, elements} = loadCatalogueHistoryClient({
+    fetch: async (url, options) => {
+      requests.push({
+        url,
+        method: options.method,
+        body: JSON.parse(options.body),
+      });
+      return {
+        ok: true,
+        json: async () => ({results: [], truncated: false}),
+      };
+    },
+  });
+  context.historyCataloguedOnly = false;
+  elements.get('history-search-input').value = '#syzygy';
+
+  context.runHistoryQuery();
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(requests, [{
+    url: '/api/transcript-search',
+    method: 'POST',
+    body: {query: '', catalogued: false, tags: ['syzygy']},
+  }]);
+});
+
+test('runHistoryQuery rejects a one-character text query without fetching', async () => {
+  const requests = [];
+  const {context, elements} = loadCatalogueHistoryClient({
+    fetch: async (url, options) => {
+      requests.push({url, options});
+      return {
+        ok: true,
+        json: async () => ({results: [], truncated: false}),
+      };
+    },
+  });
+  context.historyCataloguedOnly = false;
+  elements.get('history-search-input').value = 'a';
+
+  context.runHistoryQuery();
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(requests, []);
+  assert.match(elements.get('history-body').innerHTML, /at least 2/);
+});
+
+test('setHistoryView paints the catalogue button from the resume target', () => {
+  const {context, elements} = loadCatalogueHistoryClient();
+  const button = elements.get('history-catalogue');
+
+  context.setHistoryView('Saved transcript', null, true, {
+    sessionId: 's1',
+    catalogued: '2026-09-08T12:00:00Z',
+  });
+  assert.equal(button.style.display, '');
+  assert.equal(button.textContent, 'uncatalogue');
+  assert.equal(button.classList.contains('kept'), true);
+
+  context.setHistoryView('Unsaved transcript', null, true, {
+    sessionId: 's1',
+    catalogued: '',
+  });
+  assert.equal(button.style.display, '');
+  assert.equal(button.textContent, 'catalogue');
+  assert.equal(button.classList.contains('kept'), false);
+
+  context.setHistoryView('History', null);
+  assert.equal(button.style.display, 'none');
+});
+
+test('catalogueFlow loads existing tags and saves the prompted note and normalized tags', async () => {
+  const requests = [];
+  const prompts = [];
+  const answers = ['why', 'a, B'];
+  const initial = {
+    sessionId: 's1',
+    catalogued: '',
+    note: '',
+    tags: [],
+    allTags: ['old'],
+  };
+  const saved = {
+    sessionId: 's1',
+    catalogued: '2026-09-08T12:00:00Z',
+    note: 'why',
+    tags: ['a', 'b'],
+    allTags: ['old', 'a', 'b'],
+  };
+  const {context} = loadHistoryClient({
+    window: {
+      prompt: (message, value) => {
+        prompts.push({message, value});
+        return answers.shift();
+      },
+    },
+    fetch: async (url, options) => {
+      const method = options.method || 'GET';
+      requests.push({
+        url,
+        method,
+        body: options.body === undefined ? null : JSON.parse(options.body),
+      });
+      return {
+        ok: true,
+        text: async () => JSON.stringify(method === 'GET' ? initial : saved),
+      };
+    },
+  });
+
+  const result = await context.catalogueFlow('s1');
+
+  assert.deepEqual(requests, [{
+    url: '/api/catalogue?sessionId=s1',
+    method: 'GET',
+    body: null,
+  }, {
+    url: '/api/catalogue',
+    method: 'POST',
+    body: {sessionId: 's1', note: 'why', tags: ['a', 'b']},
+  }]);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1].message, /#old/);
+  assert.deepEqual(result, saved);
+});
+
+test('catalogueFlow returns null without posting when the first prompt is cancelled', async () => {
+  const requests = [];
+  let promptCalls = 0;
+  const {context} = loadHistoryClient({
+    window: {
+      prompt: () => {
+        promptCalls++;
+        return null;
+      },
+    },
+    fetch: async (url, options) => {
+      requests.push({url, method: options.method || 'GET'});
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          sessionId: 's1',
+          catalogued: '',
+          note: '',
+          tags: [],
+          allTags: ['old'],
+        }),
+      };
+    },
+  });
+
+  assert.equal(await context.catalogueFlow('s1'), null);
+  assert.equal(promptCalls, 1);
+  assert.deepEqual(requests, [{
+    url: '/api/catalogue?sessionId=s1',
+    method: 'GET',
+  }]);
+});

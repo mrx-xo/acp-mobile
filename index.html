@@ -133,6 +133,18 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
   -webkit-appearance: none; appearance: none;
 }
 #history-search-input::placeholder { color: var(--fg-mute); opacity: 1; }
+/* Catalogued chip: narrows History to chats kept on purpose.  Lives in
+   the search pill so it reads as part of the query, which it is: the
+   chip equals a bare "#" typed into the box. */
+#history-catalogued-chip {
+  flex: 0 0 auto; height: 28px; padding: 0 10px; border-radius: 14px;
+  border: 1px solid var(--bg2); background: transparent; color: var(--fg-mute);
+  font: 11px var(--mono); font-weight: 600; letter-spacing: 0.02em;
+  cursor: pointer; white-space: nowrap;
+}
+#history-catalogued-chip[aria-pressed="true"] {
+  background: var(--orange); border-color: var(--orange); color: var(--bg-hard);
+}
 #spawn-btn {
   width: 48px; height: 48px; flex: 0 0 48px; border-radius: 50%;
   display: grid; place-items: center; border: none; cursor: pointer;
@@ -223,6 +235,12 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
 .session-card .sc-bell {
   width: 14px; height: 14px; flex: 0 0 14px; color: var(--orange);
   fill: currentColor; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+/* Phone pin: outlined pin after the name; the card also sorts to the top. */
+.session-card .sc-pin {
+  width: 14px; height: 14px; flex: 0 0 14px; color: var(--yellow);
+  fill: none; stroke: currentColor; stroke-width: 2;
   stroke-linecap: round; stroke-linejoin: round;
 }
 .session-card .sc-path {
@@ -1103,6 +1121,33 @@ input, textarea, #fbv-content, .msg, .msg * {
 .hc-agent.claude { color: var(--orange); }
 .hc-agent.codex { color: var(--aqua); }
 .hc-agent.other { color: var(--blue); }
+/* Catalogue on a History row: the note under the preview, tags as chips. */
+.hist-card .hc-note {
+  font-size: 12px; color: var(--fg); margin: 5px 0 0 24px; line-height: 1.4;
+  font-family: var(--mono); display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden;
+}
+.hist-card .hc-note::before { content: "why: "; color: var(--fg-mute); }
+.hc-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 0 24px; }
+.hc-tag {
+  font: 11px var(--mono); color: var(--aqua); border: 1px solid var(--bg2);
+  border-radius: 10px; padding: 1px 7px; line-height: 1.5;
+}
+.hc-kept { color: var(--yellow); font-weight: 600; }
+#history-catalogue {
+  background: none; border: 1px solid var(--bg2); border-radius: 5px;
+  color: var(--fg); cursor: pointer; font-family: var(--mono);
+  font-size: 11px; font-weight: 700; margin-left: 10px; padding: 5px 9px;
+}
+#history-catalogue:disabled { color: var(--fg-mute); cursor: default; }
+#history-catalogue.kept { border-color: var(--yellow); color: var(--yellow); }
+.hist-catalogued {
+  margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--bg2);
+  border-left: 3px solid var(--yellow); border-radius: 6px;
+  font: 12px var(--mono); color: var(--fg); line-height: 1.5; cursor: pointer;
+}
+.hist-catalogued .hc-kept { display: block; font-size: 11px; }
+.hist-catalogued .hc-tags { margin-left: 0; }
 .hist-empty {
   color: var(--fg-mute); font-size: 14px; font-family: var(--mono);
   padding: 32px 16px; text-align: center; line-height: 1.6;
@@ -1454,6 +1499,7 @@ input, textarea, #fbv-content, .msg, .msg * {
   <form id="history-search-form" role="search">
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
     <input id="history-search-input" type="search" placeholder="Search" aria-label="Search conversations" enterkeyhint="search" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button id="history-catalogued-chip" type="button" aria-pressed="false" title="Only catalogued chats">Catalogued</button>
   </form>
   <button id="spawn-btn" type="button" aria-label="New chat"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
 </div>
@@ -1518,6 +1564,9 @@ input, textarea, #fbv-content, .msg, .msg * {
   <button id="cm-fork">Fork</button>
   <button id="cm-model">Model</button>
   <button id="cm-turn-nav">Show turn nav</button>
+  <button id="cm-catalogue">Catalogue</button>
+  <button id="cm-uncatalogue" style="display:none">Uncatalogue</button>
+  <button id="cm-pin">Pin chat</button>
   <button id="cm-kill" style="color:var(--red)">Kill session</button>
 </div>
 <!-- Turn nav sits at the root: it floats over the chat AND over the
@@ -1561,6 +1610,7 @@ input, textarea, #fbv-content, .msg, .msg * {
   <div id="history-head">
     <button id="history-back" aria-label="Back" style="display:none">&larr;</button>
     <span id="history-title">History</span>
+    <button id="history-catalogue" style="display:none">catalogue</button>
     <button id="history-resume" style="display:none">resume</button>
     <button id="history-close" aria-label="Close">&times;</button>
   </div>
@@ -4394,7 +4444,7 @@ function navSpinStop() {
 async function loadSessions(silent) {
   const requestSerial = ++sessionsLoadSerial;
   const statusSerial = ++statusRequestSerial;
-  if (!silent) navSpinStart();
+  if (!silent) { navSpinStart(); loadOrreryPins(); }
   try {
     const resp = await fetch(basePath + '/api/sessions', {
       method: 'POST', cache: 'no-store'
@@ -4492,6 +4542,45 @@ async function loadStatuses() {
   } catch (_) { /* transient/offline: keep the last known status */ }
 }
 
+// --- Orrery pins: chats the phone keeps at the top ---
+// The set lives in the daemon (syzygy-orrery-pin-json), so a reload sees
+// the same pins and a killed chat drops out on its own.  Nothing is
+// persisted, and the Mac's own anchoring is a separate list on purpose.
+let orreryPins = new Set();
+function isChatPinned(name) { return !!name && orreryPins.has(name); }
+function acceptOrreryPins(pins) {
+  const next = new Set(Array.isArray(pins) ? pins : []);
+  const same = next.size === orreryPins.size && [...next].every(n => orreryPins.has(n));
+  orreryPins = next;
+  if (!same && lastSessions.length && orreryEl && !orreryEl.classList.contains('hidden')) {
+    const st = navListEl.scrollTop;
+    renderSessions(lastSessions);
+    navListEl.scrollTop = st;
+  }
+}
+async function loadOrreryPins() {
+  try {
+    const resp = await fetch(basePath + '/api/pin', { cache: 'no-store' });
+    if (!resp.ok) return;
+    acceptOrreryPins((await resp.json()).pins);
+  } catch (_) { /* the rig is away: keep the last known pins */ }
+}
+async function toggleChatPin(bufferName) {
+  const resp = await fetch(basePath + '/api/pin', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ bufferName })
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || data.error) throw new Error(data.error || ('HTTP ' + resp.status));
+  acceptOrreryPins(data.pins);
+  return !!data.pinned;
+}
+// Pinned first, then whatever order the caller already chose.
+function pinnedFirst(list) {
+  return [...list].sort((a, b) => Number(isChatPinned(b.bufferName)) - Number(isChatPinned(a.bufferName)));
+}
+
 function renderSessions(sessions) {
   lastSessions = sessions;
   navListEl.innerHTML = '';
@@ -4499,8 +4588,8 @@ function renderSessions(sessions) {
     sortMode === 'project' ? 'Projects' : 'Sessions';
 
   if (sortMode === 'recent') {
-    // Flat list sorted by lastActivity descending
-    const sorted = [...sessions].sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
+    // Flat list sorted by lastActivity descending, pinned chats first
+    const sorted = pinnedFirst([...sessions].sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0)));
     for (const s of sorted) {
       navListEl.appendChild(makeSessionCard(s, cardName(s)));
     }
@@ -4534,8 +4623,7 @@ function renderSessions(sessions) {
     header.appendChild(addBtn);
     groupEl.appendChild(header);
 
-    for (let i = 0; i < group.length; i++) {
-      const s = group[i];
+    for (const s of pinnedFirst(group)) {
       groupEl.appendChild(makeSessionCard(s, cardName(s)));
     }
 
@@ -4598,6 +4686,7 @@ function makeSessionCard(s, name) {
       '<div class="sc-title">' + providerIcon(s.title || s.bufferName) +
         '<div class="' + nameClass + '">' + escHtml(name) + '</div>' +
         (s.push ? '<svg class="sc-bell" viewBox="0 0 24 24" aria-label="Phone push on"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>' : '') +
+        (isChatPinned(s.bufferName) ? '<svg class="sc-pin" viewBox="0 0 24 24" aria-label="Pinned chat"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>' : '') +
       '</div>' +
       (metaParts.length ? '<div class="sc-path">' + metaParts.join('  &middot;  ') + '</div>' : '') +
     '</div>';
@@ -5897,12 +5986,66 @@ function closeChatMenu() {
   cmScrim.classList.remove('visible');
   chatMenu.classList.remove('visible');
 }
+const cmPin = document.getElementById('cm-pin');
+const cmCatalogue = document.getElementById('cm-catalogue');
+const cmUncatalogue = document.getElementById('cm-uncatalogue');
+// Catalogue entry: "Catalogue" for a chat that was never kept, "Catalogued
+// · note" once saved (tap edits), with Uncatalogue shown beside it.  The
+// state comes from the rig on every open, so the Mac and the phone agree.
+let cmCatalogueSerial = 0;
+function paintCatalogueEntry(state) {
+  const kept = !!(state && state.catalogued);
+  cmCatalogue.textContent = kept
+    ? 'Catalogued' + (state.note ? ' \u00b7 ' + state.note : '') : 'Catalogue';
+  cmUncatalogue.style.display = kept ? '' : 'none';
+}
+async function refreshCatalogueEntry() {
+  const serial = ++cmCatalogueSerial;
+  const sessionIdNow = currentSessionIdForCatalogue();
+  cmCatalogue.disabled = !sessionIdNow;
+  cmUncatalogue.style.display = 'none';
+  if (!sessionIdNow) { cmCatalogue.textContent = 'Catalogue'; return; }
+  paintCatalogueEntry(catalogueStates.get(sessionIdNow));
+  try {
+    const state = await fetchCatalogueState(sessionIdNow);
+    if (serial !== cmCatalogueSerial) return;
+    paintCatalogueEntry(state);
+  } catch (_) { /* unknown to the index yet: leave the plain entry */ }
+}
+function currentSessionIdForCatalogue() {
+  const s = lastSessions.find(x => x.bufferName === currentBufferName);
+  return (s && s.sessionId) || sessionId || null;
+}
 document.getElementById('chat-menu-btn').addEventListener('click', () => {
   cmPinned.style.display = loadPins().length ? '' : 'none';
   cmTurnNav.textContent = turnNav.isEnabled() ? 'Hide turn nav' : 'Show turn nav';
+  cmPin.textContent = isChatPinned(currentBufferName) ? 'Unpin chat' : 'Pin chat';
+  cmPin.disabled = !currentBufferName;
   refreshForkEntry(cmFork);
+  refreshCatalogueEntry();
   cmScrim.classList.add('visible');
   chatMenu.classList.add('visible');
+});
+cmPin.addEventListener('click', async () => {
+  closeChatMenu();
+  if (!currentBufferName) return;
+  try { await toggleChatPin(currentBufferName); }
+  catch (err) { alert('Pin failed: ' + err.message); }
+});
+cmCatalogue.addEventListener('click', async () => {
+  closeChatMenu();
+  const id = currentSessionIdForCatalogue();
+  if (!id) { alert('This chat has no session id yet.'); return; }
+  try { await catalogueFlow(id); }
+  catch (err) { alert('Catalogue failed: ' + err.message); }
+});
+cmUncatalogue.addEventListener('click', async () => {
+  closeChatMenu();
+  const id = currentSessionIdForCatalogue();
+  if (!id) return;
+  if (!window.confirm('Remove this chat from the catalogue? The note and tags are kept for a later re-save.')) return;
+  try { await uncatalogue(id); }
+  catch (err) { alert('Uncatalogue failed: ' + err.message); }
 });
 cmScrim.addEventListener('click', closeChatMenu);
 cmPinned.addEventListener('click', () => {
@@ -6214,12 +6357,103 @@ const historyResumeBtn = document.getElementById('history-resume');
 const historyDock = document.getElementById('history-dock');
 const historySearchForm = document.getElementById('history-search-form');
 const historySearchInput = document.getElementById('history-search-input');
+const historyCatalogueBtn = document.getElementById('history-catalogue');
+const historyCataloguedChip = document.getElementById('history-catalogued-chip');
 let historyBackFn = null;
 let historyResumeTarget = null;
 let historyRequestSerial = 0;
 let historyRootState = {
   mode: 'recent', query: '', list: null, truncated: false, scrollTop: 0
 };
+// The Catalogued chip narrows History to chats kept on purpose.  It is the
+// same filter as a bare "#" in the search box; both feed searchHistory.
+let historyCataloguedOnly = false;
+
+// --- Catalogue: keep a chat on purpose, with a note and tags ---
+// State is agent-recall's sidecar on the rig; /api/catalogue reads and
+// writes it.  catalogueStates caches the last reply per session id so the
+// chat menu can paint before its refresh lands.
+const catalogueStates = new Map();
+function rememberCatalogueState(state) {
+  if (state && state.sessionId) catalogueStates.set(state.sessionId, state);
+  // History rows and the open transcript carry their own copy.
+  const patch = t => {
+    if (!t || t.sessionId !== state.sessionId) return;
+    t.catalogued = state.catalogued || '';
+    t.note = state.note || '';
+    t.tags = Array.isArray(state.tags) ? state.tags : [];
+  };
+  (historyRootState.list || []).forEach(patch);
+  patch(historyResumeTarget);
+  return state;
+}
+async function catalogueRequest(method, payload, query = '') {
+  const resp = await fetch(basePath + '/api/catalogue' + query, method === 'GET'
+    ? { cache: 'no-store' }
+    : { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+  const text = await resp.text();
+  let data = {};
+  try { data = JSON.parse(text); } catch (_) { /* handled below */ }
+  if (!resp.ok || data.error) throw new Error(data.error || text.trim() || ('HTTP ' + resp.status));
+  return rememberCatalogueState(data);
+}
+function fetchCatalogueState(id) {
+  return catalogueRequest('GET', null, '?sessionId=' + encodeURIComponent(id));
+}
+function saveCatalogue(id, note, tags) {
+  return catalogueRequest('POST', { sessionId: id, note, tags });
+}
+function uncatalogue(id) {
+  return catalogueRequest('POST', { sessionId: id, uncatalogue: true });
+}
+// "syzygy, Resume,#phone" -> ["syzygy", "resume", "phone"]
+function splitTags(text) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of String(text || '').split(/[,\s]+/)) {
+    const tag = raw.replace(/^#+/, '').trim().toLowerCase();
+    if (tag && !seen.has(tag)) { seen.add(tag); out.push(tag); }
+  }
+  return out;
+}
+// Two prompts, note then tags, prefilled when editing; the tags prompt
+// lists the tags already in use.  Cancel on either leaves the store alone.
+// Resolves to the new state, or null when cancelled.
+async function catalogueFlow(id) {
+  let state = catalogueStates.get(id) || null;
+  try { state = await fetchCatalogueState(id); }
+  catch (err) { if (!state) throw err; }
+  const note = window.prompt('Why keep this chat? (note, may be empty)', state.note || '');
+  if (note === null) return null;
+  const inUse = (state.allTags || []).map(t => '#' + t).join(' ');
+  const tags = window.prompt('Tags, comma-separated (may be empty)' + (inUse ? '\nIn use: ' + inUse : ''),
+    (state.tags || []).join(', '));
+  if (tags === null) return null;
+  return saveCatalogue(id, note.trim(), splitTags(tags));
+}
+
+// Search box grammar: "#tag" words narrow to chats carrying that tag, a
+// bare "#" narrows to catalogued chats (same as the chip), the rest is
+// the text query.  "#Syzygy" and "#syzygy" are the same tag.
+function parseHistoryQuery(raw) {
+  const tags = [];
+  const words = [];
+  let catalogued = false;
+  for (const word of String(raw || '').trim().split(/\s+/)) {
+    if (!word) continue;
+    if (word === '#') { catalogued = true; continue; }
+    if (word[0] === '#') {
+      const tag = word.replace(/^#+/, '').toLowerCase();
+      if (tag && !tags.includes(tag)) tags.push(tag);
+      continue;
+    }
+    words.push(word);
+  }
+  return { text: words.join(' '), tags, catalogued };
+}
+function paintCataloguedChip() {
+  historyCataloguedChip.setAttribute('aria-pressed', historyCataloguedOnly ? 'true' : 'false');
+}
 
 function syncHistoryDock() {
   const hidden = orreryEl.classList.contains('hidden') ||
@@ -6239,6 +6473,7 @@ function setHistoryView(title, backFn, resetScroll = true, resumeTarget = null) 
   historyResumeBtn.title = resumeTarget && !resumeTarget.resumable
     ? (resumeTarget.resumeReason || 'This conversation cannot be resumed.')
     : 'Resume this conversation';
+  paintHistoryCatalogueBtn(resumeTarget);
   if (resetScroll) historyBody.scrollTop = 0;
   // Only the transcript view (the one with a resume target) gets the nav.
   if (typeof turnNav !== 'undefined') turnNav.attach(resumeTarget ? 'history' : 'chat');
@@ -6253,6 +6488,77 @@ function fmtHistTs(ts) {
   const d = new Date();
   const year = p[0] === String(d.getFullYear()) ? '' : ' ' + p[0];
   return m + ' ' + parseInt(p[2], 10) + year + ' ' + p[3] + ':' + p[4];
+}
+
+// Transcript view header: "catalogue" for a chat never kept, "uncatalogue"
+// once saved.  Editing the note and tags is a tap on the kept box below.
+function paintHistoryCatalogueBtn(t) {
+  const show = !!(t && t.sessionId);
+  historyCatalogueBtn.style.display = show ? '' : 'none';
+  if (!show) return;
+  const kept = !!t.catalogued;
+  historyCatalogueBtn.textContent = kept ? 'uncatalogue' : 'catalogue';
+  historyCatalogueBtn.classList.toggle('kept', kept);
+  historyCatalogueBtn.disabled = false;
+  historyCatalogueBtn.title = kept ? 'Remove from the catalogue' : 'Keep this chat, with a note and tags';
+}
+function tagChipsHtml(tags) {
+  if (!Array.isArray(tags) || !tags.length) return '';
+  return '<div class="hc-tags">' +
+    tags.map(t => '<span class="hc-tag">#' + escHtml(t) + '</span>').join('') + '</div>';
+}
+// The kept box at the top of a catalogued transcript: when saved, its
+// note and tags; tap to edit.
+function renderKeptBox(t) {
+  const box = document.createElement('div');
+  box.className = 'hist-catalogued';
+  box.title = 'Edit note and tags';
+  box.innerHTML = '<span class="hc-kept">Catalogued ' + escHtml(fmtHistTs(isoToHistTs(t.catalogued))) + '</span>' +
+    (t.note ? escHtml(t.note) : '<span style="color:var(--fg-mute)">no note</span>') +
+    tagChipsHtml(t.tags);
+  box.addEventListener('click', () => editHistoryCatalogue(t));
+  return box;
+}
+// "2026-09-08T10:00:00Z" -> "2026-09-08-10-00-00", the shape fmtHistTs reads.
+function isoToHistTs(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(iso || '');
+  if (!m) return '';
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+    '-' + pad(d.getHours()) + '-' + pad(d.getMinutes()) + '-' + pad(d.getSeconds());
+}
+// After a save or removal: the header button and the kept box follow the
+// transcript's new state without re-fetching the transcript.
+function repaintHistoryCatalogue(t) {
+  if (historyResumeTarget !== t) { renderHistoryRoot(); return; }
+  paintHistoryCatalogueBtn(t);
+  const existing = historyBody.querySelector('.hist-catalogued');
+  if (existing) existing.remove();
+  if (t.catalogued) historyBody.insertBefore(renderKeptBox(t), historyBody.firstChild);
+}
+async function editHistoryCatalogue(t) {
+  if (!t || !t.sessionId) return;
+  const serial = historyRequestSerial;
+  try {
+    const state = await catalogueFlow(t.sessionId);
+    if (!state || serial !== historyRequestSerial) return;
+    repaintHistoryCatalogue(t);
+  } catch (err) { alert('Catalogue failed: ' + err.message); }
+}
+async function toggleHistoryCatalogue(t) {
+  if (!t || !t.sessionId) return;
+  if (!t.catalogued) { editHistoryCatalogue(t); return; }
+  if (!window.confirm('Remove this chat from the catalogue? The note and tags are kept for a later re-save.')) return;
+  const serial = historyRequestSerial;
+  historyCatalogueBtn.disabled = true;
+  try {
+    await uncatalogue(t.sessionId);
+    if (serial !== historyRequestSerial) return;
+    repaintHistoryCatalogue(t);
+  } catch (err) {
+    if (serial === historyRequestSerial) { alert('Uncatalogue failed: ' + err.message); paintHistoryCatalogueBtn(t); }
+  }
 }
 
 function agentBadge(agent) {
@@ -6286,8 +6592,11 @@ function renderHistoryRoot() {
       '</div>' +
       (detail && detail !== name
         ? '<div class="hc-snippet">' + escHtml(detail) + '</div>' : '') +
+      (t.note ? '<div class="hc-note">' + escHtml(t.note) + '</div>' : '') +
+      tagChipsHtml(t.tags) +
       '<div class="hc-meta">' + agentBadge(t.agent) + ' &middot; ' +
-        escHtml(t.project) + ' &middot; ' + escHtml(fmtHistTs(t.timestamp)) + count + '</div>';
+        escHtml(t.project) + ' &middot; ' + escHtml(fmtHistTs(t.timestamp)) + count +
+        (t.catalogued ? ' &middot; <span class="hc-kept">kept</span>' : '') + '</div>';
     card.addEventListener('click', () => {
       historyRootState.scrollTop = historyBody.scrollTop;
       openTranscript(t, historyRootState.query);
@@ -6305,8 +6614,9 @@ function renderHistoryRoot() {
 }
 
 async function loadHistory(clearQuery = false) {
+  if (clearQuery) { historySearchInput.value = ''; historyCataloguedOnly = false; paintCataloguedChip(); }
+  if (historyCataloguedOnly) return searchHistory('');
   const serial = ++historyRequestSerial;
-  if (clearQuery) historySearchInput.value = '';
   historyRootState = { mode: 'recent', query: '', list: null, truncated: false, scrollTop: 0 };
   setHistoryView('History', null);
   historyBody.innerHTML = '<div class="hist-empty">loading…</div>';
@@ -6325,9 +6635,22 @@ async function loadHistory(clearQuery = false) {
   renderHistoryRoot();
 }
 
+// Narrowing (#tag words, the chip) rides along with the text: the server
+// filters before ranking, and lists the narrowed set newest save first
+// when there is no text at all.
+function historySearchBody(raw) {
+  const parsed = parseHistoryQuery(raw);
+  return {
+    query: parsed.text,
+    catalogued: historyCataloguedOnly || parsed.catalogued,
+    tags: parsed.tags
+  };
+}
 async function searchHistory(query) {
   const serial = ++historyRequestSerial;
-  historyRootState = { mode: 'search', query, list: null, truncated: false, scrollTop: 0 };
+  const body = historySearchBody(query);
+  // The highlighted needle is the text, never the #tag words.
+  historyRootState = { mode: 'search', query: body.query, list: null, truncated: false, scrollTop: 0 };
   setHistoryView('History', null);
   historyBody.innerHTML = '<div class="hist-empty">searching…</div>';
   let payload;
@@ -6335,7 +6658,7 @@ async function searchHistory(query) {
     const resp = await fetch(basePath + '/api/transcript-search', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({query})
+      body: JSON.stringify(body)
     });
     if (!resp.ok) throw new Error(await resp.text());
     payload = await resp.json();
@@ -6434,6 +6757,7 @@ async function openTranscript(t, query = '') {
   const sections = parseTranscript(content);
   historyBody.innerHTML = '';
   const CAP = 200;
+  if (t.catalogued) historyBody.appendChild(renderKeptBox(t));
   if (!t.resumable) {
     const unavailable = document.createElement('div');
     unavailable.className = 'hist-note';
@@ -6554,25 +6878,38 @@ historySearchInput.addEventListener('focus', () => {
     else renderHistoryRoot();
   }
 });
-historySearchForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  historyEl.classList.add('visible');
-  const query = historySearchInput.value.trim();
-  if (!query) {
-    loadHistory();
-    return;
-  }
-  if ([...query].length < 2) {
+// One entry point for the box and the chip: decide between the recent
+// list, a narrowed list, and a text search.
+function runHistoryQuery() {
+  const raw = historySearchInput.value.trim();
+  const body = historySearchBody(raw);
+  const narrowed = body.catalogued || body.tags.length > 0;
+  if (!raw && !narrowed) { loadHistory(); return; }
+  if (body.query && [...body.query].length < 2) {
     ++historyRequestSerial;
     setHistoryView('History', null);
     historyBody.innerHTML = '<div class="hist-empty">Type at least 2 characters.</div>';
     return;
   }
-  searchHistory(query);
+  if (!body.query && !narrowed) { loadHistory(); return; }
+  searchHistory(raw);
+}
+historySearchForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  historyEl.classList.add('visible');
+  runHistoryQuery();
 });
 historySearchInput.addEventListener('search', () => {
-  if (!historySearchInput.value.trim() && historyEl.classList.contains('visible')) loadHistory();
+  if (!historySearchInput.value.trim() && historyEl.classList.contains('visible')) runHistoryQuery();
 });
+historyCataloguedChip.addEventListener('click', () => {
+  historyCataloguedOnly = !historyCataloguedOnly;
+  paintCataloguedChip();
+  historyEl.classList.add('visible');
+  historySearchInput.blur();
+  runHistoryQuery();
+});
+historyCatalogueBtn.addEventListener('click', () => toggleHistoryCatalogue(historyResumeTarget));
 historyBackBtn.addEventListener('click', () => { if (historyBackFn) historyBackFn(); });
 historyResumeBtn.addEventListener('click', () => resumeTranscript(historyResumeTarget));
 document.getElementById('history-close').addEventListener('click', closeHistory);

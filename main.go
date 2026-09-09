@@ -322,6 +322,8 @@ func main() {
 	mux.HandleFunc("/api/label", handleLabel)
 	mux.HandleFunc("/api/push", handlePush)
 	mux.HandleFunc("/api/fork", handleFork)
+	mux.HandleFunc("/api/catalogue", handleCatalogue)
+	mux.HandleFunc("/api/pin", handlePin)
 	mux.HandleFunc("/api/push-key", handlePushKey)
 	mux.HandleFunc("/api/push-subscribe", handlePushSubscribe)
 	mux.HandleFunc("/api/notify", handleNotify)
@@ -1016,6 +1018,12 @@ type transcriptInfo struct {
 	// the History resume button keys on them.
 	Resumable    bool   `json:"resumable"`
 	ResumeReason string `json:"resumeReason,omitempty"`
+	// Catalogue state from agent-recall's sidecar: Catalogued is an ISO
+	// timestamp when the chat was kept on purpose, else "".  History's
+	// Catalogued chip, #tag search and row chips key on these.
+	Catalogued string   `json:"catalogued,omitempty"`
+	Note       string   `json:"note,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
 }
 
 type transcriptSearchResult struct {
@@ -1131,6 +1139,78 @@ func searchTranscriptRecords(ctx context.Context, query string, transcripts []tr
 	results := make([]transcriptSearchResult, len(ranked))
 	for i := range ranked {
 		results[i] = ranked[i].transcriptSearchResult
+	}
+	return results, truncated, nil
+}
+
+// catalogueFilter narrows a transcript list to catalogued chats and/or
+// chats carrying every tag in tags.  Tags are compared after the same
+// normalization the rig applies when storing them.
+type catalogueFilter struct {
+	catalogued bool
+	tags       []string
+}
+
+func (f catalogueFilter) active() bool { return f.catalogued || len(f.tags) > 0 }
+
+func (f catalogueFilter) matches(t transcriptInfo) bool {
+	if f.catalogued && t.Catalogued == "" {
+		return false
+	}
+	for _, want := range f.tags {
+		found := false
+		for _, have := range t.Tags {
+			if strings.ToLower(have) == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func (f catalogueFilter) apply(transcripts []transcriptInfo) []transcriptInfo {
+	if !f.active() {
+		return transcripts
+	}
+	kept := make([]transcriptInfo, 0, len(transcripts))
+	for _, t := range transcripts {
+		if f.matches(t) {
+			kept = append(kept, t)
+		}
+	}
+	return kept
+}
+
+// listCatalogued is the no-query branch of transcript search: the
+// already-narrowed list, newest save first (a chat that was tagged but
+// never saved sorts by its own timestamp after every saved one), capped
+// like a ranked search.
+func listCatalogued(transcripts []transcriptInfo) ([]transcriptSearchResult, bool, error) {
+	transcripts, err := eligibleTranscriptRecords(transcripts)
+	if err != nil {
+		return nil, false, err
+	}
+	sorted := append([]transcriptInfo(nil), transcripts...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Catalogued != sorted[j].Catalogued {
+			return sorted[i].Catalogued > sorted[j].Catalogued
+		}
+		if sorted[i].Timestamp != sorted[j].Timestamp {
+			return sorted[i].Timestamp > sorted[j].Timestamp
+		}
+		return sorted[i].SessionID < sorted[j].SessionID
+	})
+	truncated := len(sorted) > transcriptSearchLimit
+	if truncated {
+		sorted = sorted[:transcriptSearchLimit]
+	}
+	results := make([]transcriptSearchResult, len(sorted))
+	for i, t := range sorted {
+		results[i] = transcriptSearchResult{transcriptInfo: t, MatchField: "catalogue"}
 	}
 	return results, truncated, nil
 }
@@ -1395,6 +1475,12 @@ func newTranscriptSearchHandler(load transcriptIndexLoader) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, 4096)
 		var req struct {
 			Query string `json:"query"`
+			// Catalogue narrowing: Catalogued keeps only saved chats,
+			// Tags keeps chats carrying every listed tag.  Either one
+			// makes an empty Query legal, which then lists the narrowed
+			// set newest save first instead of ranking matches.
+			Catalogued bool     `json:"catalogued"`
+			Tags       []string `json:"tags"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -1402,7 +1488,16 @@ func newTranscriptSearchHandler(load transcriptIndexLoader) http.Handler {
 		}
 		query := strings.TrimSpace(req.Query)
 		queryLen := len([]rune(query))
-		if queryLen < 2 || queryLen > 200 || strings.IndexFunc(query, unicode.IsControl) >= 0 {
+		filter := catalogueFilter{catalogued: req.Catalogued, tags: normalizeCatalogueTags(req.Tags)}
+		if len(filter.tags) > catalogueTagsLimit {
+			http.Error(w, "too many tags", http.StatusBadRequest)
+			return
+		}
+		if queryLen == 0 && !filter.active() {
+			http.Error(w, "query must be between 2 and 200 printable characters", http.StatusBadRequest)
+			return
+		}
+		if queryLen != 0 && (queryLen < 2 || queryLen > 200 || strings.IndexFunc(query, unicode.IsControl) >= 0) {
 			http.Error(w, "query must be between 2 and 200 printable characters", http.StatusBadRequest)
 			return
 		}
@@ -1418,7 +1513,14 @@ func newTranscriptSearchHandler(load transcriptIndexLoader) http.Handler {
 			return
 		}
 		transcripts = mergeTranscriptLabels(transcripts, loadLabels())
-		results, truncated, err := searchTranscriptRecords(ctx, query, transcripts)
+		transcripts = filter.apply(transcripts)
+		var results []transcriptSearchResult
+		var truncated bool
+		if queryLen == 0 {
+			results, truncated, err = listCatalogued(transcripts)
+		} else {
+			results, truncated, err = searchTranscriptRecords(ctx, query, transcripts)
+		}
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				http.Error(w, "search timed out", http.StatusGatewayTimeout)
