@@ -7,6 +7,14 @@ import (
 	"path/filepath"
 )
 
+// handleAsset serves the vendored Mermaid bundle.  Immutable and a year
+// long because the file only ever changes when the bundle is replaced, and
+// the phone should never re-download 2.7 MB it already has.
+func handleAsset(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	http.FileServerFS(assetsFS).ServeHTTP(w, r)
+}
+
 // handleMermaidConfig serves the rig's Mermaid configuration so the phone's
 // diagrams look exactly like the Emacs markdown-xwidget preview.  Emacs
 // writes the file from `mr-x/markdown-mermaid-config'

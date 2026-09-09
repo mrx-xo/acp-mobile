@@ -899,7 +899,11 @@ input, textarea, #fbv-content, .msg, .msg * {
 #mmv.visible { display: flex; }
 #mmv-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+  /* Landscape on a notched phone puts an inset on the sides too, and the
+     close button is the one control that must never sit under it. */
+  padding: max(10px, env(safe-area-inset-top))
+           max(16px, env(safe-area-inset-right)) 10px
+           max(16px, env(safe-area-inset-left));
   border-bottom: 1px solid var(--bg2); flex-shrink: 0;
 }
 #mmv-title {
@@ -918,10 +922,13 @@ input, textarea, #fbv-content, .msg, .msg * {
 }
 /* touch-action:none is what stops Safari claiming the pinch and the pan
    for page zoom and scroll before the pointer handlers ever see them. */
+/* margin, not padding: the stage's own rectangle is what mmvFit measures,
+   so the home-indicator strip has to be outside it or a fitted diagram
+   ends up underneath the indicator. */
 #mmv-stage {
   flex: 1; position: relative; overflow: hidden;
   touch-action: none; overscroll-behavior: contain;
-  padding-bottom: env(safe-area-inset-bottom);
+  margin-bottom: env(safe-area-inset-bottom);
 }
 #mmv-canvas {
   position: absolute; top: 0; left: 0; transform-origin: 0 0;
@@ -1690,7 +1697,7 @@ input, textarea, #fbv-content, .msg, .msg * {
   </div>
   <div id="reader-body"></div>
 </div>
-<div id="mmv">
+<div id="mmv" role="dialog" aria-modal="true" aria-label="Diagram viewer">
   <div id="mmv-head">
     <span id="mmv-title">diagram</span>
     <div id="mmv-controls">
@@ -2041,9 +2048,34 @@ function loadMermaid() {
       const mermaid = window.mermaid;
       mermaid.initialize(await mermaidConfig());
       return mermaid;
+    }).catch((err) => {
+      // Drop the failed promise so the next diagram tries again.  Keeping
+      // it would mean one dropped connection during the first fetch left
+      // the page unable to render a diagram until a reload.
+      mermaidLoadPromise = null;
+      throw err;
     });
   }
   return mermaidLoadPromise;
+}
+
+// One entry per source: the rendered SVG, or the message a failed parse
+// produced.  Failures are cached too, or a broken fence in the live bubble
+// would re-run the engine on every streaming chunk.
+function mermaidCacheSet(src, entry) {
+  mermaidCache.set(src, entry);
+  if (mermaidCache.size > 50) {
+    mermaidCache.delete(mermaidCache.keys().next().value);
+  }
+  return entry;
+}
+
+function showDiagramError(block, message) {
+  if (block.querySelector('.mermaid-error')) return;
+  const header = block.querySelector('.code-header');
+  if (!header) return;
+  header.insertAdjacentHTML('afterend',
+    '<div class="mermaid-error">' + escHtml(message) + '</div>');
 }
 
 async function renderDiagrams(root) {
@@ -2065,45 +2097,46 @@ async function renderDiagrams(root) {
     const current = () => root.contains(block) && block.contains(pre) &&
       decodeCodeSource(block) === src && !block.querySelector('.mermaid-diagram');
     try {
-      let svg = mermaidCache.get(src);
-      if (svg === undefined) {
+      let entry = mermaidCache.get(src);
+      if (entry === undefined) {
         let pending = mermaidPending.get(src);
         if (!pending) {
           pending = (async () => {
+            // A load failure is not cached: it is the network, not the
+            // diagram, and the next attempt may well succeed.
             const mermaid = await loadMermaid();
             const id = 'mmd-' + (++mermaidIdCounter);
             try {
               const result = await mermaid.render(id, src);
-              mermaidCache.set(src, result.svg);
-              if (mermaidCache.size > 50) {
-                mermaidCache.delete(mermaidCache.keys().next().value);
-              }
-              return result.svg;
+              return mermaidCacheSet(src, {svg: result.svg});
             } catch (err) {
+              // Mermaid leaves its scratch element behind on a parse error.
               const stray = document.getElementById('d' + id);
               if (stray) stray.remove();
-              throw err;
+              return mermaidCacheSet(src,
+                {error: String((err && err.message) || err)});
             }
           })().finally(() => mermaidPending.delete(src));
           mermaidPending.set(src, pending);
         }
-        svg = await pending;
+        entry = await pending;
       }
       if (!current()) continue;
+      if (entry.error) {
+        showDiagramError(block, entry.error);
+        continue;
+      }
       const diagram = document.createElement('div');
       diagram.className = 'mermaid-diagram';
       diagram.dataset.mermaidSrc = src;
-      diagram.innerHTML = svg;
-      const error = block.querySelector('.mermaid-error');
-      if (error) error.remove();
+      diagram.innerHTML = entry.svg;
+      const stale = block.querySelector('.mermaid-error');
+      if (stale) stale.remove();
       pre.replaceWith(diagram);
     } catch (err) {
-      if (!current() || block.querySelector('.mermaid-error')) continue;
-      const header = block.querySelector('.code-header');
-      if (header) {
-        header.insertAdjacentHTML('afterend', '<div class="mermaid-error">' +
-          escHtml(String(err && err.message || err)) + '</div>');
-      }
+      // Only the engine failing to load reaches here.
+      if (!current()) continue;
+      showDiagramError(block, String((err && err.message) || err));
     }
   }
 }
@@ -2121,7 +2154,10 @@ let mmvScale = 1, mmvFitScale = 1, mmvX = 0, mmvY = 0;
 let mmvW = 1, mmvH = 1;
 // pointerId -> {x, y}.  One entry drags, two pinch.
 const mmvPointers = new Map();
-let mmvPinch = null, mmvDrag = null, mmvLastTap = 0;
+let mmvPinch = null, mmvDrag = null, mmvLastTap = null;
+// True only while the whole gesture has been one finger.  A second finger
+// at any point disqualifies it from the tap and swipe shortcuts.
+let mmvSimple = false;
 
 const mmvClamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
@@ -2138,6 +2174,10 @@ function mmvFit() {
   mmvX = (r.width - mmvW * mmvScale) / 2;
   mmvY = (r.height - mmvH * mmvScale) / 2;
   mmvApply();
+  // A fit can land mid-gesture (the fit button pressed with another finger
+  // down, or a rotation refitting under a held drag).  Re-baseline, or the
+  // next move restores the offsets this just replaced.
+  mmvSyncGesture();
 }
 
 function mmvZoomAt(factor, clientX, clientY) {
@@ -2173,9 +2213,7 @@ function openDiagram(diagram) {
   mmvCanvas.style.width = mmvW + 'px';
   mmvCanvas.style.height = mmvH + 'px';
   mmvCanvas.replaceChildren(clone);
-  mmvPointers.clear();
-  mmvPinch = null;
-  mmvDrag = null;
+  mmvResetGesture();
   mmvEl.classList.add('visible');
   // The stage has no size until it is displayed.
   requestAnimationFrame(mmvFit);
@@ -2184,21 +2222,54 @@ function openDiagram(diagram) {
 function closeDiagram() {
   mmvEl.classList.remove('visible');
   mmvCanvas.replaceChildren();
+  mmvResetGesture();
+}
+
+// No touch state may survive a close: a stale mmvLastTap would make the
+// first tap on the next diagram count as the second half of a double-tap.
+function mmvResetGesture() {
   mmvPointers.clear();
   mmvPinch = null;
   mmvDrag = null;
+  mmvSimple = false;
+  mmvLastTap = null;
 }
 
-function mmvCentre() {
-  const points = Array.from(mmvPointers.values());
-  const a = points[0], b = points[1];
+function mmvCentre(ids) {
+  const a = mmvPointers.get(ids[0]), b = mmvPointers.get(ids[1]);
   return {
     x: (a.x + b.x) / 2, y: (a.y + b.y) / 2,
     d: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
   };
 }
 
+// Rebuild the gesture from whichever fingers are down right now, taking the
+// current transform as the baseline.  Every count change goes through this,
+// so lifting one of two fingers hands the pan straight to the survivor
+// instead of freezing, and a third finger cannot leave a pinch measuring
+// itself against a pair that is no longer touching.  Calling it after a
+// programmatic zoom (fit, the +/- buttons, a resize) is what stops the next
+// move from snapping back to a pre-zoom baseline.
+function mmvSyncGesture() {
+  const ids = Array.from(mmvPointers.keys());
+  if (ids.length >= 2) {
+    mmvDrag = null;
+    const c = mmvCentre(ids);
+    mmvPinch = {ids: [ids[0], ids[1]], distance: c.d, x: c.x, y: c.y,
+                scale: mmvScale};
+  } else if (ids.length === 1) {
+    mmvPinch = null;
+    const p = mmvPointers.get(ids[0]);
+    mmvDrag = {id: ids[0], x: p.x, y: p.y, ox: mmvX, oy: mmvY,
+               startX: p.x, startY: p.y, moved: false};
+  } else {
+    mmvPinch = null;
+    mmvDrag = null;
+  }
+}
+
 mmvStage.addEventListener('pointerdown', (e) => {
+  mmvSimple = mmvPointers.size === 0;
   mmvPointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
   // Capture keeps a finger that slides off the stage still steering the
   // gesture.  It is an optimisation, not the mechanism: record the pointer
@@ -2206,17 +2277,10 @@ mmvStage.addEventListener('pointerdown', (e) => {
   try {
     mmvStage.setPointerCapture(e.pointerId);
   } catch (err) { /* not a live pointer */ }
-  if (mmvPointers.size === 2) {
-    // Second finger down: the drag becomes a pinch, anchored where the
-    // fingers actually are rather than at the centre of the stage.
-    mmvDrag = null;
-    const c = mmvCentre();
-    mmvPinch = {distance: c.d, x: c.x, y: c.y, scale: mmvScale};
-  } else if (mmvPointers.size === 1) {
-    mmvPinch = null;
-    mmvDrag = {id: e.pointerId, x: e.clientX, y: e.clientY, ox: mmvX, oy: mmvY,
-               startY: e.clientY, startX: e.clientX, moved: false};
-  }
+  // A second finger ends any pending double-tap: a tap, a quick pinch and
+  // another tap is three separate intentions, not one double-tap.
+  if (!mmvSimple) mmvLastTap = null;
+  mmvSyncGesture();
 });
 
 mmvStage.addEventListener('pointermove', (e) => {
@@ -2224,8 +2288,8 @@ mmvStage.addEventListener('pointermove', (e) => {
   if (!point) return;
   point.x = e.clientX;
   point.y = e.clientY;
-  if (mmvPinch && mmvPointers.size === 2) {
-    const c = mmvCentre();
+  if (mmvPinch) {
+    const c = mmvCentre(mmvPinch.ids);
     // Scale about the moving midpoint, then follow it, so the diagram
     // stays under the fingers instead of drifting away from them.
     const target = mmvClamp(mmvPinch.scale * (c.d / mmvPinch.distance), 0.03, 12);
@@ -2245,12 +2309,15 @@ mmvStage.addEventListener('pointermove', (e) => {
   }
 });
 
-function mmvEndPointer(e) {
+mmvStage.addEventListener('pointerup', (e) => {
   const drag = mmvDrag;
+  const simple = mmvSimple;
   mmvPointers.delete(e.pointerId);
-  if (mmvPointers.size < 2) mmvPinch = null;
-  if (!drag || e.pointerId !== drag.id) return;
-  mmvDrag = null;
+  const last = mmvPointers.size === 0;
+  mmvSyncGesture();
+  // Only a gesture that was one finger from first touch to last can be a
+  // tap or a dismiss; anything multi-touch was a pinch, however it ended.
+  if (!last || !simple || !drag || drag.id !== e.pointerId) return;
   const dy = e.clientY - drag.startY;
   const dx = e.clientX - drag.startX;
   // Swipe down to dismiss, but only while the diagram is not zoomed in —
@@ -2261,22 +2328,33 @@ function mmvEndPointer(e) {
   }
   if (drag.moved) return;
   const now = Date.now();
-  if (now - mmvLastTap < 300) {
-    mmvLastTap = 0;
+  // Two taps in the same place, not merely two taps in a row: without the
+  // distance check a tap in one corner and a tap in the other would refit.
+  if (mmvLastTap && now - mmvLastTap.t < 300 &&
+      Math.hypot(e.clientX - mmvLastTap.x, e.clientY - mmvLastTap.y) < 40) {
+    mmvLastTap = null;
     mmvFit();
   } else {
-    mmvLastTap = now;
+    mmvLastTap = {t: now, x: e.clientX, y: e.clientY};
   }
-}
-mmvStage.addEventListener('pointerup', mmvEndPointer);
+});
 mmvStage.addEventListener('pointercancel', (e) => {
   mmvPointers.delete(e.pointerId);
-  if (mmvPointers.size < 2) mmvPinch = null;
-  if (mmvDrag && e.pointerId === mmvDrag.id) mmvDrag = null;
+  // iOS cancels the stream when the system takes the gesture over.  Nothing
+  // it was part of counts as a tap or a dismiss any more.
+  mmvSimple = false;
+  mmvLastTap = null;
+  mmvSyncGesture();
 });
 
-document.getElementById('mmv-in').addEventListener('click', () => mmvZoomAt(1.25));
-document.getElementById('mmv-out').addEventListener('click', () => mmvZoomAt(1 / 1.25));
+document.getElementById('mmv-in').addEventListener('click', () => {
+  mmvZoomAt(1.25);
+  mmvSyncGesture();
+});
+document.getElementById('mmv-out').addEventListener('click', () => {
+  mmvZoomAt(1 / 1.25);
+  mmvSyncGesture();
+});
 document.getElementById('mmv-fit').addEventListener('click', mmvFit);
 document.getElementById('mmv-close').addEventListener('click', closeDiagram);
 window.addEventListener('resize', () => {

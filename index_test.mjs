@@ -1528,3 +1528,48 @@ test('a pin report that was in flight before a toggle cannot undo the toggle', a
   await report;
   assert.equal(context.isChatPinned('chat'), true);
 });
+
+function loadMarkdownRenderer() {
+  const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const start = html.indexOf('function renderMarkdown(');
+  const end = html.indexOf('// Mirror of mr-x/agent-shell-cues', start);
+  const helpersStart = html.indexOf('function unescHtml(');
+  const helpersEnd = html.indexOf('function renderDiff(', helpersStart);
+  assert.notEqual(start, -1, 'markdown renderer should exist');
+  assert.notEqual(end, -1, 'markdown renderer should have an end marker');
+  assert.notEqual(helpersStart, -1, 'code source helpers should exist');
+  assert.notEqual(helpersEnd, -1, 'code source helpers should have an end marker');
+  const context = {TextEncoder, TextDecoder, btoa, atob};
+  vm.createContext(context);
+  vm.runInContext(html.slice(start, end) + html.slice(helpersStart, helpersEnd), context,
+    {filename: 'index.html#markdown'});
+  return context;
+}
+
+test('renderMarkdown keeps mermaid fences as ordinary code blocks', () => {
+  const {renderMarkdown} = loadMarkdownRenderer();
+  const source = 'flowchart TD\n  A --> B\n';
+  const html = renderMarkdown('```mermaid\n' + source + '```');
+  assert.match(html, /<div class="code-block" data-code="[A-Za-z0-9+/=]+"><div class="code-header"><span class="code-language">mermaid<\/span>/);
+  assert.match(html, /<button class="code-copy"[^>]*>/);
+  assert.match(html, /<\/div><pre><code>flowchart TD<br>  A --&gt; B<\/code><\/pre><\/div>/);
+  assert.doesNotMatch(html, /class="mermaid-diagram"|class="mermaid-error"/);
+  assert.equal(html.replace('>mermaid</span>', '>text</span>'),
+    renderMarkdown('```text\n' + source + '```'));
+});
+
+test('data-code preserves exact UTF-8 fence source through later markdown passes', () => {
+  const {renderMarkdown} = loadMarkdownRenderer();
+  // Every one of these would be corrupted by a later pass if the source
+  // were stored as anything but base64: ** by the bold pass, the backtick
+  // by inline code, < by the escape pass, the newlines by \n -> <br>.
+  const source = 'flowchart TD\n  A["**bold** `code` < café &amp;"] --> B';
+  for (const trailing of ['\n', '\n  \t\n']) {
+    const html = renderMarkdown('```mermaid\n' + source + trailing + '```');
+    const match = html.match(/<div class="code-block" data-code="([A-Za-z0-9+/=]+)">/);
+    assert.ok(match, 'fence should carry base64 source');
+    // trimEnd: the newline before the closing fence is the fence's, not the
+    // diagram's, and Mermaid is given the source without it.
+    assert.equal(Buffer.from(match[1], 'base64').toString('utf8'), source);
+  }
+});

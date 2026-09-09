@@ -305,10 +305,7 @@ func main() {
 		http.FileServerFS(fontsFS).ServeHTTP(w, r)
 	}))
 
-	mux.Handle("/assets/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		http.FileServerFS(assetsFS).ServeHTTP(w, r)
-	}))
+	mux.HandleFunc("/assets/", handleAsset)
 
 	mux.HandleFunc("/apple-touch-icon.png", func(w http.ResponseWriter, r *http.Request) {
 		data, err := fontsFS.ReadFile("fonts/apple-touch-icon.png")
