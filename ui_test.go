@@ -2117,3 +2117,140 @@ func TestChatMenuCloneSpawnsFromCurrentBufferAndOpensIt(t *testing.T) {
 		t.Fatalf("menu should close and the item reset after cloning, got %v", state)
 	}
 }
+
+func TestMermaidRendering(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	const diagram = "```mermaid\nflowchart TD\n  A[Start] --> B[Finish]\n```"
+	const broken = "```mermaid\nflowchart TD\n  A[unterminated\n```"
+	var assetMu sync.Mutex
+	assetRequests := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(indexHTML)
+	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": []interface{}{}})
+	})
+	mux.HandleFunc("/assets/", func(w http.ResponseWriter, r *http.Request) {
+		assetMu.Lock()
+		assetRequests++
+		assetMu.Unlock()
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		http.FileServerFS(assetsFS).ServeHTTP(w, r)
+	})
+	mux.HandleFunc("/api/mermaid-config", handleMermaidConfig)
+	mux.HandleFunc("/api/preview", func(w http.ResponseWriter, r *http.Request) {
+		text := diagram
+		switch r.URL.Query().Get("pid") {
+		case "2":
+			text = broken
+		case "3":
+			text = "Plain preview without diagrams."
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"messages": []map[string]string{{"role": "agent", "text": text}},
+		})
+	})
+	mux.HandleFunc("/api/transcript", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"content": "# Fixture\n\n## Agent (12:00)\n" + diagram,
+		})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	t.Run("lazy load and preview", func(t *testing.T) {
+		page := openChromePage(t, server.URL)
+		page.waitFor(t, `typeof showPreview === 'function' && document.readyState === 'complete'`)
+		page.eval(t, `showPreview({pid: 3}, 'Plain preview')`)
+		page.waitFor(t, `pvBody.textContent.includes('Plain preview without diagrams.')`)
+		assetMu.Lock()
+		requests := assetRequests
+		assetMu.Unlock()
+		if requests != 0 {
+			t.Fatalf("asset requests without a mermaid fence = %d, want 0", requests)
+		}
+		page.eval(t, `showPreview({pid: 1}, 'Diagram preview')`)
+		page.waitFor(t, `!!pvBody.querySelector('.mermaid-diagram svg')`)
+		state := page.evalObject(t, `(() => {
+			const block = pvBody.querySelector('.code-block');
+			return {
+				header: !!block.querySelector('.code-header .code-copy'),
+				language: block.querySelector('.code-header .code-language')?.textContent,
+				pre: !!block.querySelector('pre'),
+				text: block.querySelector('.mermaid-diagram').textContent
+			};
+		})()`)
+		if state["header"] != true || state["language"] != "mermaid" || state["pre"] != false ||
+			!strings.Contains(state["text"].(string), "Start") || !strings.Contains(state["text"].(string), "Finish") {
+			t.Fatalf("preview diagram state = %#v", state)
+		}
+	})
+
+	t.Run("parse error preserves bubble", func(t *testing.T) {
+		page := openChromePage(t, server.URL)
+		page.waitFor(t, `typeof showPreview === 'function'`)
+		page.eval(t, `showPreview({pid: 2}, 'Broken diagram')`)
+		page.waitFor(t, `!!pvBody.querySelector('.code-block .mermaid-error')`)
+		state := page.evalObject(t, `(() => {
+			const bubble = pvBody.querySelector('.pv-msg.agent');
+			const block = bubble.querySelector('.code-block');
+			return {
+				code: block.querySelector('pre code')?.textContent,
+				error: block.querySelector('.mermaid-error').textContent.trim(),
+				afterHeader: block.querySelector('.code-header').nextElementSibling.classList.contains('mermaid-error'),
+				diagram: !!block.querySelector('.mermaid-diagram'),
+				visible: bubble.getBoundingClientRect().height > 0,
+				text: bubble.textContent.trim()
+			};
+		})()`)
+		if code, ok := state["code"].(string); !ok || !strings.Contains(code, "A[unterminated") {
+			t.Fatalf("broken diagram lost its code: %#v", state)
+		}
+		if state["error"] == "" || state["afterHeader"] != true || state["diagram"] != false ||
+			state["visible"] != true || state["text"] == "" {
+			t.Fatalf("broken diagram bubble state = %#v", state)
+		}
+	})
+
+	t.Run("history transcript", func(t *testing.T) {
+		page := openChromePage(t, server.URL)
+		page.waitFor(t, `typeof openTranscript === 'function'`)
+		page.eval(t, `openTranscript({
+			file: '/fixture/mermaid.md', project: 'fixture', agent: 'Fixture',
+			timestamp: '2026-09-01-12-00-00'
+		})`)
+		page.waitFor(t, `!!historyBody.querySelector('.pv-msg.agent .mermaid-diagram svg')`)
+		state := page.evalObject(t, `({
+			language: historyBody.querySelector('.code-header .code-language')?.textContent,
+			text: historyBody.querySelector('.mermaid-diagram').textContent,
+			error: !!historyBody.querySelector('.mermaid-error')
+		})`)
+		if state["language"] != "mermaid" || state["error"] != false ||
+			!strings.Contains(state["text"].(string), "Finish") {
+			t.Fatalf("history diagram state = %#v", state)
+		}
+	})
+
+	t.Run("inspector opens and closes", func(t *testing.T) {
+		page := openChromePage(t, server.URL)
+		page.waitFor(t, `typeof showPreview === 'function'`)
+		page.eval(t, `showPreview({pid: 1}, 'Diagram inspector')`)
+		page.waitFor(t, `!!pvBody.querySelector('.mermaid-diagram svg')`)
+		if page.eval(t, `document.getElementById('mmv').classList.contains('visible')`) != false {
+			t.Fatal("inspector is visible before tapping a diagram")
+		}
+		page.eval(t, `pvBody.querySelector('.mermaid-diagram').click()`)
+		page.waitFor(t, `document.getElementById('mmv').classList.contains('visible') &&
+			!!document.querySelector('#mmv-canvas svg')`)
+		page.eval(t, `document.getElementById('mmv-close').click()`)
+		page.waitFor(t, `!document.getElementById('mmv').classList.contains('visible') &&
+			!document.querySelector('#mmv-canvas svg')`)
+	})
+}

@@ -50,6 +50,9 @@ var buildID = func() string {
 //go:embed fonts
 var fontsFS embed.FS
 
+//go:embed assets
+var assetsFS embed.FS
+
 // cspHeader builds the page CSP.  worker-src 'self' is what lets
 // navigator.serviceWorker.register('/sw.js') through a nonce-only
 // script-src (the worker fetch falls back to script-src otherwise).
@@ -302,6 +305,8 @@ func main() {
 		http.FileServerFS(fontsFS).ServeHTTP(w, r)
 	}))
 
+	mux.HandleFunc("/assets/", handleAsset)
+
 	mux.HandleFunc("/apple-touch-icon.png", func(w http.ResponseWriter, r *http.Request) {
 		data, err := fontsFS.ReadFile("fonts/apple-touch-icon.png")
 		if err != nil {
@@ -319,6 +324,7 @@ func main() {
 	mux.HandleFunc("/api/presets", handlePresets)
 	registerModelHandlers(mux)
 	mux.HandleFunc("/api/projects", handleProjects)
+	mux.HandleFunc("/api/mermaid-config", handleMermaidConfig)
 	mux.HandleFunc("/api/kill", handleKill)
 	mux.HandleFunc("/api/label", handleLabel)
 	mux.HandleFunc("/api/push", handlePush)

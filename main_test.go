@@ -1818,3 +1818,57 @@ func TestHandleStatusesCarriesPushesAndRefreshesPresence(t *testing.T) {
 		t.Fatalf("no-body status = %d", w.Code)
 	}
 }
+
+func TestMermaidAsset(t *testing.T) {
+	w := httptest.NewRecorder()
+	handleAsset(w, httptest.NewRequest(http.MethodGet, "/assets/mermaid.min.js", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+	if w.Body.Len() == 0 {
+		t.Fatal("mermaid asset body is empty")
+	}
+}
+
+func TestHandleMermaidConfig(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		present bool
+		body    string
+		status  int
+	}{
+		{"missing", false, "", http.StatusNotFound},
+		{"valid", true, "{\n  \"theme\": \"base\", \"startOnLoad\": false\n}\n", http.StatusOK},
+		{"truncated", true, `{"theme":`, http.StatusNotFound},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if tt.present {
+				dir := filepath.Join(home, ".acp-mobile")
+				if err := os.MkdirAll(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "mermaid.json"), []byte(tt.body), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w := httptest.NewRecorder()
+			handleMermaidConfig(w, httptest.NewRequest(http.MethodGet, "/api/mermaid-config", nil))
+			if w.Code != tt.status {
+				t.Fatalf("status = %d, want %d", w.Code, tt.status)
+			}
+			if tt.status == http.StatusOK {
+				if got := w.Header().Get("Content-Type"); got != "application/json" {
+					t.Fatalf("Content-Type = %q, want application/json", got)
+				}
+				if got := w.Body.String(); got != tt.body {
+					t.Fatalf("body = %q, want %q", got, tt.body)
+				}
+			}
+		})
+	}
+}
