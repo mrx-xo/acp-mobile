@@ -890,6 +890,44 @@ input, textarea, #fbv-content, .msg, .msg * {
 #chat-menu button + button { border-top: 1px solid var(--bg2); }
 #chat-menu button:active { background: var(--bg2); }
 #chat-menu button:disabled { color: var(--fg-mute); cursor: default; }
+/* Diagram inspector: same full-screen sheet shape as #reader, one layer
+   above it because a diagram can be tapped from inside the reader. */
+#mmv {
+  position: fixed; inset: 0; z-index: 141; background: var(--bg0);
+  display: none; flex-direction: column;
+}
+#mmv.visible { display: flex; }
+#mmv-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: max(10px, env(safe-area-inset-top)) 16px 10px;
+  border-bottom: 1px solid var(--bg2); flex-shrink: 0;
+}
+#mmv-title {
+  font-size: 12px; font-family: var(--mono); color: var(--fg-mute);
+}
+#mmv-controls { display: flex; align-items: center; gap: 4px; }
+#mmv-controls button {
+  background: var(--bg1); border: 1px solid var(--bg2); border-radius: 8px;
+  color: var(--fg); font-family: var(--mono); font-size: 13px;
+  padding: 6px 10px; cursor: pointer;
+}
+#mmv-controls button:active { background: var(--bg2); }
+#mmv-close {
+  background: none !important; border: none !important; color: var(--fg);
+  font-size: 26px; line-height: 1; padding: 2px 6px 2px 10px; cursor: pointer;
+}
+/* touch-action:none is what stops Safari claiming the pinch and the pan
+   for page zoom and scroll before the pointer handlers ever see them. */
+#mmv-stage {
+  flex: 1; position: relative; overflow: hidden;
+  touch-action: none; overscroll-behavior: contain;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+#mmv-canvas {
+  position: absolute; top: 0; left: 0; transform-origin: 0 0;
+  will-change: transform;
+}
+#mmv-canvas svg { width: 100%; height: 100%; display: block; }
 #reader {
   position: fixed; inset: 0; z-index: 131; background: var(--bg0);
   display: none; flex-direction: column;
@@ -1385,6 +1423,16 @@ input, textarea, #fbv-content, .msg, .msg * {
   display: flex; align-items: center; justify-content: space-between;
   background: var(--bg0); border-bottom: 1px solid var(--bg1);
 }
+.mermaid-diagram {
+  display: block; overflow-x: auto; padding: 10px; cursor: zoom-in;
+}
+.mermaid-diagram svg {
+  max-width: 100%; height: auto; display: block; margin: 0 auto;
+}
+.mermaid-error {
+  font-family: var(--mono); font-size: 11px; color: var(--red); opacity: 0.8;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 10px;
+}
 .code-language {
   color: var(--fg-mute); font-family: var(--mono); font-size: 10px;
   font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
@@ -1642,6 +1690,18 @@ input, textarea, #fbv-content, .msg, .msg * {
   </div>
   <div id="reader-body"></div>
 </div>
+<div id="mmv">
+  <div id="mmv-head">
+    <span id="mmv-title">diagram</span>
+    <div id="mmv-controls">
+      <button id="mmv-out" aria-label="Zoom out">&minus;</button>
+      <button id="mmv-in" aria-label="Zoom in">+</button>
+      <button id="mmv-fit" aria-label="Fit diagram">fit</button>
+      <button id="mmv-close" aria-label="Close">&times;</button>
+    </div>
+  </div>
+  <div id="mmv-stage"><div id="mmv-canvas"></div></div>
+</div>
 <div id="spawn-scrim"></div>
 <div id="spawn-sheet">
   <div id="sp-head">
@@ -1682,6 +1742,7 @@ input, textarea, #fbv-content, .msg, .msg * {
 </div>
 
 <script nonce="__CSP_NONCE__">
+const CSP_NONCE = document.currentScript.nonce;
 const messagesEl = document.getElementById('messages');
 const statusText = document.getElementById('status-text');
 const headerTitle = document.getElementById('header-title');
@@ -1913,6 +1974,321 @@ function modeColor(id) {
   return '#928374';
 }
 
+// --- Lazy Mermaid rendering ---
+// The rig's `mr-x/markdown-mermaid-config' is the source of truth: Emacs
+// exports it to ~/.acp-mobile/mermaid.json and /api/mermaid-config serves
+// it, so a diagram looks the same here as in the xwidget preview.  These
+// are only the fallback for a machine that has not exported yet — the
+// gruvbox palette, hand-mirrored the way AGENT_CUES is.  The full themeCSS
+// (the :::card-accent family) comes with the exported file.
+const MERMAID_CONFIG = {
+  startOnLoad: false,
+  securityLevel: 'strict',
+  theme: 'base',
+  flowchart: {
+    htmlLabels: true, useMaxWidth: true, wrappingWidth: 340,
+    padding: 14, nodeSpacing: 45, rankSpacing: 62, curve: 'basis',
+  },
+  themeVariables: {
+    fontFamily: 'Iosevka, ui-monospace, SFMono-Regular, Menlo, monospace',
+    background: '#282828', primaryColor: '#3c3836', primaryTextColor: '#ebdbb2',
+    primaryBorderColor: '#d79921', secondaryColor: '#504945',
+    secondaryTextColor: '#fbf1c7', secondaryBorderColor: '#b8bb26',
+    tertiaryColor: '#665c54', tertiaryTextColor: '#fbf1c7',
+    tertiaryBorderColor: '#83a598', lineColor: '#83a598', textColor: '#ebdbb2',
+    mainBkg: '#3c3836', nodeBorder: '#d79921', clusterBkg: '#32302f',
+    clusterBorder: '#665c54', titleColor: '#fe8019',
+    edgeLabelBackground: '#282828',
+  },
+  themeCSS:
+    '.nodeLabel, .nodeLabel p, .edgeLabel, .edgeLabel p, .cluster-label, ' +
+    '.cluster-label p, .label, .labelText, foreignObject div, foreignObject span {' +
+    ' font-family: Iosevka, ui-monospace, SFMono-Regular, Menlo, monospace !important;' +
+    ' font-size: 15px !important; line-height: 1.45 !important; }' +
+    '.nodeLabel p:first-child:not(:only-child) { color: #fabd2f !important;' +
+    ' font-weight: 800 !important; }',
+};
+let mermaidLoadPromise = null;
+let mermaidIdCounter = 0;
+const mermaidCache = new Map();
+const mermaidPending = new Map();
+
+// The rig's config, if it has been exported.  404 (no Emacs, or a fresh
+// machine) leaves MERMAID_CONFIG alone rather than failing the render.
+async function mermaidConfig() {
+  try {
+    const res = await fetch('/api/mermaid-config');
+    if (!res.ok) return MERMAID_CONFIG;
+    const rig = await res.json();
+    // startOnLoad stays false whatever the rig says: diagrams are rendered
+    // per block by renderDiagrams, never by a document scan.
+    return Object.assign({}, MERMAID_CONFIG, rig, {startOnLoad: false});
+  } catch (err) {
+    return MERMAID_CONFIG;
+  }
+}
+
+function loadMermaid() {
+  if (!mermaidLoadPromise) {
+    mermaidLoadPromise = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = '/assets/mermaid.min.js';
+      s.nonce = CSP_NONCE;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error('Could not load Mermaid'));
+      document.head.appendChild(s);
+    }).then(async () => {
+      const mermaid = window.mermaid;
+      mermaid.initialize(await mermaidConfig());
+      return mermaid;
+    });
+  }
+  return mermaidLoadPromise;
+}
+
+async function renderDiagrams(root) {
+  const blocks = Array.from(root.querySelectorAll('.code-block')).filter(block => {
+    const language = block.querySelector('.code-language');
+    return language && language.textContent.trim().toLowerCase() === 'mermaid' &&
+      !block.querySelector('.mermaid-diagram');
+  });
+  if (!blocks.length) return;
+  for (const block of blocks) {
+    const pre = block.querySelector('pre');
+    const code = pre && pre.querySelector('code');
+    if (!code) continue;
+    // Never code.textContent: the \n -> <br> pass in renderMarkdown left
+    // it as one joined line, which Mermaid cannot parse.
+    const src = decodeCodeSource(block);
+    if (!src) continue;
+    // A streaming update may replace this block while the engine is working.
+    const current = () => root.contains(block) && block.contains(pre) &&
+      decodeCodeSource(block) === src && !block.querySelector('.mermaid-diagram');
+    try {
+      let svg = mermaidCache.get(src);
+      if (svg === undefined) {
+        let pending = mermaidPending.get(src);
+        if (!pending) {
+          pending = (async () => {
+            const mermaid = await loadMermaid();
+            const id = 'mmd-' + (++mermaidIdCounter);
+            try {
+              const result = await mermaid.render(id, src);
+              mermaidCache.set(src, result.svg);
+              if (mermaidCache.size > 50) {
+                mermaidCache.delete(mermaidCache.keys().next().value);
+              }
+              return result.svg;
+            } catch (err) {
+              const stray = document.getElementById('d' + id);
+              if (stray) stray.remove();
+              throw err;
+            }
+          })().finally(() => mermaidPending.delete(src));
+          mermaidPending.set(src, pending);
+        }
+        svg = await pending;
+      }
+      if (!current()) continue;
+      const diagram = document.createElement('div');
+      diagram.className = 'mermaid-diagram';
+      diagram.dataset.mermaidSrc = src;
+      diagram.innerHTML = svg;
+      const error = block.querySelector('.mermaid-error');
+      if (error) error.remove();
+      pre.replaceWith(diagram);
+    } catch (err) {
+      if (!current() || block.querySelector('.mermaid-error')) continue;
+      const header = block.querySelector('.code-header');
+      if (header) {
+        header.insertAdjacentHTML('afterend', '<div class="mermaid-error">' +
+          escHtml(String(err && err.message || err)) + '</div>');
+      }
+    }
+  }
+}
+
+// --- Diagram inspector ---
+// A bubble is too narrow for anything but the smallest diagram, so the
+// rendered SVG is a handle: tap it and the whole thing opens full screen
+// with pinch zoom, drag pan and double-tap fit.  Ported from the Emacs
+// xwidget viewer (etc/markdown-mermaid-viewer.js); the transform maths is
+// the same, the input is pointer events instead of mouse and wheel.
+const mmvEl = document.getElementById('mmv');
+const mmvStage = document.getElementById('mmv-stage');
+const mmvCanvas = document.getElementById('mmv-canvas');
+let mmvScale = 1, mmvFitScale = 1, mmvX = 0, mmvY = 0;
+let mmvW = 1, mmvH = 1;
+// pointerId -> {x, y}.  One entry drags, two pinch.
+const mmvPointers = new Map();
+let mmvPinch = null, mmvDrag = null, mmvLastTap = 0;
+
+const mmvClamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+function mmvApply() {
+  mmvCanvas.style.transform =
+    'translate(' + mmvX + 'px, ' + mmvY + 'px) scale(' + mmvScale + ')';
+}
+
+function mmvFit() {
+  const r = mmvStage.getBoundingClientRect();
+  mmvFitScale = mmvClamp(
+    Math.min((r.width - 24) / mmvW, (r.height - 24) / mmvH), 0.03, 12);
+  mmvScale = mmvFitScale;
+  mmvX = (r.width - mmvW * mmvScale) / 2;
+  mmvY = (r.height - mmvH * mmvScale) / 2;
+  mmvApply();
+}
+
+function mmvZoomAt(factor, clientX, clientY) {
+  const r = mmvStage.getBoundingClientRect();
+  const px = (clientX === undefined ? r.left + r.width / 2 : clientX) - r.left;
+  const py = (clientY === undefined ? r.top + r.height / 2 : clientY) - r.top;
+  const dx = (px - mmvX) / mmvScale;
+  const dy = (py - mmvY) / mmvScale;
+  const next = mmvClamp(mmvScale * factor, 0.03, 12);
+  mmvX = px - dx * next;
+  mmvY = py - dy * next;
+  mmvScale = next;
+  mmvApply();
+}
+
+function mmvSize(svg) {
+  const box = svg.viewBox && svg.viewBox.baseVal;
+  if (box && box.width > 0 && box.height > 0) return {w: box.width, h: box.height};
+  const r = svg.getBoundingClientRect();
+  return {w: Math.max(1, r.width), h: Math.max(1, r.height)};
+}
+
+function openDiagram(diagram) {
+  const svg = diagram.querySelector('svg');
+  if (!svg) return;
+  const size = mmvSize(svg);
+  mmvW = size.w;
+  mmvH = size.h;
+  const clone = svg.cloneNode(true);
+  clone.removeAttribute('style');
+  clone.setAttribute('width', '100%');
+  clone.setAttribute('height', '100%');
+  mmvCanvas.style.width = mmvW + 'px';
+  mmvCanvas.style.height = mmvH + 'px';
+  mmvCanvas.replaceChildren(clone);
+  mmvPointers.clear();
+  mmvPinch = null;
+  mmvDrag = null;
+  mmvEl.classList.add('visible');
+  // The stage has no size until it is displayed.
+  requestAnimationFrame(mmvFit);
+}
+
+function closeDiagram() {
+  mmvEl.classList.remove('visible');
+  mmvCanvas.replaceChildren();
+  mmvPointers.clear();
+  mmvPinch = null;
+  mmvDrag = null;
+}
+
+function mmvCentre() {
+  const points = Array.from(mmvPointers.values());
+  const a = points[0], b = points[1];
+  return {
+    x: (a.x + b.x) / 2, y: (a.y + b.y) / 2,
+    d: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+  };
+}
+
+mmvStage.addEventListener('pointerdown', (e) => {
+  mmvPointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
+  // Capture keeps a finger that slides off the stage still steering the
+  // gesture.  It is an optimisation, not the mechanism: record the pointer
+  // first, so a throw here can never leave the gesture half-started.
+  try {
+    mmvStage.setPointerCapture(e.pointerId);
+  } catch (err) { /* not a live pointer */ }
+  if (mmvPointers.size === 2) {
+    // Second finger down: the drag becomes a pinch, anchored where the
+    // fingers actually are rather than at the centre of the stage.
+    mmvDrag = null;
+    const c = mmvCentre();
+    mmvPinch = {distance: c.d, x: c.x, y: c.y, scale: mmvScale};
+  } else if (mmvPointers.size === 1) {
+    mmvPinch = null;
+    mmvDrag = {id: e.pointerId, x: e.clientX, y: e.clientY, ox: mmvX, oy: mmvY,
+               startY: e.clientY, startX: e.clientX, moved: false};
+  }
+});
+
+mmvStage.addEventListener('pointermove', (e) => {
+  const point = mmvPointers.get(e.pointerId);
+  if (!point) return;
+  point.x = e.clientX;
+  point.y = e.clientY;
+  if (mmvPinch && mmvPointers.size === 2) {
+    const c = mmvCentre();
+    // Scale about the moving midpoint, then follow it, so the diagram
+    // stays under the fingers instead of drifting away from them.
+    const target = mmvClamp(mmvPinch.scale * (c.d / mmvPinch.distance), 0.03, 12);
+    mmvZoomAt(target / mmvScale, mmvPinch.x, mmvPinch.y);
+    mmvX += c.x - mmvPinch.x;
+    mmvY += c.y - mmvPinch.y;
+    mmvPinch.x = c.x;
+    mmvPinch.y = c.y;
+    mmvApply();
+  } else if (mmvDrag && e.pointerId === mmvDrag.id) {
+    mmvX = mmvDrag.ox + e.clientX - mmvDrag.x;
+    mmvY = mmvDrag.oy + e.clientY - mmvDrag.y;
+    if (Math.abs(e.clientX - mmvDrag.x) > 6 || Math.abs(e.clientY - mmvDrag.y) > 6) {
+      mmvDrag.moved = true;
+    }
+    mmvApply();
+  }
+});
+
+function mmvEndPointer(e) {
+  const drag = mmvDrag;
+  mmvPointers.delete(e.pointerId);
+  if (mmvPointers.size < 2) mmvPinch = null;
+  if (!drag || e.pointerId !== drag.id) return;
+  mmvDrag = null;
+  const dy = e.clientY - drag.startY;
+  const dx = e.clientX - drag.startX;
+  // Swipe down to dismiss, but only while the diagram is not zoomed in —
+  // once it is, a downward drag is panning and must stay panning.
+  if (mmvScale <= mmvFitScale * 1.02 && dy > 80 && Math.abs(dy) > Math.abs(dx) * 1.5) {
+    closeDiagram();
+    return;
+  }
+  if (drag.moved) return;
+  const now = Date.now();
+  if (now - mmvLastTap < 300) {
+    mmvLastTap = 0;
+    mmvFit();
+  } else {
+    mmvLastTap = now;
+  }
+}
+mmvStage.addEventListener('pointerup', mmvEndPointer);
+mmvStage.addEventListener('pointercancel', (e) => {
+  mmvPointers.delete(e.pointerId);
+  if (mmvPointers.size < 2) mmvPinch = null;
+  if (mmvDrag && e.pointerId === mmvDrag.id) mmvDrag = null;
+});
+
+document.getElementById('mmv-in').addEventListener('click', () => mmvZoomAt(1.25));
+document.getElementById('mmv-out').addEventListener('click', () => mmvZoomAt(1 / 1.25));
+document.getElementById('mmv-fit').addEventListener('click', mmvFit);
+document.getElementById('mmv-close').addEventListener('click', closeDiagram);
+window.addEventListener('resize', () => {
+  if (mmvEl.classList.contains('visible')) mmvFit();
+});
+
+document.addEventListener('click', (e) => {
+  const diagram = e.target.closest && e.target.closest('.mermaid-diagram');
+  if (!diagram || mmvEl.contains(diagram)) return;
+  openDiagram(diagram);
+});
+
 // --- Markdown renderer (basic, no dependencies) ---
 
 function renderMarkdown(text) {
@@ -1923,7 +2299,15 @@ function renderMarkdown(text) {
 
   // Fenced code blocks
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
-    '<div class="code-block"><div class="code-header">' +
+    // data-code carries the fence's exact source, base64'd.  It has to
+    // survive every pass below, and base64's alphabet is the only encoding
+    // none of them touch: the \n -> <br> pass would eat the newlines and
+    // the bold/italic/link passes would rewrite the body.  Without it the
+    // source is unrecoverable from the DOM — which is what the copy button
+    // has been hitting (multi-line blocks copied as one joined line) and
+    // what a mermaid fence needs before it can be rendered.
+    '<div class="code-block" data-code="' + encodeCodeSource(unescHtml(code.trimEnd())) + '">' +
+    '<div class="code-header">' +
     '<span class="code-language">' + (lang || 'code') + '</span>' +
     '<button class="code-copy" type="button" aria-label="Copy code">' +
     '<svg class="code-copy-icon" viewBox="0 0 24 24" aria-hidden="true">' +
@@ -2055,6 +2439,32 @@ function renderAgentMarkdown(text) {
 
 function escHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// renderMarkdown escapes the whole text before it splits out fences, so a
+// fence body arrives here already escaped; this puts it back.
+function unescHtml(s) {
+  return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
+function encodeCodeSource(s) {
+  const bytes = new TextEncoder().encode(s);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+// Returns null for a block rendered before data-code existed (an old pin),
+// so callers can fall back to the DOM text.
+function decodeCodeSource(block) {
+  const encoded = block && block.dataset ? block.dataset.code : null;
+  if (!encoded) return null;
+  try {
+    return new TextDecoder().decode(
+      Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0)));
+  } catch (err) {
+    return null;
+  }
 }
 
 function renderDiff(oldStr, newStr) {
@@ -2389,6 +2799,7 @@ function addAgentMsg(text) {
   d.innerHTML =
     '<span class="role">Agent</span>' +
     '<div class="md">' + renderAgentMarkdown(text) + '</div>';
+  renderDiagrams(d).catch(() => {});
   d._text = text;
   d.addEventListener('contextmenu', (e) => { e.preventDefault(); copyText(d._text); });
   messagesEl.appendChild(d);
@@ -2413,6 +2824,7 @@ function updateAgentMsg(el, text) {
     wrapStreamWords(next);
     patchStreamMarkdown(md, next);
   }
+  renderDiagrams(md).catch(() => {});
   if (isAtBottom) scrollToBottom();
 }
 
@@ -2508,6 +2920,7 @@ function makeThoughtMsg(text, messageId) {
   d.appendChild(md);
   d._text = typeof text === 'string' ? text : '';
   md.innerHTML = renderMarkdown(d._text);
+  renderDiagrams(md).catch(() => {});
   d.addEventListener('contextmenu', (e) => { e.preventDefault(); copyText(d._text); });
   return d;
 }
@@ -2522,7 +2935,9 @@ function addThoughtMsg(text, messageId, parent = messagesEl) {
 
 function updateThoughtMsg(el, text) {
   el._text = text;
-  el.querySelector('.md').innerHTML = renderMarkdown(text);
+  const md = el.querySelector('.md');
+  md.innerHTML = renderMarkdown(text);
+  renderDiagrams(md).catch(() => {});
   if (isAtBottom) scrollToBottom();
 }
 
@@ -2717,6 +3132,7 @@ function renderToolCard(toolEl) {
   const body = toolEl.querySelector('.tool-body');
   const bodyHtml = toolBodyHtml(tool);
   body.innerHTML = bodyHtml;
+  renderDiagrams(body).catch(() => {});
   toolEl.querySelector('.tool-hint').textContent = bodyHtml ? 'tap to view details' : 'tap to expand';
 }
 
@@ -2841,6 +3257,7 @@ function addPermissionMsg(msg, interactive) {
   }
 
   d.innerHTML = headerHtml + detailHtml + optionsHtml;
+  renderDiagrams(d).catch(() => {});
 
   if (interactive) {
     const buttons = d.querySelectorAll('.perm-btn');
@@ -2973,8 +3390,11 @@ document.addEventListener('click', (e) => {
     // parentElement fallback keeps copy working for old pinned HTML.
     const block = copy.closest('.code-block') || copy.parentElement;
     const code = block && block.querySelector('code');
-    if (!code) return;
-    Promise.resolve(copyText(code.textContent)).then((ok) => {
+    // data-code is the fence's exact source, newlines and all.  The
+    // textContent fallback keeps old pinned HTML copying something.
+    const source = decodeCodeSource(block) || (code && code.textContent);
+    if (!source) return;
+    Promise.resolve(copyText(source)).then((ok) => {
       if (!ok) return;
       copy.classList.add('copied');
       copy.setAttribute('aria-label', 'Copied');
@@ -3477,6 +3897,7 @@ function renderTurnBatch(turns, prepend) {
         d.innerHTML =
           '<span class="role">Agent</span>' +
           '<div class="md">' + renderAgentMarkdown(t.text) + '</div>';
+        renderDiagrams(d).catch(() => {});
         d._text = t.text;
         fragment.appendChild(d);
         break;
@@ -5527,6 +5948,7 @@ async function showPreview(s, name) {
           ? '<div class="pv-msg user">' + escHtml(m.text) + '</div>'
           : '<div class="pv-msg agent"><div class="md">' + renderAgentMarkdown(m.text) + '</div></div>').join('')
       : '<div class="pv-msg agent">(empty conversation)</div>';
+    renderDiagrams(pvBody).catch(() => {});
     pvBody.scrollTop = pvBody.scrollHeight;
   } catch (err) {
     pvBody.innerHTML = '<div class="pv-msg agent">peek failed: ' + escHtml(err.message) + '</div>';
@@ -6266,6 +6688,7 @@ function openReader(el) {
     el.classList.contains('tool') ? 'Tool' : '';
   readerBody.innerHTML = '';
   readerBody.appendChild(clone);
+  renderDiagrams(clone).catch(() => {});
   readerEl.classList.add('visible');
   readerBody.scrollTop = 0;
 }
@@ -6401,6 +6824,7 @@ function buildPinItem(p, storageKey, rerender) {
       body.innerHTML = renderMarkdown(p.text);
     }
   }
+  renderDiagrams(holder).catch(() => {});
   item.appendChild(meta);
   item.appendChild(holder);
   // Tap → same full-screen view-only reader as in chat
@@ -6952,8 +7376,10 @@ async function openTranscript(t, query = '') {
     const s = sections[index];
     const d = document.createElement('div');
     d.className = 'pv-msg ' + s.role;
-    if (s.role === 'agent') d.innerHTML = '<div class="md">' + renderAgentMarkdown(s.text) + '</div>';
-    else d.textContent = s.text;
+    if (s.role === 'agent') {
+      d.innerHTML = '<div class="md">' + renderAgentMarkdown(s.text) + '</div>';
+      renderDiagrams(d).catch(() => {});
+    } else d.textContent = s.text;
     if (index === matchIndex) {
       highlightHistoryMatch(d, query);
       d.classList.add('hist-match');
@@ -7130,7 +7556,9 @@ document.getElementById('reader-bigger').addEventListener('click', () => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if (readerEl.classList.contains('visible')) closeReader();
+  // The inspector opens on top of everything, including the reader.
+  if (mmvEl.classList.contains('visible')) closeDiagram();
+  else if (readerEl.classList.contains('visible')) closeReader();
   else if (msgMenu.classList.contains('visible')) closeMsgMenu();
   else if (chatMenu.classList.contains('visible')) closeChatMenu();
   else if (settingsEl.classList.contains('visible')) closeSettings();

@@ -25,6 +25,10 @@ go build -o acp-mobile .
 
 The server binds to `127.0.0.1` only. On first run it generates an authkey and prints a URL with the key embedded — open that URL to authenticate.
 
+Bundled Mermaid 11.12.2 lives in `assets/mermaid.min.js`, copied from
+`~/.emacs.d/elpaca/repos/markdown-xwidget/resources/mermaid.min.js`.
+Update this version note deliberately when replacing the bundle.
+
 ## Phone push (Web Push)
 
 acp-mobile can send Web Push notifications to phones that installed it as a
