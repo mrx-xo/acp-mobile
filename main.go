@@ -322,6 +322,7 @@ func main() {
 	mux.HandleFunc("/api/statuses", handleStatuses)
 	mux.HandleFunc("/api/spawn", handleSpawn)
 	mux.HandleFunc("/api/presets", handlePresets)
+	mux.HandleFunc("/api/launch-options", handleLaunchOptions)
 	registerModelHandlers(mux)
 	mux.HandleFunc("/api/projects", handleProjects)
 	mux.HandleFunc("/api/mermaid-config", handleMermaidConfig)
@@ -844,11 +845,12 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 // model, permission mode and directory the new convo copies (the phone
 // side of the rig's clone, SPC c n). One of the two is required.
 type spawnRequest struct {
-	Cwd     string `json:"cwd"`
-	Name    string `json:"name"`
-	Task    string `json:"task"`
-	Preset  string `json:"preset"`
-	CloneOf string `json:"cloneOf"`
+	Cwd      string          `json:"cwd"`
+	Name     string          `json:"name"`
+	Task     string          `json:"task"`
+	Preset   string          `json:"preset"`
+	CloneOf  string          `json:"cloneOf"`
+	Settings *launchSettings `json:"settings,omitempty"`
 }
 
 // spawnArgs lays out the positional argv for the agent-shell-spawn
@@ -884,6 +886,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
 	var req spawnRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -906,6 +909,10 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Settings != nil {
+		handleExplicitLaunch(w, r, req)
+		return
+	}
 	out, err := evalEmacs("agent-shell-spawn", spawnArgs(req)...)
 	if err != nil {
 		log.Printf("spawn: %v: %s", err, out)

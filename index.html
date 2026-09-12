@@ -1217,90 +1217,58 @@ input, textarea, #fbv-content, .msg, .msg * {
   text-align: center; margin-bottom: 12px;
 }
 
-/* Spawn sheet: new convo from the phone */
-#spawn-scrim {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.55);
-  display: none; z-index: 139;
-}
-#spawn-scrim.visible { display: block; }
-#spawn-sheet {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 140;
-  background: var(--bg0); border-top: 1px solid var(--bg2);
-  border-radius: 16px 16px 0 0; max-height: 94dvh;
-  display: none; flex-direction: column;
-  padding-bottom: max(16px, env(safe-area-inset-bottom));
-}
-#spawn-sheet.visible { display: flex; }
-#sp-head {
-  display: flex; align-items: center; gap: 10px;
-  padding: 14px 16px; border-bottom: 1px solid var(--bg1);
-}
-#sp-title { flex: 1; font-size: 14px; font-weight: 700; color: var(--fg); }
-#sp-close {
-  background: none; border: none; color: var(--fg-mute);
-  font-size: 20px; cursor: pointer; padding: 4px 8px;
-}
-#sp-body { overflow-y: auto; padding: 14px 16px; }
-.sp-label {
-  font-size: 11px; font-weight: 700; color: var(--yellow);
-  margin: 12px 0 6px; letter-spacing: 0.5px;
-}
-.sp-label:first-child { margin-top: 0; }
-.sp-hint { color: var(--fg-mute); font-weight: 400; letter-spacing: 0; }
-#sp-presets {
-  display: flex; gap: 8px; overflow-x: auto; padding-bottom: 8px;
-  -webkit-overflow-scrolling: touch;
-}
-/* Project combobox: #sp-dir is both the typed path and the filter; the
-   list under it scrolls on its own so the sheet keeps its shape. */
-#sp-projects {
-  display: none; flex-direction: column; margin-top: 6px;
-  max-height: 228px; overflow-y: auto; overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  border: 1px solid var(--bg1); border-radius: 10px;
-}
-#sp-projects.open { display: flex; }
-#sp-projects:empty { display: none; }
-.sp-row {
-  display: flex; align-items: center; gap: 10px; width: 100%;
-  background: none; border: none; border-bottom: 1px solid var(--bg1);
-  padding: 10px 12px; font-size: 14px; color: var(--fg-dim);
-  text-align: left; cursor: pointer; font-family: var(--mono);
-  touch-action: pan-y;
-}
-.sp-row:last-child { border-bottom: none; }
-.sp-row:active { background: var(--bg1); }
-.sp-row.sel { color: var(--orange); }
-.sp-row-dot {
-  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
-  background: var(--bg2);
-}
-.sp-row.live .sp-row-dot { background: var(--orange); }
-.sp-row-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sp-row-name { color: var(--fg-mute); font-size: 12px; flex-shrink: 0; }
-.sp-row-empty { color: var(--fg-mute); font-size: 12px; padding: 10px 12px; }
-.sp-chip {
-  background: var(--bg1); border: 1px solid var(--bg2); border-radius: 999px;
-  padding: 7px 13px; font-size: 13px; color: var(--fg-dim);
-  white-space: nowrap; cursor: pointer; flex-shrink: 0; font-family: var(--mono);
-  transition: transform 0.19s ease-out;
-}
-.sp-chip:active { transform: scale(0.96); }
-.sp-chip.sel { border-color: var(--orange); color: var(--orange); }
-#sp-dir, #sp-name, #sp-task {
-  width: 100%; background: var(--bg1); border: none; border-radius: 10px;
-  color: var(--fg); padding: 11px 14px; font-size: 16px;
-  font-family: var(--mono); resize: none; caret-color: var(--orange);
-}
-#sp-dir:focus, #sp-name:focus, #sp-task:focus { outline: 1px solid var(--bg2); }
-#sp-go {
-  width: 100%; margin-top: 16px; background: var(--green); border: none;
-  border-radius: 12px; color: var(--bg-hard); font-size: 15px; font-weight: 700;
-  padding: 13px; cursor: pointer; font-family: var(--mono);
-  transition: transform 0.19s ease-out;
-}
-#sp-go:active { transform: scale(0.97); }
-#sp-go:disabled { background: var(--bg1); color: var(--fg-mute); }
+/* Spawn sheet: independent launch settings, with a persistent draft. */
+#spawn-scrim { position:fixed; inset:0; background:#0008; display:none; z-index:139; }
+#spawn-scrim.visible { display:block; }
+#spawn-sheet { position:fixed; inset:auto 0 0; z-index:140; height:100dvh; max-height:100dvh; background:var(--bg0); display:none; flex-direction:column; padding-top:env(safe-area-inset-top); max-width:600px; margin:auto; }
+#spawn-sheet.visible { display:flex; }
+#spawn-sheet [hidden] { display:none !important; }
+#sp-head { display:grid; grid-template-columns:44px minmax(0,1fr) 44px; align-items:center; padding:8px 16px; flex-shrink:0; border-bottom:1px solid var(--bg1); }
+#sp-title { text-align:center; font-size:17px; font-weight:700; margin:0; }
+#sp-nav { width:44px; height:44px; }
+#spawn-sheet button { font-family:var(--mono); cursor:pointer; touch-action:pan-y; }
+#spawn-sheet button:focus-visible, #spawn-sheet input:focus-visible, #spawn-sheet textarea:focus-visible { outline:2px solid var(--orange); outline-offset:2px; }
+#spawn-sheet button:disabled { opacity:.4; cursor:default; }
+.sp-icon { width:44px; height:44px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; border:0; border-radius:10px; background:transparent; color:var(--fg-mute); }
+.sp-icon img, .sp-row img { width:20px; height:20px; flex-shrink:0; }
+.sp-icon:hover, .sp-row:hover { background:var(--bg1); }
+#sp-body { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:20px 20px 12px; }
+.sp-label { color:var(--fg-mute); font-size:11px; letter-spacing:1.2px; font-weight:600; margin:0 0 10px; text-transform:uppercase; }
+.sp-section { margin-bottom:24px; }
+.sp-heading { display:flex; align-items:center; justify-content:space-between; min-height:36px; gap:8px; }
+.sp-heading .sp-label { margin:0; }
+.sp-row { width:100%; display:flex; align-items:center; gap:12px; min-height:64px; padding:12px 0; background:transparent; border:0; border-bottom:1px solid var(--bg1); color:var(--fg); text-align:left; }
+.sp-row-copy { flex:1; min-width:0; display:flex; flex-direction:column; gap:5px; }
+.sp-row-title { font-size:14px; line-height:1.4; overflow-wrap:anywhere; }
+.sp-row-detail { font-size:11px; line-height:1.5; color:var(--fg-mute); overflow-wrap:anywhere; }
+.sp-row.sel .sp-row-title { color:var(--orange); }
+.sp-field { color:var(--fg-mute); font-size:12px; width:91px; flex-shrink:0; }
+#sp-project { border:1px solid var(--bg2); border-radius:12px; padding:14px; min-height:76px; background:var(--bg1); }
+#sp-project .sp-row-title { font-size:16px; }
+#sp-presets { display:flex; gap:8px; overflow-x:auto; padding:6px 0 8px; }
+.sp-chip { min-height:44px; padding:8px 14px; border:1px solid var(--bg2); border-radius:10px; background:var(--bg1); color:var(--fg-dim); font-size:12px; white-space:nowrap; flex-shrink:0; }
+.sp-chip.sel { border-color:var(--orange); color:var(--orange); background:color-mix(in srgb,var(--orange) 8%,var(--bg0)); }
+#sp-reset { width:44px; }
+#sp-preset-label { flex:1; }
+#sp-preset-label.modified { color:var(--orange); }
+#spawn-sheet input, #sp-task { width:100%; background:var(--bg1); border:1px solid var(--bg2); border-radius:10px; color:var(--fg); padding:13px; font:16px var(--mono); caret-color:var(--orange); }
+#sp-task { resize:vertical; min-height:94px; line-height:1.5; font-size:16px; }
+#sp-search { margin-bottom:18px; }
+.sp-note { color:var(--fg-mute); font-size:12px; line-height:1.6; margin:10px 0; }
+#sp-message { color:var(--orange); font-size:12px; line-height:1.5; margin:0 0 12px; }
+#sp-footer { flex-shrink:0; padding:12px 20px max(16px,env(safe-area-inset-bottom)); border-top:1px solid var(--bg1); }
+#sp-go { width:100%; height:52px; border:0; border-radius:12px; background:var(--green); display:flex; justify-content:center; align-items:center; }
+#sp-go img { width:24px; height:24px; }
+#sp-go[aria-busy=true] img { animation:sp-pulse 1s ease-in-out infinite alternate; }
+@keyframes sp-pulse { to { opacity:.3; } }
+@media(prefers-reduced-motion:reduce) { #sp-go[aria-busy=true] img { animation:none; } }
+#sp-picker-action { width:100%; background:var(--bg1); border:1px solid var(--bg2); }
+#sp-bottom-tools { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+#sp-bottom-tools .sp-note { margin:0; }
+.sp-project-item { display:flex; align-items:center; gap:8px; }
+.sp-project-item .sp-row { flex:1; }
+.sp-project-item .sp-icon[aria-pressed=true] { color:var(--orange); }
+#sp-settings { border-top:1px solid var(--bg1); }
 
 /* Model picker */
 #model-scrim {
@@ -1710,23 +1678,30 @@ input, textarea, #fbv-content, .msg, .msg * {
   <div id="mmv-stage"><div id="mmv-canvas"></div></div>
 </div>
 <div id="spawn-scrim"></div>
-<div id="spawn-sheet">
+<div id="spawn-sheet" role="dialog" aria-modal="true" aria-labelledby="sp-title" tabindex="-1">
   <div id="sp-head">
-    <span id="sp-title">new convo</span>
-    <button id="sp-close">&times;</button>
+    <div id="sp-nav"><button id="sp-close" class="sp-icon" aria-label="Cancel new chat" title="Cancel new chat"></button><button id="sp-back" class="sp-icon" aria-label="Back" title="Back" hidden></button></div>
+    <h2 id="sp-title">New chat</h2>
+    <button id="sp-release" class="sp-icon" aria-label="Return to draft" title="Return to draft" hidden></button>
   </div>
   <div id="sp-body">
-    <div class="sp-label">PROJECT <span class="sp-hint">(type to filter, tap to pick; orange dot = live)</span></div>
-    <input id="sp-dir" placeholder="/path/to/project" role="combobox" aria-controls="sp-projects" aria-autocomplete="list" autocapitalize="off" autocorrect="off">
-    <div id="sp-projects" role="listbox"></div>
-    <div class="sp-label">LABEL <span class="sp-hint">(optional — names it here and on the rig)</span></div>
-    <input id="sp-name" placeholder="e.g. usenet, muzik" autocapitalize="off">
-    <div class="sp-label">PRESET <span class="sp-hint">(model + permission mode)</span></div>
-    <div id="sp-presets"></div>
-    <div class="sp-label">FIRST PROMPT <span class="sp-hint">(optional — sent once it's ready)</span></div>
-    <textarea id="sp-task" rows="3" placeholder="what's the job?"></textarea>
-    <button id="sp-go">spawn</button>
+    <p id="sp-message" role="status" hidden></p>
+    <div id="sp-main">
+      <section class="sp-section"><div class="sp-label">Project</div><button id="sp-project" class="sp-row" aria-label="Change project"></button></section>
+      <section class="sp-section">
+        <div class="sp-heading"><div class="sp-label" id="sp-preset-label">Preset</div><button id="sp-reset" class="sp-icon" aria-label="Reset preset" title="Reset preset" hidden></button><button id="sp-all-presets" class="sp-icon" aria-label="All presets" title="All presets"></button></div>
+        <div id="sp-presets"></div>
+        <div id="sp-settings"><button id="sp-agent" class="sp-row" aria-label="Change agent"></button><button id="sp-model" class="sp-row" aria-label="Change model"></button><button id="sp-mode" class="sp-row" aria-label="Change permissions"></button><button id="sp-effort" class="sp-row" aria-label="Change effort"></button></div>
+      </section>
+      <section class="sp-section"><label for="sp-task" class="sp-label">First message <span class="sp-hint">/ optional</span></label><textarea id="sp-task" rows="3" placeholder="What are we working on?"></textarea></section>
+      <div id="sp-bottom-tools"><button id="sp-options" class="sp-icon" aria-label="More options" title="More options"></button><span class="sp-note" id="sp-draft-note">Your setup stays with this draft.</span><button id="sp-save" class="sp-icon" aria-label="Save as preset" title="Save as preset"></button></div>
+    </div>
+    <div id="sp-picker" hidden><input id="sp-search" type="search" aria-label="Search choices" placeholder="Search" autocapitalize="off" autocomplete="off"><p id="sp-picker-note" class="sp-note"></p><div id="sp-picker-list"></div></div>
+    <div id="sp-path" hidden><label class="sp-label" for="sp-dir">Project directory</label><input id="sp-dir" placeholder="/path/to/project" autocapitalize="off" autocorrect="off" spellcheck="false"><p class="sp-note">Enter an existing directory on the rig. Search text never changes your selected project.</p></div>
+    <div id="sp-options-panel" hidden><label class="sp-label" for="sp-name">Chat name / optional</label><input id="sp-name" placeholder="e.g. New chat redesign" autocapitalize="off"><p class="sp-note">Names the chat here and on the rig.</p></div>
+    <div id="sp-save-panel" hidden><label class="sp-label" for="sp-save-name">Preset name</label><input id="sp-save-name" placeholder="e.g. Focused coding" maxlength="60"><p class="sp-note">Saves the agent, model, permissions, and effort on this device.</p></div>
   </div>
+  <div id="sp-footer"><button id="sp-go" aria-label="Start chat" title="Start chat"></button><button id="sp-picker-action" class="sp-icon" aria-label="Done" title="Done" hidden></button></div>
 </div>
 <div id="model-scrim"></div>
 <div id="model-sheet" role="dialog" aria-labelledby="md-title">
@@ -1808,7 +1783,7 @@ if (window.visualViewport) {
       const el = document.getElementById(id);
       if (!el) continue;
       el.style.bottom = kb > 0 ? kb + 'px' : '';
-      el.style.maxHeight = kb > 0 ? Math.round(vv.height * 0.92) + 'px' : '';
+      el.style.maxHeight = kb > 0 ? Math.round(vv.height * (id === 'spawn-sheet' ? 1 : 0.92)) + 'px' : '';
     }
     if (wasAtBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
   };
@@ -5387,268 +5362,261 @@ function navigateBack() {
 }
 
 // --- Spawn sheet ---
-// Project combobox over the rig list and live cwds, preset chips from
-// the rig, optional label + first prompt. On success, waits for the new
-// session's socket and opens it.
 const spScrim = document.getElementById('spawn-scrim');
 const spSheet = document.getElementById('spawn-sheet');
-const spProjects = document.getElementById('sp-projects');
 const spPresets = document.getElementById('sp-presets');
 const spDir = document.getElementById('sp-dir');
 const spName = document.getElementById('sp-name');
 const spTask = document.getElementById('sp-task');
 const spGo = document.getElementById('sp-go');
+const spEl = id => document.getElementById('sp-' + id);
+const spFields = ['agent', 'model', 'mode', 'effort'];
+function spRead(key, fallback) { try { return JSON.parse(localStorage.getItem('syzygy.launch.' + key)) || fallback; } catch (_) { return fallback; } }
+function spWrite(key, value) { try { localStorage.setItem('syzygy.launch.' + key, JSON.stringify(value)); } catch (_) {} }
+function spSettings(value) { return Object.fromEntries(spFields.map(k => [k, typeof value?.[k] === 'string' ? value[k] : ''])); }
+function spValidPreset(p) { return p && typeof p.key === 'string' && typeof p.label === 'string' && ['agent','model','mode'].every(k => typeof p[k] === 'string' && p[k]) && (!p.effort || typeof p.effort === 'string'); }
+const spStoredDraft = spRead('draft', {});
+let spDraft = {cwd: '', name: '', task: '', preset: '', settings: spSettings(spStoredDraft.settings)};
+for (const k of ['cwd','name','task','preset']) if (typeof spStoredDraft[k] === 'string') spDraft[k] = spStoredDraft[k];
+let spCustom = spRead('presets', []);
+spCustom = Array.isArray(spCustom) ? spCustom.filter(spValidPreset) : [];
+let spPins = spRead('pins', []), spRecent = spRead('recent', []);
+spPins = Array.isArray(spPins) ? spPins.filter(p => typeof p === 'string') : [];
+spRecent = Array.isArray(spRecent) ? spRecent.filter(p => typeof p === 'string') : [];
+let spawnPresets = [], spawnProjects = [], spCatalog = {agents:[], defaultAgent:''};
+let spawnPresetsLoad = 0, spawnProjectsLoad = 0, spCatalogLoad = 0;
+let spView = 'main', spBusy = false, spReturnFocus = null, spPickerOrigin = null;
+const spInertSiblings = new Map();
+// An accepted launch must never be posted again just because its socket is late.
+let spRecoveryBuffer = typeof spStoredDraft.pendingBuffer === 'string' ? spStoredDraft.pendingBuffer : '';
+let spRecoveryKeepsTask = spStoredDraft.pendingKeepsTask === true;
+function persistSpawnDraft() { spWrite('draft', {...spDraft, pendingBuffer:spRecoveryBuffer, pendingKeepsTask:spRecoveryKeepsTask}); }
+function spIcon(name) { const img = document.createElement('img'); img.src = basePath + '/assets/new-chat/' + name + '.svg'; img.alt = ''; img.width = 20; img.height = 20; return img; }
+function spButtonIcon(el, icon) { el.replaceChildren(spIcon(icon)); }
+for (const [id, icon] of Object.entries({close:'close',back:'back',release:'reset',reset:'reset','all-presets':'presets',options:'options',save:'save',go:'start','picker-action':'confirm'})) spButtonIcon(spEl(id), icon);
+function spMessage(message) { spEl('message').textContent = message; spEl('message').hidden = !message; }
+function spAgent() { return spCatalog.agents.find(a => a.id === spDraft.settings.agent); }
+function spChoices(field) { const a = spAgent(); return field === 'agent' ? spCatalog.agents : (a?.[{model:'models',mode:'modes',effort:'efforts'}[field]] || []); }
+function spChoiceName(field, value) { return spChoices(field).find(c => c.id === value)?.name || value || (field === 'effort' ? 'Agent default' : 'Choose ' + (field === 'mode' ? 'permissions' : field)); }
+function spAllPresets() { return [...spawnPresets, ...spCustom]; }
+function spSelectedPreset() { return spAllPresets().find(p => p.key === spDraft.preset); }
+function spComplete() { return ['agent','model','mode'].every(k => spChoices(k).some(c => c.id === spDraft.settings[k])) && (!spDraft.settings.effort || spChoices('effort').some(c => c.id === spDraft.settings.effort)); }
 
-// Preset chips mirror the rig's mr-x/agent-shell-presets through
-// /api/presets (syzygy-presets-json), so the phone never carries a copy
-// that drifts. 'default' is the phone's own entry: no preset, the rig's
-// preferred config. Only the char key travels on spawn.
-const DEFAULT_PRESET = {key: '', label: 'default'};
-let spawnPresets = [];
-let spPreset = '';
-let spawnPresetsLoad = 0;
-let spawnProjects = [];
-let spawnProjectsLoad = 0;
-// What the user has typed since the last pick. Empty means the path box
-// holds a pick (or the preselected cwd), so the list shows everything.
-let spProjectQuery = '';
-
-// iOS: tapping a row while the keyboard is up used to blur the input
-// first; the sheet dropped with the keyboard mid-tap and the click
-// missed, so the pick only landed on a second tap (Send had the same
-// bug). Cancel the focus change on touch pointerdown, then pick on
-// pointerup unless the finger moved (a scroll cancels the pointer
-// instead). The synthetic click that follows a touch is ignored; the
-// timestamp is shared because a pick re-renders the list, so the click
-// lands on a fresh element, possibly a different row. A mouse gets the
-// same focus guard (the list closes on blur, so a mousedown that stole
-// focus would close it before the click) and picks on click.
+// Preserve the keyboard during a tap; a drag or pointer cancellation never picks.
 let spTapSuppressUntil = 0;
 function onTapPick(el, fn) {
   let start = null;
-  el.addEventListener('pointerdown', e => {
-    e.preventDefault();
-    if (e.pointerType !== 'touch') return;
-    start = {x: e.clientX, y: e.clientY};
-  });
+  el.addEventListener('pointerdown', e => { e.preventDefault(); if (e.pointerType === 'touch') start = {x:e.clientX,y:e.clientY}; });
   el.addEventListener('pointerup', e => {
     if (e.pointerType !== 'touch' || !start) return;
-    const moved = Math.hypot(e.clientX - start.x, e.clientY - start.y);
-    start = null;
+    const moved = Math.hypot(e.clientX-start.x,e.clientY-start.y); start = null;
     if (moved > 12) return;
-    spTapSuppressUntil = Date.now() + 600;
-    fn();
+    spTapSuppressUntil = Date.now()+600;
+    if (!el.disabled && !spBusy && !spRecoveryBuffer) fn();
   });
   el.addEventListener('pointercancel', () => { start = null; });
-  el.addEventListener('click', () => {
-    if (Date.now() < spTapSuppressUntil) return;
-    fn();
-  });
+  el.addEventListener('click', () => { if (Date.now() >= spTapSuppressUntil && !el.disabled && !spBusy && !spRecoveryBuffer) fn(); });
 }
-
-async function fetchSpawnProjects() {
-  const resp = await fetch(basePath + '/api/projects', {method: 'POST'});
-  if (!resp.ok) throw new Error('projects ' + resp.status);
-  const data = await resp.json();
-  if (!Array.isArray(data.projects)) throw new Error('projects: bad reply');
-  return data.projects.filter(p => p && typeof p.name === 'string' && typeof p.path === 'string');
+function spRowContent(row, title, detail, icon='chevron', field='') {
+  row.replaceChildren();
+  if (field) { const label = document.createElement('span'); label.className='sp-field'; label.textContent=field; row.appendChild(label); }
+  const copy = document.createElement('span'); copy.className='sp-row-copy';
+  const name = document.createElement('span'); name.className='sp-row-title'; name.textContent=title; copy.appendChild(name);
+  if (detail) { const sub=document.createElement('span'); sub.className='sp-row-detail'; sub.textContent=detail; copy.appendChild(sub); }
+  row.appendChild(copy); if (icon) row.appendChild(spIcon(icon));
 }
-
-function projectMatches(p, needle) {
-  return !needle ||
-    (p.name + ' ' + p.path + ' ' + shortPath(p.path)).toLowerCase().includes(needle);
-}
-
-function pickSpawnProject(path) {
-  spDir.value = path;
-  spProjectQuery = '';
-  renderSpawnProjects();
-  closeSpawnProjects();
-  spDir.blur();
-}
-
-// The list is a dropdown: open while the path box has focus or is being
-// typed in, closed on a pick or when focus leaves.
-function openSpawnProjects() { spProjects.classList.add('open'); }
-function closeSpawnProjects() { spProjects.classList.remove('open'); }
-
-// Rows: live first, then rig order. The typed text filters by name,
-// path, or the ~ form; an exact pick shows the whole list again with
-// that row marked.
-function renderSpawnProjects() {
-  const needle = spProjectQuery.trim().toLowerCase();
-  spProjects.innerHTML = '';
-  const ordered = [...spawnProjects].sort((a, b) => Number(b.live) - Number(a.live));
-  let shown = 0;
-  for (const p of ordered) {
-    if (!projectMatches(p, needle)) continue;
-    shown += 1;
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'sp-row' + (p.live ? ' live' : '') + (p.path === spDir.value ? ' sel' : '');
-    row.setAttribute('role', 'option');
-    const dot = document.createElement('span');
-    dot.className = 'sp-row-dot';
-    const pathEl = document.createElement('span');
-    pathEl.className = 'sp-row-path';
-    pathEl.textContent = shortPath(p.path);
-    row.appendChild(dot);
-    row.appendChild(pathEl);
-    const base = (p.path.split('/').filter(Boolean).pop() || '').replace(/^\./, '');
-    if (p.name && p.name !== base && p.name !== shortPath(p.path)) {
-      const nameEl = document.createElement('span');
-      nameEl.className = 'sp-row-name';
-      nameEl.textContent = p.name;
-      row.appendChild(nameEl);
-    }
-    onTapPick(row, () => pickSpawnProject(p.path));
-    spProjects.appendChild(row);
-  }
-  if (!shown && spawnProjects.length) {
-    const empty = document.createElement('div');
-    empty.className = 'sp-row-empty';
-    empty.textContent = 'no match; spawns in the path as typed';
-    spProjects.appendChild(empty);
-  }
-}
-
-async function loadSpawnProjects() {
-  const token = ++spawnProjectsLoad;
-  try {
-    const projects = await fetchSpawnProjects();
-    if (token !== spawnProjectsLoad) return;
-    spawnProjects = projects;
-    renderSpawnProjects();
-  } catch (err) {
-    console.warn('projects unavailable:', err.message);
-  }
-}
-
-async function fetchSpawnPresets() {
-  const resp = await fetch(basePath + '/api/presets', {method: 'POST'});
-  if (!resp.ok) throw new Error('presets ' + resp.status);
-  const data = await resp.json();
-  if (!Array.isArray(data.presets)) throw new Error('presets: bad reply');
-  return data.presets.filter(p => p && typeof p.key === 'string' && p.key.length === 1);
-}
-
 function renderSpawnPresets() {
-  spPresets.innerHTML = '';
-  for (const p of [DEFAULT_PRESET, ...spawnPresets]) {
-    const chip = document.createElement('button');
-    chip.className = 'sp-chip' + (p.key === spPreset ? ' sel' : '');
-    chip.textContent = p.label;
-    if (p.model) chip.title = p.model + ' / ' + p.mode;
-    onTapPick(chip, () => {
-      spPreset = p.key;
-      [...spPresets.children].forEach(el => el.classList.remove('sel'));
-      chip.classList.add('sel');
-    });
-    spPresets.appendChild(chip);
+  const focusedKey=spPresets.contains(document.activeElement) ? document.activeElement.getAttribute('data-preset') : null;
+  spPresets.replaceChildren();
+  for (const p of spAllPresets()) {
+    const chip=document.createElement('button'); chip.type='button'; chip.className='sp-chip'+(p.key === spDraft.preset ? ' sel':''); chip.textContent=p.label;
+    chip.setAttribute('aria-pressed', String(p.key === spDraft.preset));chip.setAttribute('data-preset',p.key);
+    chip.title=[p.agent,p.model,p.mode,p.effort].filter(Boolean).join(' / ');
+    chip.disabled=spBusy || !!spRecoveryBuffer;
+    onTapPick(chip, () => applySpawnPreset(p.key)); spPresets.appendChild(chip);
+    if(p.key === focusedKey)chip.focus({preventScroll:true});
   }
 }
-
-// Refresh the chips from the rig. The last good list stays up while the
-// fetch is in flight or fails; a reply from an older open is dropped.
-async function loadSpawnPresets() {
-  const token = ++spawnPresetsLoad;
-  try {
-    const presets = await fetchSpawnPresets();
-    if (token !== spawnPresetsLoad) return;
-    spawnPresets = presets;
-    if (spPreset && !spawnPresets.some(p => p.key === spPreset)) spPreset = '';
-    renderSpawnPresets();
-  } catch (err) {
-    console.warn('presets unavailable:', err.message);
+function renderSpawnMain() {
+  const project=spawnProjects.find(p => p.path === spDraft.cwd);
+  spRowContent(spEl('project'), project?.name || spDraft.cwd.split('/').filter(Boolean).pop() || 'Choose a project', shortPath(spDraft.cwd));
+  for (const [field,label] of [['agent','Agent'],['model','Model'],['mode','Permissions'],['effort','Effort']]) {
+    const value=spDraft.settings[field];
+    spRowContent(spEl(field),spChoiceName(field,value),'','chevron',label);
+    spEl(field).disabled=spBusy || !!spRecoveryBuffer || (field !== 'agent' && !spAgent());
   }
-}
-
-function openSpawnSheet(cwd) {
-  const live = [...new Set(lastSessions.map(x => x.cwd).filter(Boolean))];
-  const known = new Set(spawnProjects.map(p => p.path));
-  spawnProjects = [
-    ...spawnProjects.map(p => ({...p, live: live.includes(p.path)})),
-    ...live.filter(path => !known.has(path)).map(path => ({name: shortPath(path), path, live: true})),
-  ];
-  spDir.value = cwd || live[0] || '';
-  spProjectQuery = '';
-  closeSpawnProjects();
-  renderSpawnProjects();
-  spPreset = '';
+  spEl('effort').hidden=!spChoices('effort').length && !spDraft.settings.effort;
+  const preset=spSelectedPreset();
+  const modified=preset && spFields.some(k => (preset[k] || '') !== spDraft.settings[k]);
+  spEl('preset-label').textContent=preset ? 'Preset / '+(modified ? 'Modified' : preset.label) : 'Preset / Custom';
+  spEl('preset-label').classList.toggle('modified',!!modified);
+  spEl('reset').hidden=!modified;
+  for (const id of ['project','reset','all-presets','options','save']) spEl(id).disabled=spBusy || !!spRecoveryBuffer || (id === 'save' && !spComplete());
+  spTask.disabled=spBusy || !!spRecoveryBuffer;
+  spGo.disabled=spBusy || (!spRecoveryBuffer && (!spDraft.cwd || !spComplete()));
+  spEl('release').hidden=!spRecoveryBuffer;spEl('release').disabled=spBusy;
+  spGo.setAttribute('aria-busy',String(spBusy));
+  spGo.setAttribute('aria-label',spRecoveryBuffer ? 'Open created chat' : 'Start chat');
+  spGo.title=spRecoveryBuffer ? 'Open created chat' : 'Start chat';
   renderSpawnPresets();
-  loadSpawnPresets();
-  loadSpawnProjects();
-  spName.value = ''; spTask.value = '';
-  spGo.disabled = false; spGo.textContent = 'spawn';
-  spScrim.classList.add('visible');
-  spSheet.classList.add('visible');
-  syncHistoryDock();
 }
-
-spDir.addEventListener('input', () => {
-  spProjectQuery = spDir.value;
-  renderSpawnProjects();
-  openSpawnProjects();
-});
-spDir.addEventListener('focus', openSpawnProjects);
-spDir.addEventListener('blur', closeSpawnProjects);
-
-function hideSpawnSheet() {
-  spScrim.classList.remove('visible');
-  spSheet.classList.remove('visible');
-  syncHistoryDock();
+function applySpawnPreset(key) {
+  const p=spAllPresets().find(p => p.key === key); if (!p) return;
+  spDraft.preset=key; spDraft.settings=spSettings(p); persistSpawnDraft(); spMessage(''); renderSpawnMain();
 }
-
-spScrim.addEventListener('click', hideSpawnSheet);
-document.getElementById('sp-close').addEventListener('click', hideSpawnSheet);
-
-// How often to look for the freshly spawned session's socket (ms).
-// Tests shrink it; the rig needs a second or so per attempt.
-let SPAWN_POLL_MS = 1000;
-
-// POST a spawn request, then wait for the new session's socket and walk
-// straight into it. Resolves true once the session is open, false if it
-// was accepted but slow to appear (the list catches it), throws on error.
-async function spawnAndOpen(body) {
-  // Keyed by session, not pid: a rig-side reload of some OTHER convo
-  // mid-wait surfaces a new pid but keeps its session id — only a
-  // genuinely new session counts as our spawn.
-  const prevKeys = new Set(lastSessions.map(sKey));
-  const resp = await fetch(basePath + '/api/spawn', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body)
-  });
-  const data = await resp.json();
-  if (data.error) throw new Error(data.error);
-  for (let i = 0; i < 15; i++) {
-    await new Promise(r => setTimeout(r, SPAWN_POLL_MS));
-    await loadSessions(true);
-    const fresh = lastSessions.find(x => !prevKeys.has(sKey(x)));
-    if (fresh) {
-      selectSession(fresh);
-      return true;
+async function spFetch(endpoint, property) {
+  const resp=await fetch(basePath+'/api/'+endpoint,{method:'POST'});
+  if (resp.ok === false) throw new Error(endpoint+': '+resp.status);
+  const data=await resp.json(); if (!Array.isArray(data[property])) throw new Error(endpoint+': invalid reply'); return data;
+}
+async function loadSpawnPresets() {
+  const token=++spawnPresetsLoad;
+  try { const data=await spFetch('presets','presets'); if (token !== spawnPresetsLoad) return;
+    spawnPresets=data.presets.filter(p => spValidPreset(p) && p.key.length === 1); renderSpawnMain(); if(spView === 'presets') renderSpawnPicker();
+  } catch (_) { if (token === spawnPresetsLoad && !spawnPresets.length) spMessage('Presets unavailable. You can still choose settings individually.'); }
+}
+async function loadSpawnProjects() {
+  const token=++spawnProjectsLoad;
+  try { const data=await spFetch('projects','projects'); if (token !== spawnProjectsLoad) return;
+    spawnProjects=data.projects.filter(p => p && typeof p.name === 'string' && typeof p.path === 'string'); renderSpawnMain(); if(spView === 'project') renderSpawnPicker();
+  } catch (_) { if (token === spawnProjectsLoad && !spawnProjects.length) spMessage('Projects unavailable. Use the folder icon to enter a path.'); }
+}
+async function loadSpawnCatalog() {
+  const token=++spCatalogLoad;
+  try { const data=await spFetch('launch-options','agents'); if (token !== spCatalogLoad) return;
+    const choices=xs => Array.isArray(xs) ? xs.filter(c => c && typeof c.id === 'string' && typeof c.name === 'string').map(c => ({id:c.id,name:c.name,description:typeof c.description === 'string' ? c.description:''})) : [];
+    spCatalog={defaultAgent:data.defaultAgent,agents:data.agents.filter(a => a && typeof a.id === 'string' && typeof a.name === 'string').map(a => ({...a,models:choices(a.models),modes:choices(a.modes),efforts:choices(a.efforts)}))};
+    if (!spDraft.settings.agent) {
+      const a=spCatalog.agents.find(a => a.id === spCatalog.defaultAgent) || spCatalog.agents[0];
+      if (a) spDraft.settings=spSettings({...a.defaults,agent:a.id}); persistSpawnDraft();
     }
+    renderSpawnMain(); if (['agent','model','mode','effort'].includes(spView)) renderSpawnPicker();
+  } catch (_) { if (token === spCatalogLoad) spMessage('Agent choices could not refresh. Reopen New chat to retry.'); }
+}
+function pickSpawnProject(path) { spDraft.cwd=path; spDir.value=path; persistSpawnDraft(); openSpawnView('main'); }
+function projectMatches(p, needle) { return !needle || (p.name+' '+p.path+' '+shortPath(p.path)).toLowerCase().includes(needle); }
+function renderSpawnPicker() {
+  const list=spEl('picker-list'); list.replaceChildren();
+  const query=spEl('search').value.trim().toLowerCase();
+  function heading(text) { const el=document.createElement('div'); el.className='sp-label'; el.style.marginTop='18px'; el.textContent=text; list.appendChild(el); }
+  function row(title,detail,selected,pick) { const b=document.createElement('button'); b.type='button'; b.className='sp-row'+(selected ? ' sel':''); b.setAttribute('aria-pressed',String(selected)); spRowContent(b,title,detail,selected?'confirm':null); onTapPick(b,pick); return b; }
+  if (spView === 'project') {
+    const projects=new Map(spawnProjects.map(p => [p.path,p]));
+    for (const path of [...spPins,...spRecent,...lastSessions.map(s => s.cwd).filter(Boolean)]) if (!projects.has(path)) projects.set(path,{name:path.split('/').filter(Boolean).pop() || path,path});
+    const groups=[['Pinned',p=>spPins.includes(p.path)],['Recent',p=>!spPins.includes(p.path) && spRecent.includes(p.path)],['Projects',p=>!spPins.includes(p.path) && !spRecent.includes(p.path)]];
+    for (const [name,filter] of groups) {
+      const matches=[...projects.values()].filter(p => filter(p) && projectMatches(p,query)); if (!matches.length) continue; heading(name);
+      for (const p of matches) {
+        const item=document.createElement('div'); item.className='sp-project-item';
+        const count=lastSessions.filter(s => s.cwd === p.path).length;
+        item.appendChild(row(p.name,shortPath(p.path)+(count ? ' / '+count+' active':''),p.path===spDraft.cwd,()=>pickSpawnProject(p.path)));
+        const pin=document.createElement('button'); pin.type='button'; pin.className='sp-icon'; pin.setAttribute('aria-label',(spPins.includes(p.path)?'Unpin ':'Pin ')+p.name); pin.title=pin.getAttribute('aria-label'); pin.setAttribute('aria-pressed',String(spPins.includes(p.path)));
+        pin.innerHTML='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>';
+        onTapPick(pin,()=>{spPins=spPins.includes(p.path)?spPins.filter(x=>x!==p.path):[...spPins,p.path];spWrite('pins',spPins);renderSpawnPicker();}); item.appendChild(pin);list.appendChild(item);
+      }
+    }
+  } else if (spView === 'presets') {
+    for (const p of spAllPresets().filter(p => (p.label+' '+p.agent+' '+p.model).toLowerCase().includes(query))) {
+      const item=document.createElement('div'); item.className='sp-project-item';
+      item.appendChild(row(p.label,[p.agent,p.model,p.mode,p.effort].filter(Boolean).join(' / '),p.key===spDraft.preset,()=>{applySpawnPreset(p.key);openSpawnView('main');}));
+      if (spCustom.some(c=>c.key===p.key)) { const del=document.createElement('button');del.className='sp-icon';del.setAttribute('aria-label','Delete preset '+p.label);del.title='Delete preset '+p.label;spButtonIcon(del,'close');onTapPick(del,()=>{spCustom=spCustom.filter(c=>c.key!==p.key);spWrite('presets',spCustom);renderSpawnPicker();renderSpawnMain();});item.appendChild(del); }
+      list.appendChild(item);
+    }
+  } else {
+    const options=spView === 'effort' ? [{id:'',name:'Agent default',description:'Use the agent’s default effort.'},...spChoices('effort')] : spChoices(spView);
+    for (const c of options.filter(c => (c.name+' '+c.id+' '+(c.description || '')).toLowerCase().includes(query))) list.appendChild(row(c.name,c.description || (c.id!==c.name ? c.id:''),c.id===spDraft.settings[spView],()=>{
+      const field=spView; spDraft.settings[field]=c.id;
+      if (field === 'agent') {
+        let cleared=false;
+        for (const k of ['model','mode','effort']) if (spDraft.settings[k] && !spChoices(k).some(o=>o.id===spDraft.settings[k])) { spDraft.settings[k]='';cleared=true; }
+        if (cleared) spMessage('Agent changed. Choose compatible model and permissions below.');
+      } else spMessage('');
+      persistSpawnDraft();openSpawnView('main');
+    }));
   }
+  if (!list.children.length) { const empty=document.createElement('p');empty.className='sp-note';empty.textContent=spView === 'project' ? 'No matching projects. Use the folder icon to enter a directory.' : 'No matching choices.';list.appendChild(empty); }
+}
+function openSpawnView(view) {
+  if (view !== 'main' && (spBusy || spRecoveryBuffer)) return;
+  if (view !== 'main' && spView === 'main') spPickerOrigin=document.activeElement;
+  spView=view;
+  const titles={main:'New chat',project:'Project',agent:'Agent',model:'Model',mode:'Permissions',effort:'Effort',presets:'Presets',path:'Project directory',options:'More options',save:'Save preset'};
+  spEl('title').textContent=titles[view];
+  spEl('close').hidden=view!=='main';spEl('back').hidden=view==='main';
+  spEl('main').hidden=view!=='main';spEl('picker').hidden=!['project','agent','model','mode','effort','presets'].includes(view);
+  spEl('path').hidden=view!=='path';spEl('options-panel').hidden=view!=='options';spEl('save-panel').hidden=view!=='save';
+  spGo.hidden=view!=='main';spEl('picker-action').hidden=view==='main';
+  spButtonIcon(spEl('picker-action'),view==='project'?'folder':view==='save'?'save':'confirm');
+  const actionLabel=view==='project'?'Enter project directory':view==='save'?'Save preset':'Done';spEl('picker-action').setAttribute('aria-label',actionLabel);spEl('picker-action').title=actionLabel;
+  spEl('search').value='';spEl('search').placeholder='Search '+(view==='mode'?'permissions':view==='project'?'projects':view==='presets'?'presets':view+'s');
+  spEl('picker-note').textContent=view==='mode'?'Permissions control which actions require your approval.':view==='model'?'Models available for '+(spAgent()?.name || 'this agent')+'.':view==='presets'?'Start with a preset, then adjust any setting.':'';
+  spEl('body').scrollTop=0;
+  if (view==='main') { renderSpawnMain(); if(spPickerOrigin?.isConnected)spPickerOrigin.focus({preventScroll:true}); }
+  else if (!spEl('picker').hidden) { renderSpawnPicker();spEl('back').focus({preventScroll:true}); }
+  else { if(view==='path')spDir.value=spDraft.cwd;spEl('back').focus({preventScroll:true}); }
+}
+function openSpawnSheet(cwd) {
+  spReturnFocus=document.activeElement;
+  spMessage('');
+  if (cwd && !spRecoveryBuffer) spDraft.cwd=cwd;
+  if (!spDraft.cwd) spDraft.cwd=spRecent[0] || lastSessions.find(s=>s.cwd)?.cwd || '';
+  spName.value=spDraft.name;spTask.value=spDraft.task;spDir.value=spDraft.cwd;
+  for(const el of spSheet.parentElement.children) if(el !== spSheet && el !== spScrim && !spInertSiblings.has(el)){spInertSiblings.set(el,el.inert);el.inert=true;}
+  spScrim.classList.add('visible');spSheet.classList.add('visible');
+  openSpawnView('main');spEl('close').focus({preventScroll:true});
+  if(spRecoveryBuffer)spMessage('A chat was already created. Use the arrow below to open it; it will not start another chat.');
+  persistSpawnDraft();loadSpawnPresets();loadSpawnProjects();loadSpawnCatalog();syncHistoryDock();
+}
+function hideSpawnSheet() {
+  if(spBusy)return;
+  persistSpawnDraft();spScrim.classList.remove('visible');spSheet.classList.remove('visible');syncHistoryDock();
+  for(const [el,inert] of spInertSiblings)el.inert=inert;spInertSiblings.clear();
+  if(spReturnFocus?.isConnected)spReturnFocus.focus({preventScroll:true});
+  else if(spSheet.contains(document.activeElement))document.activeElement.blur();
+}
+spScrim.addEventListener('click',hideSpawnSheet);spEl('close').addEventListener('click',hideSpawnSheet);
+spEl('back').addEventListener('click',()=>openSpawnView(spView==='path'?'project':'main'));
+for (const field of ['project',...spFields]) spEl(field).addEventListener('click',()=>openSpawnView(field));
+spEl('all-presets').addEventListener('click',()=>openSpawnView('presets'));
+spEl('options').addEventListener('click',()=>openSpawnView('options'));
+spEl('save').addEventListener('click',()=>{spEl('save-name').value='';openSpawnView('save');});
+spEl('reset').addEventListener('click',()=>applySpawnPreset(spDraft.preset));
+spEl('release').addEventListener('click',()=>{if(spBusy)return;spRecoveryBuffer='';spRecoveryKeepsTask=false;persistSpawnDraft();spMessage('Draft restored. The previously created chat may still be in your chat list.');renderSpawnMain();});
+spEl('search').addEventListener('input',renderSpawnPicker);
+spTask.addEventListener('input',()=>{spDraft.task=spTask.value;persistSpawnDraft();});
+spName.addEventListener('input',()=>{spDraft.name=spName.value;persistSpawnDraft();});
+spEl('picker-action').addEventListener('click',()=>{
+  if(spView==='project'){openSpawnView('path');return;}
+  if(spView==='path') { const path=spDir.value.trim();if(!path || !(path.startsWith('/') || path.startsWith('~/'))){spMessage('Enter an absolute path or a path starting with ~/.');spDir.focus();return;}spMessage('');pickSpawnProject(path);return; }
+  if(spView==='save') { const label=spEl('save-name').value.trim();if(!label){spEl('save-name').focus();return;}const key='local:'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);spCustom.push({key,label,...spDraft.settings});spWrite('presets',spCustom);spDraft.preset=key;persistSpawnDraft(); }
+  openSpawnView('main');
+});
+spSheet.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){e.preventDefault();e.stopPropagation();if(spView==='main')hideSpawnSheet();else openSpawnView(spView==='path'?'project':'main');}
+  if(e.key==='Tab'){const els=[...spSheet.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea:not(:disabled)')].filter(el=>el.getClientRects().length);const first=els[0],last=els[els.length-1];if(e.shiftKey && document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey && document.activeElement===last){e.preventDefault();first?.focus();}}
+});
+let SPAWN_POLL_MS = 1000;
+async function waitForSpawn(bufferName, prevKeys=new Set()) {
+  for(let i=0;i<15;i++) { await new Promise(r=>setTimeout(r,SPAWN_POLL_MS));await loadSessions(true);const fresh=lastSessions.find(x=>bufferName ? x.bufferName===bufferName : !prevKeys.has(sKey(x)));if(fresh){selectSession(fresh);return true;} }
   return false;
 }
-
-spGo.addEventListener('click', async () => {
-  const cwd = spDir.value.trim();
-  if (!cwd) { spDir.focus(); return; }
-  spGo.disabled = true;
-  const frames = ['\u280b','\u2819','\u2839','\u2838','\u283c','\u2834','\u2826','\u2827','\u2807','\u280f'];
-  let fi = 0;
-  const spin = setInterval(() => { spGo.textContent = frames[fi = (fi + 1) % frames.length] + ' spawning'; }, 80);
+async function spawnAndOpen(body) {
+  const prevKeys=new Set(lastSessions.map(sKey));
+  const resp=await fetch(basePath+'/api/spawn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const data=await resp.json();
+  if(data.error || resp.ok===false) { const err=new Error(data.error || 'Launch failed');err.bufferName=data.bufferName;throw err; }
+  if(body.settings) { if(!data.bufferName)throw new Error('Launch returned no chat identifier. Check the chat list before retrying.');spRecoveryBuffer=data.bufferName;persistSpawnDraft(); }
+  return waitForSpawn(data.bufferName,prevKeys);
+}
+spGo.addEventListener('click',async()=>{
+  if(spBusy || spGo.disabled)return;
+  spBusy=true;renderSpawnMain();spMessage(spRecoveryBuffer?'Finding your chat…':'Starting chat…');
   try {
-    await spawnAndOpen({ cwd, name: spName.value.trim(), task: spTask.value.trim(), preset: spPreset });
-    clearInterval(spin);
-    hideSpawnSheet();
-  } catch (err) {
-    clearInterval(spin);
-    spGo.disabled = false; spGo.textContent = 'spawn';
-    alert('Spawn failed: ' + err.message);
-  }
+    const opened=spRecoveryBuffer ? await waitForSpawn(spRecoveryBuffer) : await spawnAndOpen({cwd:spDraft.cwd,name:spDraft.name.trim(),task:spDraft.task,settings:{...spDraft.settings}});
+    if(opened) { spRecent=[spDraft.cwd,...spRecent.filter(p=>p!==spDraft.cwd)].slice(0,12);spWrite('recent',spRecent);spRecoveryBuffer='';if(!spRecoveryKeepsTask)spDraft.task='';spRecoveryKeepsTask=false;spDraft.name='';spBusy=false;spMessage('');persistSpawnDraft();hideSpawnSheet(); }
+    else spMessage('Chat created; waiting for it to appear. Use the arrow to check again without creating another.');
+  } catch(err) { if(err.bufferName){spRecoveryBuffer=err.bufferName;spRecoveryKeepsTask=true;}persistSpawnDraft();spMessage(err.message+(spRecoveryBuffer?' The chat exists; use the arrow to open it. Your first message is still in this draft.':'')); }
+  finally {spBusy=false;renderSpawnMain();}
 });
 
 // Clone: a fresh convo with this chat's agent, model, permission mode

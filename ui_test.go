@@ -1739,7 +1739,9 @@ func TestStandaloneViewportRestoreAfterKeyboardDismiss(t *testing.T) {
 	}
 	state = short.evalObject(t, `(async () => {
 		openSpawnSheet('/tmp');
+		openSpawnView('path');
 		spDir.focus();
+		openSpawnView('options');
 		spName.focus();
 		await new Promise(r => setTimeout(r, 100));
 		const duringTransfer = document.documentElement.style.height;
@@ -2144,9 +2146,13 @@ func TestMermaidRendering(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"sessions": []interface{}{}})
 	})
 	mux.HandleFunc("/assets/", func(w http.ResponseWriter, r *http.Request) {
-		assetMu.Lock()
-		assetRequests++
-		assetMu.Unlock()
+		// New Chat icons share this asset route. Only the diagram engine
+		// is required to stay unloaded until a Mermaid fence is rendered.
+		if r.URL.Path == "/assets/mermaid.min.js" {
+			assetMu.Lock()
+			assetRequests++
+			assetMu.Unlock()
+		}
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		http.FileServerFS(assetsFS).ServeHTTP(w, r)
 	})

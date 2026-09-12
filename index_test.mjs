@@ -31,6 +31,9 @@ class FakeElement {
   set innerHTML(value) { this._innerHTML = value; this.children = []; }
   get innerHTML() { return this._innerHTML; }
   appendChild(child) { this.children.push(child); return child; }
+  replaceChildren(...children) { this.children = children; }
+  contains() { return false; }
+  getAttribute(name) { return this.attributes?.[name]; }
   get firstChild() { return this.children[0] || null; }
   set className(value) {
     this.classList.values = new Set(String(value).split(/\s+/).filter(Boolean));
@@ -950,218 +953,66 @@ const presetsReply = presets => async (url, options) => {
 
 const chipLabels = el => el.children.map(chip => chip.textContent);
 
-test('spawn sheet shows the rig presets after default, in rig order', async () => {
-  const {context, elements, get} = loadSpawnSheet({
-    fetch: presetsReply([
-      {key: 'f', label: 'Fable 5.1 \u00b7 Bypass', model: 'fable[1m]', mode: 'bypassPermissions'},
-      {key: 'F', label: 'Fable 5 \u00b7 Bypass', model: 'claude-fable-5[1m]', mode: 'bypassPermissions'},
-      {key: 'a', label: 'Astra \u00b7 Full', model: 'gpt-6-astra', mode: 'agent-full-access'},
-    ]),
-  });
-  context.openSpawnSheet(null);
-  const presets = elements.get('sp-presets');
-  assert.deepEqual(chipLabels(presets), ['default']);
+const launchPreset = {key:'s',label:'Sol',agent:'codex',model:'sol',mode:'agent',effort:'high'};
+
+test('presets retain rig order, reject malformed tuples, and fill all settings', async () => {
+  const {context,elements,get}=loadSpawnSheet({fetch:presetsReply([null,{key:'bad'},launchPreset,{...launchPreset,key:'a',label:'Astra',model:'astra'}])});
   await context.loadSpawnPresets();
-  assert.deepEqual(chipLabels(presets), [
-    'default', 'Fable 5.1 \u00b7 Bypass', 'Fable 5 \u00b7 Bypass', 'Astra \u00b7 Full',
-  ]);
-  assert.equal(presets.children[0].classList.contains('sel'), true);
-  presets.children[2].listeners.get('click')();
-  assert.equal(get('spPreset'), 'F');
-  assert.equal(presets.children[2].classList.contains('sel'), true);
-  assert.equal(presets.children[0].classList.contains('sel'), false);
+  assert.deepEqual(chipLabels(elements.get('sp-presets')),['Sol','Astra']);
+  context.applySpawnPreset('a');
+  assert.deepEqual(JSON.parse(JSON.stringify(get('spDraft.settings'))),{agent:'codex',model:'astra',mode:'agent',effort:'high'});
 });
 
-test('spawn sheet keeps the last good presets when the rig is unreachable', async () => {
-  let fail = false;
-  const {context, elements} = loadSpawnSheet({
-    fetch: async (url, options) => {
-      if (fail) throw new Error('offline');
-      return presetsReply([{key: 'o', label: 'Opus \u00b7 Bypass', model: 'opus', mode: 'bypassPermissions'}])(url, options);
-    },
-  });
-  context.openSpawnSheet(null);
-  await context.loadSpawnPresets();
-  const presets = elements.get('sp-presets');
-  assert.deepEqual(chipLabels(presets), ['default', 'Opus \u00b7 Bypass']);
-  fail = true;
-  context.openSpawnSheet(null);
-  await context.loadSpawnPresets();
-  assert.deepEqual(chipLabels(presets), ['default', 'Opus \u00b7 Bypass']);
+test('preset refresh failure preserves the last good choices and draft', async () => {
+  let fail=false;
+  const {context,elements,get}=loadSpawnSheet({fetch:async(...args)=>{if(fail)throw Error('offline');return presetsReply([launchPreset])(...args);}});
+  await context.loadSpawnPresets();context.applySpawnPreset('s');fail=true;await context.loadSpawnPresets();
+  assert.deepEqual(chipLabels(elements.get('sp-presets')),['Sol']);
+  assert.equal(get('spDraft.settings.model'),'sol');
 });
 
-test('a preset reply from an older open cannot overwrite a newer one', async () => {
-  const first = deferred();
-  const second = deferred();
-  let calls = 0;
-  const {context, elements} = loadSpawnSheet({
-    fetch: async url => {
-      if (url !== '/api/presets') return {ok: true, json: async () => ({projects: []})};
-      calls += 1;
-      const presets = await (calls === 1 ? first.promise : second.promise);
-      return {ok: true, json: async () => ({presets})};
-    },
-  });
-  // openSpawnSheet itself starts a load: the first open's fetch is the
-  // stale one, the second open's fetch is the fresh one.
-  context.openSpawnSheet(null);
-  context.openSpawnSheet(null);
-  assert.equal(calls, 2);
-  second.resolve([{key: 'h', label: 'Haiku \u00b7 Auto', model: 'haiku', mode: 'auto'}]);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(chipLabels(elements.get('sp-presets')), ['default', 'Haiku \u00b7 Auto']);
-  first.resolve([{key: 'x', label: 'stale', model: 'x', mode: 'x'}]);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(chipLabels(elements.get('sp-presets')), ['default', 'Haiku \u00b7 Auto']);
-});
-
-test('spawn sheet drops malformed preset entries and sends only the key', async () => {
-  const bodies = [];
-  const {context, get, set} = loadSpawnSheet({
-    fetch: async (url, options) => {
-      if (url === '/api/presets') {
-        return {ok: true, json: async () => ({presets: [
-          {key: 'ff', label: 'two chars'},
-          null,
-          {label: 'no key'},
-          {key: 's', label: 'Sonnet \u00b7 Accept', model: 'sonnet', mode: 'acceptEdits'},
-        ]})};
-      }
-      bodies.push(JSON.parse(options.body));
-      return {json: async () => ({ok: true})};
-    },
-    loadSessions: async () => {},
-  });
-  context.openSpawnSheet(null);
-  await context.loadSpawnPresets();
-  assert.deepEqual(get('spawnPresets').map(p => p.key), ['s']);
-  set('spPreset', 's');
-  set('SPAWN_POLL_MS', 0);
-  await context.spawnAndOpen({cwd: '/tmp/x', name: '', task: '', preset: get('spPreset')});
-  assert.deepEqual(bodies, [{cwd: '/tmp/x', name: '', task: '', preset: 's'}]);
-});
-
-const rowPaths = el => el.children.map(row =>
-  (row.children.find(c => c.className === 'sp-row-path') || row).textContent);
-const rowFlags = el => el.children.map(row =>
-  ['live', 'sel'].filter(flag => row.classList.contains(flag)).join(' '));
-const tap = (row, dx = 0, dy = 0) => {
-  row.listeners.get('pointerdown')({pointerType: 'touch', clientX: 10, clientY: 10, preventDefault() {}});
-  row.listeners.get('pointerup')({pointerType: 'touch', clientX: 10 + dx, clientY: 10 + dy});
-};
-
-const projectsReply = async url => {
-  if (url === '/api/projects') {
-    return {ok: true, json: async () => ({projects: [
-      {name: 'dotfiles', path: '/home/.dotfiles', live: false},
-      {name: 'sandbox', path: '/home/.emacs-sandbox', live: false},
-      {name: 'mobile', path: '/work/mobile', live: true},
-    ]})};
+test('stale preset and project replies cannot replace newer choices', async () => {
+  for(const kind of ['presets','projects']) {
+    const replies=[deferred(),deferred()];let n=0;
+    const {context,get}=loadSpawnSheet({fetch:async()=>({ok:true,json:async()=>({[kind]:await replies[n++].promise})})});
+    const load=kind==='presets'?'loadSpawnPresets':'loadSpawnProjects';
+    const older=context[load](),newer=context[load]();
+    const fresh=kind==='presets'?[{...launchPreset,label:'fresh'}]:[{name:'fresh',path:'/fresh'}];
+    replies[1].resolve(fresh);await newer;replies[0].resolve([]);await older;
+    assert.equal(get(kind==='presets'?'spawnPresets':'spawnProjects').length,1);
+    assert.equal(get(kind==='presets'?'spawnPresets[0].label':'spawnProjects[0].name'),'fresh');
   }
-  return {ok: true, json: async () => ({presets: []})};
-};
-
-test('project combobox lists live first and the typed path filters by name, path, or ~ form', async () => {
-  const {context, elements} = loadSpawnSheet({
-    fetch: projectsReply,
-    shortPath: value => String(value).replace('/home', '~'),
-  });
-  context.openSpawnSheet('/work/mobile');
-  await context.loadSpawnProjects();
-  const projects = elements.get('sp-projects');
-  const dir = elements.get('sp-dir');
-  assert.deepEqual(rowPaths(projects), ['/work/mobile', '~/.dotfiles', '~/.emacs-sandbox']);
-  assert.deepEqual(rowFlags(projects), ['live sel', '', '']);
-  // The name shows only when it is not already the path's base name.
-  assert.equal(projects.children[2].children.some(c => c.className === 'sp-row-name' && c.textContent === 'sandbox'), true);
-  assert.equal(projects.children[1].children.some(c => c.className === 'sp-row-name'), false);
-  dir.value = 'sandbox';
-  dir.listeners.get('input')();
-  assert.deepEqual(rowPaths(projects), ['~/.emacs-sandbox']);
-  dir.value = '~/.dot';
-  dir.listeners.get('input')();
-  assert.deepEqual(rowPaths(projects), ['~/.dotfiles']);
-  dir.value = 'nothing-here';
-  dir.listeners.get('input')();
-  assert.deepEqual(rowPaths(projects), ['no match; spawns in the path as typed']);
-  assert.equal(dir.value, 'nothing-here');
 });
 
-test('picking a row fills the path box, collapses the list, and reopening shows the whole list with that row marked', async () => {
-  const {context, elements} = loadSpawnSheet({fetch: projectsReply});
-  context.openSpawnSheet(null);
-  await context.loadSpawnProjects();
-  const projects = elements.get('sp-projects');
-  const dir = elements.get('sp-dir');
-  let blurred = 0;
-  dir.blur = () => { blurred += 1; };
-  assert.equal(projects.classList.contains('open'), false, 'closed until the box is focused');
-  dir.listeners.get('focus')();
-  assert.equal(projects.classList.contains('open'), true);
-  dir.value = 'dot';
-  dir.listeners.get('input')();
-  assert.deepEqual(rowPaths(projects), ['/home/.dotfiles']);
-  projects.children[0].listeners.get('click')();
-  assert.equal(dir.value, '/home/.dotfiles');
-  assert.equal(projects.classList.contains('open'), false, 'a pick collapses the list');
-  assert.equal(blurred, 1, 'a pick drops the keyboard');
-  dir.listeners.get('focus')();
-  assert.equal(projects.classList.contains('open'), true);
-  dir.listeners.get('blur')();
-  assert.equal(projects.classList.contains('open'), false, 'leaving the box closes the list');
-  assert.deepEqual(rowPaths(projects), ['/work/mobile', '/home/.dotfiles', '/home/.emacs-sandbox']);
-  assert.deepEqual(rowFlags(projects), ['live', 'sel', '']);
+test('project search matches names and shortened paths without changing a draft path', () => {
+  const {context,get,set}=loadSpawnSheet({shortPath:p=>p.replace('/home','~')});
+  set('spDraft.cwd','/selected');
+  const project={name:'dotfiles',path:'/home/.dotfiles'};
+  assert.equal(context.projectMatches(project,'dotfiles'),true);
+  assert.equal(context.projectMatches(project,'~/.dot'),true);
+  assert.equal(context.projectMatches(project,'missing'),false);
+  assert.equal(get('spDraft.cwd'),'/selected');
 });
 
-test('a touch tap picks on pointerup without a click, a drag does not pick, the synthetic click is ignored', async () => {
-  let now = 1000;
-  class FakeDate extends Date { static now() { return now; } }
-  const {context, elements} = loadSpawnSheet({fetch: projectsReply, Date: FakeDate});
-  context.openSpawnSheet(null);
-  await context.loadSpawnProjects();
-  const projects = elements.get('sp-projects');
-  const dir = elements.get('sp-dir');
-  let prevented = 0;
-  const row = projects.children[1];
-  row.listeners.get('pointerdown')({pointerType: 'touch', clientX: 0, clientY: 0, preventDefault() { prevented += 1; }});
-  row.listeners.get('pointerup')({pointerType: 'touch', clientX: 0, clientY: 40});
-  assert.equal(prevented, 1, 'touch pointerdown must cancel the focus change');
-  assert.equal(dir.value, '', 'a 40px drag is a scroll, not a pick');
-  tap(projects.children[1]);
-  assert.equal(dir.value, '/home/.dotfiles');
-  // The browser follows a touch with a click. The pick re-rendered the
-  // list, so that click lands on a fresh element, maybe another row: it
-  // must not pick anything.
-  dir.value = 'x';
-  projects.children[0].listeners.get('click')();
-  assert.equal(dir.value, 'x');
-  // A mouse pointerdown only guards focus (the list closes on blur);
-  // the click does the pick once the touch suppression window is over.
-  now += 1000;
-  const mouseRow = projects.children[2];
-  mouseRow.listeners.get('pointerdown')({pointerType: 'mouse', preventDefault() { prevented += 1; }});
-  assert.equal(prevented, 2);
-  assert.equal(dir.value, 'x', 'a mouse pointerdown must not pick');
-  mouseRow.listeners.get('click')();
-  assert.equal(dir.value, '/home/.emacs-sandbox');
+test('touch scrolling cancels a choice and synthetic clicks cannot choose twice', () => {
+  let now=1000,picks=0;class FakeDate extends Date { static now(){return now;} }
+  const {context}=loadSpawnSheet({Date:FakeDate});const row=new FakeElement();context.onTapPick(row,()=>picks++);
+  const down=()=>row.listeners.get('pointerdown')({pointerType:'touch',clientX:0,clientY:0,preventDefault(){}});
+  const up=y=>row.listeners.get('pointerup')({pointerType:'touch',clientX:0,clientY:y});
+  down();up(40);assert.equal(picks,0);
+  down();row.listeners.get('pointercancel')();up(0);assert.equal(picks,0);
+  down();up(0);assert.equal(picks,1);row.listeners.get('click')();assert.equal(picks,1);
+  now+=1000;row.listeners.get('click')();assert.equal(picks,2);
 });
 
-test('a stale project reply cannot overwrite a newer spawn-sheet open', async () => {
-  const replies = [deferred(), deferred()];
-  let projectCalls = 0;
-  const {context, elements} = loadSpawnSheet({
-    fetch: async url => {
-      if (url === '/api/projects') return {ok: true, json: async () => ({projects: await replies[projectCalls++].promise})};
-      return {ok: true, json: async () => ({presets: []})};
-    },
-  });
-  context.openSpawnSheet(null);
-  context.openSpawnSheet(null);
-  replies[1].resolve([{name: 'fresh', path: '/fresh', live: false}]);
-  await new Promise(resolve => setImmediate(resolve));
-  replies[0].resolve([{name: 'stale', path: '/stale', live: false}]);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(rowPaths(elements.get('sp-projects')), ['/fresh']);
+test('explicit launch waits for its exact buffer and preserves a late accepted launch', async () => {
+  let selected=null;
+  const {context,get,set}=loadSpawnSheet({fetch:async()=>({ok:true,json:async()=>({ok:true,bufferName:'intended'})}),selectSession:s=>selected=s.bufferName});
+  set('lastSessions',[{bufferName:'other'}]);
+  assert.equal(await context.spawnAndOpen({settings:{...launchPreset}}),false);
+  assert.equal(get('spRecoveryBuffer'),'intended');assert.equal(selected,null);
+  set('lastSessions',[{bufferName:'other'},{bufferName:'intended'}]);
+  assert.equal(await context.waitForSpawn('intended'),true);assert.equal(selected,'intended');
 });
 
 // --- Catalogue: #tag grammar, the Catalogued chip, the transcript-view button ---
