@@ -1247,6 +1247,8 @@ input, textarea, #fbv-content, .msg, .msg * {
 #sp-project .sp-row-title { font-size:16px; }
 #sp-presets { display:flex; gap:8px; overflow-x:auto; padding:6px 0 8px; }
 .sp-chip { min-height:44px; padding:8px 14px; border:1px solid var(--bg2); border-radius:10px; background:var(--bg1); color:var(--fg-dim); font-size:12px; white-space:nowrap; flex-shrink:0; }
+/* Preset chips live in a horizontal strip; retain vertical page scrolling too. */
+#spawn-sheet .sp-chip { touch-action:pan-x pan-y; }
 .sp-chip.sel { border-color:var(--orange); color:var(--orange); background:color-mix(in srgb,var(--orange) 8%,var(--bg0)); }
 #sp-reset { width:44px; }
 #sp-preset-label { flex:1; }

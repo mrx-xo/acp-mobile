@@ -200,3 +200,28 @@ func TestNewChatMissingRecoveryCanReturnToDraft(t *testing.T) {
 		t.Fatalf("recovery must be dismissible without losing the draft: %#v", state)
 	}
 }
+
+func TestNewChatPresetsSwipeHorizontallyWithoutSelecting(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 2 && spawnPresets.length === 1`)
+	page.call(t, "Emulation.setTouchEmulationEnabled", map[string]interface{}{"enabled": true, "maxTouchPoints": 1})
+	state := page.evalObject(t, `(()=>{
+      spawnPresets=Array.from({length:10},(_,i)=>({key:String(i),label:'Preset '+i+' / Full access',agent:'codex',model:'sol',mode:'full',effort:'high'}));
+      renderSpawnMain();
+      const r=spPresets.getBoundingClientRect();
+      return {y:r.top+r.height/2,overflow:spPresets.scrollWidth>spPresets.clientWidth};
+    })()`)
+	if state["overflow"] != true {
+		t.Fatal("fixture must overflow the preset strip")
+	}
+	y := state["y"].(float64)
+	page.call(t, "Input.dispatchTouchEvent", map[string]interface{}{"type": "touchStart", "touchPoints": []map[string]interface{}{{"x": 320, "y": y}}})
+	for x := 300; x >= 80; x -= 20 {
+		page.call(t, "Input.dispatchTouchEvent", map[string]interface{}{"type": "touchMove", "touchPoints": []map[string]interface{}{{"x": x, "y": y}}})
+	}
+	page.call(t, "Input.dispatchTouchEvent", map[string]interface{}{"type": "touchEnd", "touchPoints": []interface{}{}})
+	state = page.evalObject(t, `(async()=>{await new Promise(r=>setTimeout(r,200));return {left:spPresets.scrollLeft,preset:spDraft.preset};})()`)
+	if state["left"].(float64) < 50 || state["preset"] != "" {
+		t.Fatalf("swipe must scroll without selecting a preset: %#v", state)
+	}
+}
