@@ -1286,13 +1286,19 @@ input, textarea, #fbv-content, .msg, .msg * {
   padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
 #model-sheet.visible { display: flex; }
-#md-head { display: flex; align-items: center; padding: 14px 16px; }
+#md-head { display: flex; flex-shrink: 0; align-items: center; padding: 14px 16px; }
 #md-title { flex: 1; font-size: 14px; font-weight: 700; color: var(--fg); }
 #md-close {
   background: none; border: none; color: var(--fg-mute);
   font: inherit; cursor: pointer; padding: 4px 8px;
 }
-#md-body { overflow-y: auto; padding: 0 16px 14px; }
+#md-search {
+  flex-shrink: 0; margin: 0 16px 12px; padding: 12px;
+  border: 1px solid var(--bg2); border-radius: 10px;
+  background: var(--bg-hard); color: var(--fg); font: 16px var(--mono);
+}
+#md-search:focus { outline: 1px solid var(--orange); border-color: var(--orange); }
+#md-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 14px; }
 #md-list { display: flex; flex-direction: column; gap: 8px; }
 .md-row {
   background: var(--bg1); border: 1px solid var(--bg2); border-radius: 10px;
@@ -1711,6 +1717,7 @@ input, textarea, #fbv-content, .msg, .msg * {
     <span id="md-title">Model</span>
     <button id="md-close" type="button">Close</button>
   </div>
+  <input id="md-search" type="search" placeholder="Search models" aria-label="Search models" autocomplete="off" autocapitalize="off" spellcheck="false" hidden>
   <div id="md-body">
     <div id="md-list" aria-live="polite"></div>
   </div>
@@ -1781,7 +1788,7 @@ if (window.visualViewport) {
     const kb = textEntryFocused ? viewportInset : 0;
     const dock = document.getElementById('history-dock');
     if (dock) dock.style.bottom = kb > 0 ? (kb + 10) + 'px' : '';
-    for (const id of ['spawn-sheet', 'preview-sheet']) {
+    for (const id of ['spawn-sheet', 'preview-sheet', 'model-sheet']) {
       const el = document.getElementById(id);
       if (!el) continue;
       el.style.bottom = kb > 0 ? kb + 'px' : '';
@@ -5720,6 +5727,8 @@ function spawnInProject(cwd) { openSpawnSheet(cwd); }
 const mdScrim = document.getElementById('model-scrim');
 const mdSheet = document.getElementById('model-sheet');
 const mdList = document.getElementById('md-list');
+const mdBody = document.getElementById('md-body');
+const mdSearch = document.getElementById('md-search');
 let modelPickerToken = 0;
 let modelPickerBuffer = null;
 let modelPickerData = {current: '', models: []};
@@ -5734,7 +5743,10 @@ function modelPickerMessage(message) {
 
 function renderModelRows(data) {
   mdList.innerHTML = '';
-  for (const model of data.models) {
+  const query = (mdSearch.value || '').trim().toLowerCase();
+  const models = data.models.filter(model =>
+    !query || ((model.name || '') + ' ' + model.id).toLowerCase().includes(query));
+  for (const model of models) {
     const row = document.createElement('button');
     row.type = 'button';
     row.className = 'md-row' + (model.id === data.current ? ' sel' : '');
@@ -5748,15 +5760,28 @@ function renderModelRows(data) {
       row.appendChild(description);
     }
     row.onclick = () => chooseModel(model.id);
+    // Keep the search keyboard in place until the selection is accepted.
+    row.addEventListener('pointerdown', event => event.preventDefault());
     mdList.appendChild(row);
   }
   if (!data.models.length) modelPickerMessage('No models available for this session.');
+  else if (!models.length) modelPickerMessage('No matching models.');
+  updateModelSearchVisibility();
+}
+
+function updateModelSearchVisibility() {
+  // Reveal once per open: filtering must never hide the focused input.
+  if (mdSheet.classList.contains('visible') && mdSearch.hidden &&
+      modelPickerData.models.length && mdBody.scrollHeight > mdBody.clientHeight + 1) {
+    mdSearch.hidden = false;
+  }
 }
 
 function closeModelPicker() {
   ++modelPickerToken;
   modelPickerBuffer = null;
   modelPickerBusy = false;
+  mdSearch.blur();
   mdScrim.classList.remove('visible');
   mdSheet.classList.remove('visible');
 }
@@ -5768,6 +5793,9 @@ async function openModelPicker() {
   modelPickerBuffer = bufferName;
   modelPickerBusy = false;
   modelPickerData = {current: '', models: []};
+  mdSearch.value = '';
+  mdSearch.hidden = true;
+  mdBody.scrollTop = 0;
   mdList.innerHTML = '';
   mdScrim.classList.add('visible');
   mdSheet.classList.add('visible');
@@ -5831,6 +5859,13 @@ async function chooseModel(id) {
 
 document.getElementById('md-close').addEventListener('click', closeModelPicker);
 mdScrim.addEventListener('click', closeModelPicker);
+mdSearch.addEventListener('input', () => {
+  mdBody.scrollTop = 0;
+  renderModelRows(modelPickerData);
+});
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(updateModelSearchVisibility).observe(mdBody);
+}
 // --- Model picker: end ---
 
 async function killSession() {
