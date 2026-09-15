@@ -1410,6 +1410,12 @@ func openChromePage(t *testing.T, pageURL string) *chromePage {
 }
 
 func chromeExecutable() string {
+	// Local override for boxes where the installed Chrome is the x64 build under
+	// Rosetta: it takes longer than the DevTools wait to start. Any Chromium
+	// (Brave, Chromium) works here.
+	if override := os.Getenv("ACP_MOBILE_CHROME"); override != "" {
+		return override
+	}
 	candidates := []string{
 		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 		"/Applications/Chromium.app/Contents/MacOS/Chromium",
