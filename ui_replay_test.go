@@ -135,3 +135,41 @@ func TestHistoryLoadingWaitsForImagesAndCancelsStaleLayout(t *testing.T) {
 		t.Fatalf("cancelled loading must not revive its indicator or button: %v", state)
 	}
 }
+
+// The history loading indicator is a thin progress line along the bottom
+// edge of the header, not a pill over the chat: it must never cover text,
+// and it keeps an accessible label for the status region.
+func TestHistoryLoadingIsHeaderProgressLine(t *testing.T) {
+	page := openComposerTestPage(t, 844, 844)
+	page.call(t, "Emulation.setEmulatedMedia", map[string]interface{}{
+		"features": []map[string]string{{"name": "prefers-reduced-motion", "value": "no-preference"}},
+	})
+	state := page.evalObject(t, `(async () => {
+		showChat();
+		for (let i = 0; i < 5; i++) addAgentMsg('old ' + i);
+		beginHistoryLoad();
+		await new Promise(r => setTimeout(r, 400));
+		const el = historyLoadingEl;
+		const bar = el.getBoundingClientRect();
+		const header = document.getElementById('header').getBoundingClientRect();
+		const styles = getComputedStyle(el, '::before');
+		return {
+			shown: !el.hidden,
+			height: Math.round(bar.height),
+			fullWidth: Math.abs(bar.width - header.width) < 1,
+			atHeaderEdge: Math.abs(bar.bottom - header.bottom) < 2,
+			animated: styles.animationName !== 'none' && styles.animationName !== '',
+			label: el.textContent.trim(),
+			labelHidden: Math.round(el.querySelector('span').getBoundingClientRect().width) === 0,
+		};
+	})()`)
+	if state["shown"] != true || state["height"] != float64(2) || state["fullWidth"] != true || state["atHeaderEdge"] != true {
+		t.Fatalf("loading indicator must be a 2px line along the header's bottom edge: %v", state)
+	}
+	if state["animated"] != true {
+		t.Fatalf("loading line must animate when motion is allowed: %v", state)
+	}
+	if state["label"] != "Loading chat…" || state["labelHidden"] != true {
+		t.Fatalf("loading line must keep a visually hidden status label: %v", state)
+	}
+}
