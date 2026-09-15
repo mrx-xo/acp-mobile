@@ -74,6 +74,7 @@ body {
 }
 #orrery.hidden { display: none; }
 #nav-header {
+  position: relative;
   display: flex; align-items: center; padding: 12px 16px;
   padding-top: calc(12px + env(safe-area-inset-top));
   background: var(--bg0); border-bottom: 1px solid var(--bg2);
@@ -88,12 +89,6 @@ body {
 /* Tap affordance: the title is the Sessions/Projects toggle */
 #nav-header .nav-caret {
   color: var(--fg-mute); margin-left: 6px; flex-shrink: 0;
-}
-/* Loading spinner (braille frames while any fetch is in flight);
-   fixed width so the header doesn't shift when it appears */
-#nav-spin {
-  width: 18px; text-align: center; color: var(--yellow);
-  font-family: var(--mono); font-size: 15px; flex-shrink: 0;
 }
 #nav-header .nav-btn {
   background: transparent; border: none; color: var(--orange);
@@ -701,16 +696,6 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
 #toast.visible { opacity: 1; }
 
 /* Thinking indicator */
-#thinking {
-  display: none; padding: 8px 16px; flex-shrink: 0;
-  background: var(--bg0); border-top: 1px solid var(--bg2);
-}
-#thinking.visible { display: flex; align-items: center; gap: 8px; }
-#thinking .spinner {
-  color: var(--yellow); font-size: 14px; font-family: var(--mono);
-  width: 16px; text-align: center;
-}
-#thinking .label { color: var(--fg-mute); font-size: 12px; font-family: var(--mono); }
 
 /* Scroll-to-bottom button */
 #scroll-btn {
@@ -724,24 +709,27 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
   display: flex; align-items: center; justify-content: center;
 }
 #scroll-btn:active { background: #b16286; }
-/* History loading: a 2px yellow line sliding along the header's bottom
-   edge (busy colour, same as the spinners). It lives in the header so it
-   never covers chat text; the label stays for the status region only. */
-#history-loading {
+/* Busy line: the one "loading" signal. A 2px yellow line (busy colour)
+   sliding along the bottom edge of the surface's header: history replay
+   and generating in the chat, session fetches in the Orrery. It lives in
+   the header so it never covers content; the label is for the status
+   region only. Gesture and button feedback (pull-to-refresh, New Chat go)
+   stay separate because they belong to the thing being touched. */
+.load-line {
   position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
   overflow: hidden; pointer-events: none; z-index: 10;
 }
-#history-loading[hidden] { display: none; }
-#history-loading::before {
+.load-line[hidden] { display: none; }
+.load-line::before {
   content: ""; position: absolute; top: 0; bottom: 0; width: 40%;
   background: var(--yellow); border-radius: 2px;
-  animation: history-load-slide 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation: load-line-slide 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
-@keyframes history-load-slide { from { left: -40%; } to { left: 100%; } }
+@keyframes load-line-slide { from { left: -40%; } to { left: 100%; } }
 @media (prefers-reduced-motion: reduce) {
-  #history-loading::before { animation: none; left: 0; width: 100%; opacity: 0.6; }
+  .load-line::before { animation: none; left: 0; width: 100%; opacity: 0.6; }
 }
-#history-loading span {
+.load-line span {
   position: absolute; width: 0; height: 0; overflow: hidden;
 }
 
@@ -1539,9 +1527,9 @@ input, textarea, #fbv-content, .msg, .msg * {
 <div id="orrery">
   <div id="nav-header">
     <span class="nav-title" id="nav-title"><span id="nav-title-text">Orrery</span><span class="nav-mode" id="nav-mode-text">Sessions</span><svg class="nav-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
-    <span id="nav-spin"></span>
     <button class="nav-btn" id="nav-history-btn" aria-label="Chat history"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button>
     <button class="nav-btn" id="nav-pins-btn" aria-label="Pinned messages"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg></button>
+    <div id="nav-loading" class="load-line" role="status" aria-live="polite" hidden><span>Loading sessions…</span></div>
     <button class="nav-btn" id="nav-settings-btn" aria-label="Settings"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
   </div>
   <div id="ptr">↻</div>
@@ -1573,7 +1561,7 @@ input, textarea, #fbv-content, .msg, .msg * {
     <button class="files-btn" id="files-btn">Files</button>
     <button class="files-btn" id="chat-menu-btn" aria-label="Menu" style="display:none">&#8942;</button>
   </div>
-  <div id="history-loading" role="status" aria-live="polite" hidden><span>Loading chat…</span></div>
+  <div id="history-loading" class="load-line" role="status" aria-live="polite" hidden><span>Loading chat…</span></div>
 </div>
 <div id="file-browser">
   <div id="fb-header">
@@ -1593,7 +1581,6 @@ input, textarea, #fbv-content, .msg, .msg * {
 </div>
 <div id="messages"></div>
 <div id="swipe-indicator"></div>
-<div id="thinking"><span class="spinner" id="spinner-glyph">⠋</span><span class="label">thinking…</span></div>
 <button id="scroll-btn">&darr;</button>
 <div id="attach-row"></div>
 <div id="input-area">
@@ -1773,7 +1760,6 @@ const modeBtn = document.getElementById('mode-btn');
 const promptEl = document.getElementById('prompt');
 const sendBtn = document.getElementById('send');
 const stopBtn = document.getElementById('stop-btn');
-const thinkingEl = document.getElementById('thinking');
 const scrollBtn = document.getElementById('scroll-btn');
 const orreryEl = document.getElementById('orrery');
 const chatViewEl = document.getElementById('chat-view');
@@ -1916,8 +1902,8 @@ let processing = false;
 // A turn counts as "generating" only when a prompt opened it. Agent
 // activity with no prompt behind it (a background task finishing after
 // the turn re-invokes the model) has no request, so nothing ever emits a
-// turn_complete for it; treating those chunks as busy left the thinking
-// bar and Stop button stuck until the next real turn.
+// turn_complete for it; treating those chunks as busy left the busy
+// line and Stop button stuck until the next real turn.
 //
 // Two sources open a turn: prompts this phone sent (tracked by request
 // id until their response lands, so a queued follow-up stays open while
@@ -3547,6 +3533,21 @@ let historyReady = true;
 let historyLoad = null;
 const historyLoadingEl = document.getElementById('history-loading');
 
+// A busy line shows while any reason is active; reasons are independent
+// so a history replay and a generating reply can overlap without one
+// clearing the other.
+function busyLine(el) {
+  const reasons = new Set();
+  return {
+    set(reason, on) {
+      if (on) reasons.add(reason); else reasons.delete(reason);
+      el.hidden = reasons.size === 0;
+    }
+  };
+}
+const chatBusy = busyLine(historyLoadingEl);
+const navBusy = busyLine(document.getElementById('nav-loading'));
+
 function cancelHistoryLoad() {
   if (historyLoad) {
     clearTimeout(historyLoad.timer);
@@ -3555,7 +3556,7 @@ function cancelHistoryLoad() {
   }
   historyLoad = null;
   historyReady = false;
-  historyLoadingEl.hidden = true;
+  chatBusy.set('history', false);
   messagesEl.removeAttribute('aria-busy');
   updateScrollButton();
 }
@@ -3566,7 +3567,7 @@ function beginHistoryLoad() {
   historyLoad = load;
   messagesEl.setAttribute('aria-busy', 'true');
   load.timer = setTimeout(() => {
-    if (historyLoad === load) historyLoadingEl.hidden = false;
+    if (historyLoad === load) chatBusy.set('history', true);
   }, 300);
 }
 
@@ -3617,7 +3618,7 @@ async function finishHistoryLayout(load) {
   load.controller.abort();
   historyLoad = null;
   historyReady = true;
-  historyLoadingEl.hidden = true;
+  chatBusy.set('history', false);
   messagesEl.removeAttribute('aria-busy');
   isAtBottom = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop < 60;
   updateScrollButton();
@@ -3638,28 +3639,13 @@ messagesEl.addEventListener('keydown', e => {
   if (['ArrowUp', 'PageUp', 'Home'].includes(e.key)) interruptHistoryFollow();
 });
 
-// Terminal-style braille spinner (the rig is a terminal; so is this)
-const SPINNER_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
-let spinnerTimer = null, spinnerIdx = 0;
-const spinnerGlyph = document.getElementById('spinner-glyph');
-
+// Generating = the header busy line plus the Stop button in the composer.
+// Nothing is added above the composer, so the message list keeps its height.
 function setProcessing(v) {
   processing = v;
-  const wasAtBottom = isAtBottom;
-  thinkingEl.classList.toggle('visible', v);
-  // The bar takes its height from the message list; without a re-snap the
-  // bubble that was just sent loses its bottom edge behind it.
-  if (v && wasAtBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+  chatBusy.set('reply', v);
   sendBtn.style.display = v ? 'none' : '';
   stopBtn.style.display = v ? 'flex' : 'none';
-  if (v && !spinnerTimer) {
-    spinnerTimer = setInterval(() => {
-      spinnerIdx = (spinnerIdx + 1) % SPINNER_FRAMES.length;
-      spinnerGlyph.textContent = SPINNER_FRAMES[spinnerIdx];
-    }, 80);
-  } else if (!v && spinnerTimer) {
-    clearInterval(spinnerTimer); spinnerTimer = null;
-  }
 }
 
 function updateModeBtn() {
@@ -4293,8 +4279,8 @@ function flushReplay() {
   // A permission is still waiting only if it ends the replay: the
   // multiplex appends the unanswered request after every cached update,
   // and moves it into history once answered. Answered ones replay as
-  // resolved cards; treating them as pending made idle chats show
-  // "thinking" and a Stop button.
+  // resolved cards; treating them as pending made idle chats show the
+  // busy line and a Stop button.
   const lastTurn = turns[turns.length - 1];
   if (lastTurn && lastTurn.type === 'permission') {
     lastTurn.interactive = true;
@@ -5016,23 +5002,15 @@ let statusRequestSerial = 0;
 let statusAppliedSerial = 0;
 let latestStatuses = null;
 
-// Explicit loads live in the header.  Silent background refreshes do not
-// flash a spinner; they only repaint the list when data actually changes.
-const navSpinEl = document.getElementById('nav-spin');
-const NAV_FRAMES = ['\u280b','\u2819','\u2839','\u2838','\u283c','\u2834','\u2826','\u2827','\u2807','\u280f'];
-let navSpinCount = 0, navSpinT = null, navSpinI = 0;
+// Explicit loads show the busy line under the Orrery header.  Silent
+// background refreshes do not flash it; they only repaint the list when
+// data actually changes.
+let navSpinCount = 0;
 function navSpinStart() {
-  if (++navSpinCount === 1) {
-    navSpinT = setInterval(() => {
-      navSpinEl.textContent = NAV_FRAMES[navSpinI = (navSpinI + 1) % NAV_FRAMES.length];
-    }, 80);
-  }
+  if (++navSpinCount === 1) navBusy.set('fetch', true);
 }
 function navSpinStop() {
-  if (navSpinCount > 0 && --navSpinCount === 0) {
-    clearInterval(navSpinT); navSpinT = null;
-    navSpinEl.textContent = '';
-  }
+  if (navSpinCount > 0 && --navSpinCount === 0) navBusy.set('fetch', false);
 }
 
 // silent=true: background poll — no re-render unless the data actually
@@ -5352,6 +5330,9 @@ function showChat() {
 
 function showOrrery() {
   cancelHistoryLoad();
+  // Leaving the chat ends its generating signal too: the socket below is
+  // closed with reconnect disabled, so the disconnect path never clears it.
+  setProcessing(false);
   stashDraft();
   resetChatSwipe();
   chatViewEl.classList.remove('visible');
@@ -6313,7 +6294,7 @@ function turnNavKind(classes) {
   };
 })();
 
-// Keep the scroll-to-bottom button floating just above the thinking bar and composer,
+// Keep the scroll-to-bottom button floating just above the composer,
 // whatever height it currently has (safe-area, grown textarea,
 // attachment chips) instead of a hardcoded offset that overlaps. The turn
 // nav follows the corner chosen in Settings.
@@ -6324,7 +6305,7 @@ function turnNavKind(classes) {
   const histHead = document.getElementById('history-head');
   const dock = document.getElementById('history-dock');
   const place = () => {
-    const h = inputAreaEl.offsetHeight + thinkingEl.offsetHeight
+    const h = inputAreaEl.offsetHeight
       + (attachRow.classList.contains('has-items') ? attachRow.offsetHeight : 0);
     scrollBtn.style.bottom = (h + 14) + 'px';
     let layout;
@@ -6340,7 +6321,7 @@ function turnNavKind(classes) {
     Object.assign(navEl.style, turnNavPlacement(turnNav.prefs(), layout));
   };
   window.placeTurnNav = place;
-  [inputAreaEl, thinkingEl, attachRow, headerEl, histHead].forEach(el => new ResizeObserver(place).observe(el));
+  [inputAreaEl, attachRow, headerEl, histHead].forEach(el => new ResizeObserver(place).observe(el));
   place();
 })();
 

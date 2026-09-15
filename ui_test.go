@@ -1817,8 +1817,9 @@ func TestStandaloneViewportNudgeOnPageshow(t *testing.T) {
 }
 
 // The send spring must spread its motion over enough frames to be seen, and
-// the thinking bar that appears on send must not cover the new bubble.
-func TestSendMotionIsVisibleAndThinkingBarKeepsBubbleInView(t *testing.T) {
+// generating shows the header busy line: nothing appears above the composer,
+// so the new bubble keeps its place.
+func TestSendMotionIsVisibleAndGeneratingUsesHeaderLine(t *testing.T) {
 	page := openComposerTestPage(t, 844, 844)
 	state := page.evalObject(t, `(() => {
 		messagesEl.innerHTML = '';
@@ -1837,13 +1838,19 @@ func TestSendMotionIsVisibleAndThinkingBarKeepsBubbleInView(t *testing.T) {
 		let lo = 0, hi = 1;
 		for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (at(mid, x1, x2) < 0.18) lo = mid; else hi = mid; }
 		const progressAt18 = at(lo, y1, y2);
+		const before = messagesEl.clientHeight;
 		setProcessing(true);
 		const gap = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop;
+		const lineShown = !historyLoadingEl.hidden;
+		setProcessing(false);
 		return {
 			duration: parseFloat(style.animationDuration),
 			progressAt18,
-			gapAfterThinkingBar: gap,
-			thinkingVisible: thinkingEl.classList.contains('visible')
+			gapAfterGenerating: gap,
+			heightKept: messagesEl.clientHeight === before,
+			noBarAboveComposer: !document.getElementById('thinking'),
+			lineShown,
+			lineHiddenAfter: historyLoadingEl.hidden
 		};
 	})()`)
 	if d := state["duration"].(float64); d < 0.6 {
@@ -1852,8 +1859,42 @@ func TestSendMotionIsVisibleAndThinkingBarKeepsBubbleInView(t *testing.T) {
 	if p := state["progressAt18"].(float64); p > 0.7 {
 		t.Fatalf("send easing front-loads its motion (%.2f done at 18%% of duration): %v", p, state)
 	}
-	if state["thinkingVisible"] != true || state["gapAfterThinkingBar"].(float64) > 1 {
-		t.Fatalf("thinking bar should not push the new bubble out of view, got %v", state)
+	if state["noBarAboveComposer"] != true || state["heightKept"] != true || state["gapAfterGenerating"].(float64) > 1 {
+		t.Fatalf("generating must not add a bar above the composer or move the new bubble, got %v", state)
+	}
+	if state["lineShown"] != true || state["lineHiddenAfter"] != true {
+		t.Fatalf("generating should show the header busy line and clear it after, got %v", state)
+	}
+}
+
+// Session-list fetches use the same busy line under the Orrery header as
+// the chat uses for history and generating; no separate glyph.
+func TestSessionFetchShowsOrreryHeaderLine(t *testing.T) {
+	page := openComposerTestPage(t, 844, 844)
+	state := page.evalObject(t, `(() => {
+		const line = document.getElementById('nav-loading');
+		const header = document.getElementById('nav-header');
+		const before = line.hidden;
+		navSpinStart(); navSpinStart();
+		const shown = !line.hidden;
+		const bar = line.getBoundingClientRect();
+		const hb = header.getBoundingClientRect();
+		navSpinStop();
+		const stillShown = !line.hidden;
+		navSpinStop();
+		return {
+			before, shown, stillShown, after: line.hidden,
+			height: Math.round(bar.height),
+			atHeaderEdge: Math.abs(bar.bottom - hb.bottom) < 2 && Math.abs(bar.width - hb.width) < 1,
+			sameLook: getComputedStyle(line, '::before').backgroundColor === getComputedStyle(historyLoadingEl, '::before').backgroundColor,
+			noGlyph: !document.getElementById('nav-spin')
+		};
+	})()`)
+	if state["before"] != true || state["shown"] != true || state["stillShown"] != true || state["after"] != true {
+		t.Fatalf("orrery line must follow the fetch count, got %v", state)
+	}
+	if state["height"] != float64(2) || state["atHeaderEdge"] != true || state["sameLook"] != true || state["noGlyph"] != true {
+		t.Fatalf("orrery line must match the chat header line, got %v", state)
 	}
 }
 
