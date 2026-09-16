@@ -2354,11 +2354,34 @@ document.addEventListener('click', (e) => {
 
 // --- Markdown renderer (basic, no dependencies) ---
 
+// Apply fn to every stretch of text that is not inside a ``` fence.
+function outsideFences(html, fn) {
+  let out = '', last = 0;
+  for (const m of html.matchAll(/^```\w*\n[\s\S]*?```/gm)) {
+    out += fn(html.slice(last, m.index)) + m[0];
+    last = m.index + m[0].length;
+  }
+  return out + fn(html.slice(last));
+}
+
 function renderMarkdown(text) {
   let html = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+
+  // Blockquotes. A run of > lines is one quote, not one quote per line:
+  // the markers come off and the body goes back through the renderer, so a
+  // list or a paragraph break inside the quote renders the way it would
+  // outside it. A bare > (a blank quoted line) is a paragraph break. Runs
+  // before the fence pass, and skips fence bodies, so a quoted line inside
+  // a code block stays code.
+  html = outsideFences(html, s => s.replace(/^(?:&gt;.*(?:\n|$))+/gm, m => {
+    const body = m.replace(/\n$/, '').split('\n')
+      .map(line => line.replace(/^&gt; ?/, '')).join('\n');
+    return '<blockquote>' + renderMarkdown(unescHtml(body)) + '</blockquote>' +
+      (m.endsWith('\n') ? '\n' : '');
+  }));
 
   // Fenced code blocks
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
@@ -2404,9 +2427,6 @@ function renderMarkdown(text) {
     }
     return text + ' (' + url + ')';
   });
-
-  // Blockquotes
-  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
 
   // Lists. Items are tagged with their kind before any wrapping so a run
   // of bullets is never swallowed into an <ol> (or the reverse). Ordered

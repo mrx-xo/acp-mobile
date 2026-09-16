@@ -1382,7 +1382,7 @@ test('a pin report that was in flight before a toggle cannot undo the toggle', a
 
 function loadMarkdownRenderer() {
   const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
-  const start = html.indexOf('function renderMarkdown(');
+  const start = html.indexOf('function outsideFences(');
   const end = html.indexOf('// Mirror of mr-x/agent-shell-cues', start);
   const helpersStart = html.indexOf('function unescHtml(');
   const helpersEnd = html.indexOf('function renderDiff(', helpersStart);
@@ -1423,4 +1423,24 @@ test('data-code preserves exact UTF-8 fence source through later markdown passes
     // diagram's, and Mermaid is given the source without it.
     assert.equal(Buffer.from(match[1], 'base64').toString('utf8'), source);
   }
+});
+
+test('renderMarkdown renders a multi-line blockquote as one block with inner markdown', () => {
+  const {renderMarkdown} = loadMarkdownRenderer();
+  const html = renderMarkdown(
+    'Send Mom this:\n\n> We are checking why it beeps.\n>\n> 1. **Sit** at the laptop.\n> 2. Say "ready."\n\nAfter.');
+  const quotes = html.match(/<blockquote>/g) || [];
+  assert.equal(quotes.length, 1, 'consecutive > lines form one blockquote');
+  assert.doesNotMatch(html, /&gt;/, 'no stray > marker survives');
+  assert.match(html, /<blockquote><p>We are checking why it beeps\.<ol><li value="1"><strong>Sit<\/strong> at the laptop\.<\/li><li value="2">Say "ready\."<\/li><\/ol><\/p><\/blockquote>/);
+  assert.match(html, /<p>Send Mom this:<\/p>/);
+  assert.match(html, /<p>After\.<\/p>/);
+});
+
+test('renderMarkdown keeps a lone quoted line and non-quote lines apart', () => {
+  const {renderMarkdown} = loadMarkdownRenderer();
+  const html = renderMarkdown('> one\nplain');
+  assert.match(html, /<blockquote><p>one<\/p><\/blockquote>/);
+  assert.match(html, /plain/);
+  assert.doesNotMatch(html, /&gt;/);
 });
