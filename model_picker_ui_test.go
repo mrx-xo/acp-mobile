@@ -97,3 +97,66 @@ func TestModelPickerSearchAppearsOnlyOnOverflowAndFilters(t *testing.T) {
 		t.Fatalf("reopening must reset search and recompute overflow: %#v", state)
 	}
 }
+
+func TestModelPickerGroupsByProvider(t *testing.T) {
+	page := newChatTestPage(t)
+	page.eval(t, `
+  document.getElementById('sp-close').click(); currentBufferName='grouped-chat';
+  window.__modelWrites=[];
+  const realFetch=window.fetch;
+  window.fetch=async(url,options)=>{
+    if(url.endsWith('/api/models')) return {ok:true,json:async()=>({current:'openai/gpt-y',models:[
+      {id:'google/gemini-a',name:'google/gemini-a'},{id:'google/gemini-b',name:'google/gemini-b'},
+      {id:'openrouter/anthropic/claude-x',name:'openrouter/anthropic/claude-x'},{id:'openai/gpt-y',name:'openai/gpt-y'}]})};
+    if(url.endsWith('/api/model')) {window.__modelWrites.push(JSON.parse(options.body));return {ok:true,json:async()=>({ok:true,current:'google/gemini-b'})};}
+    return realFetch(url,options);
+  };
+  openModelPicker();`)
+	page.waitFor(t, `document.querySelectorAll('#md-list .md-group').length === 3`)
+	state := page.evalObject(t, `(()=>{
+    const rows=()=>[...document.querySelectorAll('#md-list .md-row')].map(b=>b.textContent);
+    const heads=()=>[...document.querySelectorAll('#md-list .md-group')].map(b=>b.textContent+'|'+b.getAttribute('aria-expanded'));
+    const initial={heads:heads(),rows:rows()};
+    document.querySelector('#md-list .md-group').click();
+    const opened={heads:heads(),rows:rows()};
+    const q=document.getElementById('md-search');q.hidden=false;q.value='gemini';q.dispatchEvent(new Event('input'));
+    const searched={heads:heads(),rows:rows()};
+    q.value='';q.dispatchEvent(new Event('input'));
+    const cleared={heads:heads(),rows:rows()};
+    return {initial,opened,searched,cleared};
+  })()`)
+	initial := state["initial"].(map[string]interface{})
+	if rows := initial["rows"].([]interface{}); len(rows) != 1 || rows[0] != "openai/gpt-y (current)" || len(initial["heads"].([]interface{})) != 3 {
+		t.Fatalf("only the current model's group starts open: %#v", initial)
+	}
+	opened := state["opened"].(map[string]interface{})
+	if len(opened["rows"].([]interface{})) != 3 {
+		t.Fatalf("tapping google adds its two rows: %#v", opened)
+	}
+	searched := state["searched"].(map[string]interface{})
+	if len(searched["heads"].([]interface{})) != 1 || len(searched["rows"].([]interface{})) != 2 {
+		t.Fatalf("search shows matching groups open: %#v", searched)
+	}
+	cleared := state["cleared"].(map[string]interface{})
+	if len(cleared["heads"].([]interface{})) != 3 || len(cleared["rows"].([]interface{})) != 3 {
+		t.Fatalf("clearing search keeps user-opened groups: %#v", cleared)
+	}
+	if dir := os.Getenv("SYZYGY_UI_SHOTS"); dir != "" {
+		var shot struct{ Data string }
+		if err := json.Unmarshal(page.call(t, "Page.captureScreenshot", map[string]interface{}{"format": "png"}), &shot); err != nil {
+			t.Fatal(err)
+		}
+		data, err := base64.StdEncoding.DecodeString(shot.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "model-groups.png"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page.eval(t, `[...document.querySelectorAll('#md-list .md-row')].find(r=>r.textContent.includes('gemini-b')).click()`)
+	page.waitFor(t, `window.__modelWrites.length === 1`)
+	if got := page.evalObject(t, `window.__modelWrites[0]`); got["modelId"] != "google/gemini-b" {
+		t.Fatalf("grouped row picks its model: %#v", got)
+	}
+}

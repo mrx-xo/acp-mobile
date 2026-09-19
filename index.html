@@ -1311,6 +1311,12 @@ input, textarea, #fbv-content, .msg, .msg * {
 .md-row.sel { border-color: var(--orange); color: var(--orange); }
 .md-row:disabled { cursor: default; opacity: 0.65; }
 .md-description { display: block; margin-top: 4px; color: var(--fg-mute); }
+.sp-group, .md-group { width:100%; display:flex; align-items:center; gap:10px; min-height:48px; padding:8px 0; background:transparent; border:0; border-bottom:1px solid var(--bg1); color:var(--fg); text-align:left; }
+.sp-group { margin-top:6px; }
+.sp-group-name, .md-group-name { flex:1; min-width:0; font-size:13px; letter-spacing:.02em; overflow-wrap:anywhere; }
+.sp-group-count, .md-group-count { font-size:11px; color:var(--fg-mute); font-variant-numeric:tabular-nums; }
+.sp-group img, .md-group img { width:20px; height:20px; flex-shrink:0; transition:transform .15s; }
+.sp-group[aria-expanded="true"] img, .md-group[aria-expanded="true"] img { transform:rotate(90deg); }
 .md-message { margin: 0; color: var(--fg-mute); }
 
 /* Attachments: image thumbs + quote chips above the composer. */
@@ -5420,6 +5426,7 @@ function spIcon(name) { const img = document.createElement('img'); img.src = bas
 function spButtonIcon(el, icon) { el.replaceChildren(spIcon(icon)); }
 for (const [id, icon] of Object.entries({close:'close',back:'back',release:'reset',reset:'reset','all-presets':'presets',options:'options',save:'save',go:'start','picker-action':'confirm'})) spButtonIcon(spEl(id), icon);
 function spMessage(message) { spEl('message').textContent = message; spEl('message').hidden = !message; }
+let spModelOpen = new Set();
 function spAgent() { return spCatalog.agents.find(a => a.id === spDraft.settings.agent); }
 function spChoices(field) { const a = spAgent(); return field === 'agent' ? spCatalog.agents : (a?.[{model:'models',mode:'modes',effort:'efforts'}[field]] || []); }
 function spChoiceName(field, value) { return spChoices(field).find(c => c.id === value)?.name || value || (field === 'effort' ? 'Agent default' : 'Choose ' + (field === 'mode' ? 'permissions' : field)); }
@@ -5549,7 +5556,8 @@ function renderSpawnPicker() {
     }
   } else {
     const options=spView === 'effort' ? [{id:'',name:'Agent default',description:'Use the agent’s default effort.'},...spChoices('effort')] : spChoices(spView);
-    for (const c of options.filter(c => (c.name+' '+c.id+' '+(c.description || '')).toLowerCase().includes(query))) list.appendChild(row(c.name,c.description || (c.id!==c.name ? c.id:''),c.id===spDraft.settings[spView],()=>{
+    const matches=options.filter(c => (c.name+' '+c.id+' '+(c.description || '')).toLowerCase().includes(query));
+    const choiceRow=c => row(c.name,c.description || (c.id!==c.name ? c.id:''),c.id===spDraft.settings[spView],()=>{
       const field=spView; spDraft.settings[field]=c.id;
       if (field === 'agent') {
         let cleared=false;
@@ -5557,13 +5565,16 @@ function renderSpawnPicker() {
         if (cleared) spMessage('Agent changed. Choose compatible model and permissions below.');
       } else spMessage('');
       persistSpawnDraft();openSpawnView('main');
-    }));
+    });
+    if (spView === 'model') renderModelGroups(list,matches,{all:options,cls:'sp-group',query,open:spModelOpen,makeRow:choiceRow,toggle:renderSpawnPicker});
+    else for (const c of matches) list.appendChild(choiceRow(c));
   }
   if (!list.children.length) { const empty=document.createElement('p');empty.className='sp-note';empty.textContent=spView === 'project' ? 'No matching projects. Use the folder icon to enter a directory.' : 'No matching choices.';list.appendChild(empty); }
 }
 function openSpawnView(view) {
   if (view !== 'main' && (spBusy || spRecoveryBuffer)) return;
   if (view !== 'main' && spView === 'main') spPickerOrigin=document.activeElement;
+  if (view === 'model') spModelOpen=new Set([modelGroupKey(spDraft.settings.model)]);
   spView=view;
   const titles={main:'New chat',project:'Project',agent:'Agent',model:'Model',mode:'Permissions',effort:'Effort',presets:'Presets',path:'Project directory',options:'More options',save:'Save preset'};
   spEl('title').textContent=titles[view];
@@ -5740,6 +5751,36 @@ function spawnInProject(cwd) { openSpawnSheet(cwd); }
 // --- Spawn sheet: end ---
 
 // --- Model picker ---
+// Model lists group by everything before the last slash of the id, so
+// OpenCode's providers (google, openai, openrouter/anthropic) fold away.
+// A list with one group, which is every Claude and Codex list, stays flat.
+function modelGroupKey(id) { const i = (id || '').lastIndexOf('/'); return i > 0 ? id.slice(0, i) : ''; }
+function modelGroups(models) {
+  const groups = new Map();
+  for (const m of models) { const key = modelGroupKey(m.id); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(m); }
+  return [...groups].map(([key, items]) => ({key, items}));
+}
+// MODELS is the filtered list; ALL decides whether the list is grouped at
+// all, so a search that narrows to one provider keeps that header. OPEN holds
+// the group keys the user expanded; a search opens every group that still
+// matches. MAKE_ROW builds one model row, TOGGLE rerenders.
+function renderModelGroups(list, models, {all, cls, query, open, makeRow, toggle}) {
+  const groups = modelGroups(models);
+  if (modelGroups(all).length < 2) { for (const m of models) list.appendChild(makeRow(m)); return; }
+  for (const g of groups) {
+    const expanded = !!query || open.has(g.key);
+    const head = document.createElement('button'); head.type = 'button'; head.className = cls;
+    head.setAttribute('aria-expanded', String(expanded));
+    const name = document.createElement('span'); name.className = cls + '-name'; name.textContent = g.key || 'Other';
+    const count = document.createElement('span'); count.className = cls + '-count'; count.textContent = String(g.items.length);
+    head.append(name, count, spIcon('chevron'));
+    head.onclick = () => { if (open.has(g.key)) open.delete(g.key); else open.add(g.key); toggle(); };
+    // A touch scroll never fires click, and the search keyboard must stay put.
+    head.addEventListener('pointerdown', event => event.preventDefault());
+    list.appendChild(head);
+    if (expanded) for (const m of g.items) list.appendChild(makeRow(m));
+  }
+}
 const mdScrim = document.getElementById('model-scrim');
 const mdSheet = document.getElementById('model-sheet');
 const mdList = document.getElementById('md-list');
@@ -5749,6 +5790,7 @@ let modelPickerToken = 0;
 let modelPickerBuffer = null;
 let modelPickerData = {current: '', models: []};
 let modelPickerBusy = false;
+let mdOpenGroups = new Set();
 
 function modelPickerMessage(message) {
   const line = document.createElement('p');
@@ -5762,27 +5804,30 @@ function renderModelRows(data) {
   const query = (mdSearch.value || '').trim().toLowerCase();
   const models = data.models.filter(model =>
     !query || ((model.name || '') + ' ' + model.id).toLowerCase().includes(query));
-  for (const model of models) {
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'md-row' + (model.id === data.current ? ' sel' : '');
-    row.textContent = (model.name || model.id) +
-      (model.id === data.current ? ' (current)' : '');
-    row.disabled = modelPickerBusy;
-    if (model.description) {
-      const description = document.createElement('span');
-      description.className = 'md-description';
-      description.textContent = model.description;
-      row.appendChild(description);
-    }
-    row.onclick = () => chooseModel(model.id);
-    // Keep the search keyboard in place until the selection is accepted.
-    row.addEventListener('pointerdown', event => event.preventDefault());
-    mdList.appendChild(row);
-  }
+  renderModelGroups(mdList, models, {all: data.models, cls: 'md-group', query, open: mdOpenGroups,
+    makeRow: model => modelRow(model, data), toggle: () => renderModelRows(data)});
   if (!data.models.length) modelPickerMessage('No models available for this session.');
   else if (!models.length) modelPickerMessage('No matching models.');
   updateModelSearchVisibility();
+}
+
+function modelRow(model, data) {
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = 'md-row' + (model.id === data.current ? ' sel' : '');
+  row.textContent = (model.name || model.id) +
+    (model.id === data.current ? ' (current)' : '');
+  row.disabled = modelPickerBusy;
+  if (model.description) {
+    const description = document.createElement('span');
+    description.className = 'md-description';
+    description.textContent = model.description;
+    row.appendChild(description);
+  }
+  row.onclick = () => chooseModel(model.id);
+  // Keep the search keyboard in place until the selection is accepted.
+  row.addEventListener('pointerdown', event => event.preventDefault());
+  return row;
 }
 
 function updateModelSearchVisibility() {
@@ -5834,6 +5879,7 @@ async function openModelPicker() {
       current: data.current || '',
       models: data.models.filter(model => model && typeof model.id === 'string' && model.id)
     };
+    mdOpenGroups = new Set([modelGroupKey(modelPickerData.current)]);
     renderModelRows(modelPickerData);
   } catch (err) {
     if (token !== modelPickerToken || bufferName !== currentBufferName) return;

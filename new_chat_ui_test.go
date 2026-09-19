@@ -15,7 +15,8 @@ import (
 
 const newChatCatalogFixture = `{"defaultAgent":"codex","agents":[
  {"id":"codex","name":"Codex","models":[{"id":"sol","name":"Sol"},{"id":"astra","name":"Astra"}],"modes":[{"id":"agent","name":"Agent","description":"Ask outside the project"},{"id":"full","name":"Full access","description":"No approval prompts"}],"efforts":[{"id":"high","name":"High"},{"id":"low","name":"Low"}],"defaults":{"model":"sol","mode":"agent","effort":""}},
- {"id":"claude","name":"Claude Code","models":[{"id":"sonnet","name":"Sonnet"}],"modes":[{"id":"manual","name":"Manual"}],"efforts":[],"defaults":{"model":"sonnet","mode":"manual","effort":""}}
+ {"id":"claude","name":"Claude Code","models":[{"id":"sonnet","name":"Sonnet"}],"modes":[{"id":"manual","name":"Manual"}],"efforts":[],"defaults":{"model":"sonnet","mode":"manual","effort":""}},
+ {"id":"opencode","name":"OpenCode","models":[{"id":"google/gemini-a","name":"google/gemini-a"},{"id":"google/gemini-b","name":"google/gemini-b"},{"id":"openrouter/anthropic/claude-x","name":"openrouter/anthropic/claude-x"},{"id":"openai/gpt-y","name":"openai/gpt-y"}],"modes":[{"id":"build","name":"build"}],"efforts":[],"defaults":{"model":"","mode":"build","effort":""}}
 ]}`
 
 func newChatTestPage(t *testing.T) *chromePage {
@@ -96,7 +97,7 @@ func TestNewChatPresetOverrideResetAndExactLaunch(t *testing.T) {
 
 func TestNewChatSearchCannotBecomePathAndDraftSurvives(t *testing.T) {
 	page := newChatTestPage(t)
-	page.waitFor(t, `spCatalog.agents.length === 2`)
+	page.waitFor(t, `spCatalog.agents.length === 3`)
 	state := page.evalObject(t, `(()=>{
   spTask.value='Do not lose me';spTask.dispatchEvent(new Event('input'));
   document.getElementById('sp-project').click();
@@ -119,7 +120,7 @@ func TestNewChatSearchCannotBecomePathAndDraftSurvives(t *testing.T) {
 
 func TestNewChatCenteredHeadersAndKeyboardHeight(t *testing.T) {
 	page := newChatTestPage(t)
-	page.waitFor(t, `spCatalog.agents.length === 2`)
+	page.waitFor(t, `spCatalog.agents.length === 3`)
 	for _, height := range []int{852, 430} {
 		page.call(t, "Emulation.setDeviceMetricsOverride", map[string]interface{}{"width": 320, "height": height, "deviceScaleFactor": 1, "mobile": true})
 		state := page.evalObject(t, `(()=>{const title=document.getElementById('sp-title').getBoundingClientRect(),sheet=spSheet.getBoundingClientRect(),go=spGo.getBoundingClientRect();document.getElementById('sp-project').click();const back=document.getElementById('sp-back');const out={center:Math.abs((title.left+title.right)/2-(sheet.left+sheet.right)/2),footer:go.bottom<=innerHeight,overflow:document.documentElement.scrollWidth>innerWidth,backLeft:back.getBoundingClientRect().left<80,backText:back.textContent.trim(),icon:!!back.querySelector('img')};back.click();return out})()`)
@@ -131,7 +132,7 @@ func TestNewChatCenteredHeadersAndKeyboardHeight(t *testing.T) {
 
 func TestNewChatCustomPresetPinsAndPartialFailure(t *testing.T) {
 	page := newChatTestPage(t)
-	page.waitFor(t, `spCatalog.agents.length === 2 && spawnPresets.length === 1 && spawnProjects.length === 2`)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1 && spawnProjects.length === 2`)
 	state := page.evalObject(t, `(async()=>{
   document.querySelector('#sp-presets button').click();
   spEl('save').click();spEl('save-name').value='My setup';spEl('picker-action').click();
@@ -166,7 +167,7 @@ func TestNewChatVisualReview(t *testing.T) {
 		t.Skip("Set SYZYGY_UI_SHOTS to capture mobile review images")
 	}
 	page := newChatTestPage(t)
-	page.waitFor(t, `spCatalog.agents.length === 2 && spawnPresets.length === 1 && spawnProjects.length === 2`)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1 && spawnProjects.length === 2`)
 	page.eval(t, `document.querySelector('#sp-presets button').click()`)
 	for _, view := range []string{"main", "project", "model", "mode"} {
 		page.eval(t, fmt.Sprintf(`openSpawnView(%q)`, view))
@@ -188,7 +189,7 @@ func TestNewChatVisualReview(t *testing.T) {
 
 func TestNewChatMissingRecoveryCanReturnToDraft(t *testing.T) {
 	page := newChatTestPage(t)
-	page.waitFor(t, `spCatalog.agents.length === 2 && spawnPresets.length === 1`)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1`)
 	state := page.evalObject(t, `(async()=>{
   document.querySelector('#sp-presets button').click();spTask.value='Unsent work';spTask.dispatchEvent(new Event('input'));
   spRecoveryBuffer='missing buffer';spRecoveryKeepsTask=true;persistSpawnDraft();renderSpawnMain();
@@ -203,7 +204,7 @@ func TestNewChatMissingRecoveryCanReturnToDraft(t *testing.T) {
 
 func TestNewChatPresetsSwipeHorizontallyWithoutSelecting(t *testing.T) {
 	page := newChatTestPage(t)
-	page.waitFor(t, `spCatalog.agents.length === 2 && spawnPresets.length === 1`)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1`)
 	page.call(t, "Emulation.setTouchEmulationEnabled", map[string]interface{}{"enabled": true, "maxTouchPoints": 1})
 	state := page.evalObject(t, `(()=>{
       spawnPresets=Array.from({length:10},(_,i)=>({key:String(i),label:'Preset '+i+' / Full access',agent:'codex',model:'sol',mode:'full',effort:'high'}));
@@ -223,5 +224,60 @@ func TestNewChatPresetsSwipeHorizontallyWithoutSelecting(t *testing.T) {
 	state = page.evalObject(t, `(async()=>{await new Promise(r=>setTimeout(r,200));return {left:spPresets.scrollLeft,preset:spDraft.preset};})()`)
 	if state["left"].(float64) < 50 || state["preset"] != "" {
 		t.Fatalf("swipe must scroll without selecting a preset: %#v", state)
+	}
+}
+
+func TestNewChatModelPickerGroupsByProvider(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3`)
+	state := page.evalObject(t, `(()=>{
+  const rows=()=>[...document.querySelectorAll('#sp-picker-list .sp-row')].map(b=>b.textContent);
+  const heads=()=>[...document.querySelectorAll('#sp-picker-list .sp-group')].map(b=>b.textContent+'|'+b.getAttribute('aria-expanded'));
+  document.getElementById('sp-agent').click();
+  [...document.querySelectorAll('#sp-picker-list button')].find(b=>b.textContent.includes('OpenCode')).click();
+  document.getElementById('sp-model').click();
+  const collapsed={heads:heads(),rows:rows()};
+  document.querySelector('#sp-picker-list .sp-group').click();
+  const opened={heads:heads(),rows:rows()};
+  const q=document.getElementById('sp-search');q.value='claude-x';q.dispatchEvent(new Event('input'));
+  const searched={heads:heads(),rows:rows()};
+  q.value='';q.dispatchEvent(new Event('input'));
+  const cleared={heads:heads(),rows:rows()};
+  document.querySelector('#sp-picker-list .sp-row').click();
+  const model=spDraft.settings.model;
+  document.getElementById('sp-model').click();
+  const reopened={heads:heads(),rows:rows()};
+  document.getElementById('sp-agent').click();
+  [...document.querySelectorAll('#sp-picker-list button')].find(b=>b.textContent.includes('Codex')).click();
+  document.getElementById('sp-model').click();
+  const flat={heads:heads(),rows:rows()};
+  return {collapsed,opened,searched,cleared,model,reopened,flat};
+ })()`)
+	collapsed := state["collapsed"].(map[string]interface{})
+	if heads := collapsed["heads"].([]interface{}); len(heads) != 3 || len(collapsed["rows"].([]interface{})) != 0 || !strings.HasPrefix(heads[0].(string), "google") || !strings.HasSuffix(heads[0].(string), "|false") {
+		t.Fatalf("no selection: every provider collapsed: %#v", collapsed)
+	}
+	opened := state["opened"].(map[string]interface{})
+	if rows := opened["rows"].([]interface{}); len(rows) != 2 || !strings.Contains(rows[0].(string), "google/gemini-a") || !strings.HasSuffix(opened["heads"].([]interface{})[0].(string), "|true") {
+		t.Fatalf("tapping a header opens only that group: %#v", opened)
+	}
+	searched := state["searched"].(map[string]interface{})
+	if heads := searched["heads"].([]interface{}); len(heads) != 1 || !strings.HasPrefix(heads[0].(string), "openrouter/anthropic") || len(searched["rows"].([]interface{})) != 1 {
+		t.Fatalf("search keeps only matching groups, open: %#v", searched)
+	}
+	cleared := state["cleared"].(map[string]interface{})
+	if len(cleared["heads"].([]interface{})) != 3 || len(cleared["rows"].([]interface{})) != 2 {
+		t.Fatalf("clearing search restores the groups and the one the user opened: %#v", cleared)
+	}
+	if state["model"] != "google/gemini-a" {
+		t.Fatalf("picked model: %#v", state["model"])
+	}
+	reopened := state["reopened"].(map[string]interface{})
+	if rows := reopened["rows"].([]interface{}); len(rows) != 2 || len(reopened["heads"].([]interface{})) != 3 {
+		t.Fatalf("reopening starts with the selected model's group open: %#v", reopened)
+	}
+	flat := state["flat"].(map[string]interface{})
+	if len(flat["heads"].([]interface{})) != 0 || len(flat["rows"].([]interface{})) != 2 {
+		t.Fatalf("single-provider lists stay flat: %#v", flat)
 	}
 }
