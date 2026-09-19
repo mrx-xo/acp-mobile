@@ -424,6 +424,179 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
   -webkit-overflow-scrolling: touch;
 }
 
+/* Diff review: read-only reader for the latest phone turn and the
+   repository's pending changes. Header, tabs, gutter controls and
+   change navigation stay put; only the file list or the viewport
+   scrolls. Geometry follows the approved phone design: 64px header,
+   44px controls, 26px single-line rows (18px code line + 4px padding),
+   one 24px number column and a 12px marker. */
+#diff-review {
+  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: var(--bg-hard); z-index: 102; flex-direction: column;
+  font-family: var(--mono);
+}
+#diff-review.visible { display: flex; }
+#dr-header {
+  display: flex; align-items: center; gap: 8px; height: 64px; flex-shrink: 0;
+  padding: 0 4px 0 0; margin-top: env(safe-area-inset-top);
+  background: var(--bg0); border-bottom: 1px solid var(--bg2);
+}
+#dr-back, #dr-refresh, #dr-reader-back {
+  background: transparent; border: none; color: var(--orange); cursor: pointer;
+  min-width: 44px; min-height: 44px; font-family: var(--mono); font-size: 16px;
+  padding: 0 12px;
+}
+#dr-title { flex: 1; min-width: 0; }
+#dr-title-main { font-size: 17px; font-weight: 700; color: var(--fg); }
+#dr-title-sub {
+  font-size: 12px; color: var(--fg-mute); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+#dr-tabs {
+  display: flex; margin: 16px 16px 0; height: 44px; flex-shrink: 0;
+  border: 1px solid var(--bg2); border-radius: 8px; overflow: hidden;
+}
+#dr-tabs button {
+  flex: 1; background: none; border: none; color: var(--fg-mute); cursor: pointer;
+  font-family: var(--mono); font-size: 14px; min-height: 44px;
+}
+#dr-tabs button + button { border-left: 1px solid var(--bg2); }
+#dr-tabs button[aria-selected="true"] { background: var(--bg1); color: var(--orange); }
+#dr-list-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#dr-list-view[hidden], #dr-reader[hidden], #dr-back[hidden], #dr-reader-back[hidden] { display: none; }
+#dr-identity, #dr-scope, #dr-summary {
+  margin: 12px 16px 0; font-size: 14px; line-height: 22px; color: var(--fg-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0;
+}
+#dr-identity { color: var(--fg); }
+#dr-notice {
+  margin: 8px 16px 0; padding: 6px 10px; font-size: 13px; line-height: 18px;
+  color: var(--fg-mute); border-radius: 6px; background: var(--bg0); flex-shrink: 0;
+}
+#dr-notice[hidden] { display: none; }
+#dr-notice.warn { color: var(--yellow); }
+#dr-list {
+  flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 12px 16px 0;
+}
+.dr-section {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--fg-mute); margin: 8px 0 8px; line-height: 16px;
+}
+.dr-file {
+  display: flex; flex-direction: column; justify-content: center; gap: 4px;
+  width: 100%; min-height: 92px; margin: 0 0 8px; padding: 12px;
+  text-align: left; background: var(--bg0); border: 1px solid var(--bg2);
+  border-radius: 8px; color: var(--fg); font-family: var(--mono); cursor: pointer;
+}
+.dr-file:active { background: var(--bg1); }
+.dr-file-path { font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
+.dr-file-old { font-size: 12px; line-height: 16px; color: var(--fg-mute); overflow-wrap: anywhere; }
+.dr-file-meta { display: flex; gap: 8px; align-items: center; font-size: 12px; line-height: 16px; color: var(--fg-dim); }
+.dr-badge {
+  padding: 1px 6px; border-radius: 4px; background: var(--bg1); color: var(--fg-dim);
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.dr-badge.staged { color: var(--green); }
+.dr-badge.unstaged { color: var(--yellow); }
+.dr-badge.untracked { color: var(--blue); }
+.dr-badge.turn { color: var(--purple); }
+.dr-counts { margin-left: auto; color: var(--fg-mute); }
+#dr-open-first {
+  margin: 12px 16px; margin-bottom: max(16px, env(safe-area-inset-bottom)); flex-shrink: 0;
+  min-height: 44px; border-radius: 8px; border: none; background: var(--orange);
+  color: var(--bg-hard); font-family: var(--mono); font-size: 15px; font-weight: 700; cursor: pointer;
+}
+#dr-open-first[hidden] { display: none; }
+#dr-reader { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#dr-file-label {
+  margin: 16px 16px 0; font-size: 14px; line-height: 22px; color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0;
+}
+#dr-controls {
+  display: flex; align-items: center; gap: 8px; margin: 12px 16px 0; height: 44px; flex-shrink: 0;
+}
+#dr-change-heading {
+  flex: 1; min-width: 0; font-size: 14px; line-height: 19px; color: var(--fg-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#dr-numbers-btn {
+  width: 112px; min-height: 44px; flex-shrink: 0; border-radius: 8px;
+  border: 1px solid var(--bg2); background: none; color: var(--fg-dim);
+  font-family: var(--mono); font-size: 13px; cursor: pointer;
+}
+#dr-numbers-btn[aria-pressed="true"] { color: var(--orange); border-color: var(--orange); }
+#dr-viewport {
+  position: relative; flex: 1; min-height: 0; margin: 12px 16px 0;
+  overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--bg2); border-radius: 8px; background: var(--bg-hard);
+}
+.diff-hunk-header {
+  padding: 4px 8px; font-size: 12px; line-height: 18px; color: var(--fg-mute);
+  background: var(--bg0); overflow-wrap: anywhere;
+}
+.diff-row {
+  display: flex; align-items: flex-start; gap: 4px; padding: 4px 8px;
+}
+.diff-row.added { background: rgba(184,187,38,0.12); }
+.diff-row.removed { background: rgba(251,73,52,0.12); }
+.diff-row.marker { color: var(--fg-mute); }
+.diff-num {
+  width: 24px; flex: 0 0 24px; font-size: 12px; line-height: 16px;
+  padding-top: 1px; color: var(--fg-mute); text-align: right;
+  user-select: none; -webkit-user-select: none;
+}
+#diff-review.diff-numbers-hidden .diff-num { display: none; }
+.diff-mark {
+  width: 12px; flex: 0 0 12px; font-size: 13px; line-height: 18px; font-weight: 700;
+  white-space: pre; text-align: center; user-select: none; -webkit-user-select: none;
+}
+.diff-row.added .diff-mark { color: var(--green); }
+.diff-row.removed .diff-mark { color: var(--red); }
+.diff-code {
+  min-width: 0; flex: 1; min-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: 13px; line-height: 18px; color: var(--fg); tab-size: 4;
+}
+.diff-code .tok-kw { color: var(--purple); }
+.diff-code .tok-fn { color: var(--yellow); }
+.diff-code .tok-str { color: var(--green); }
+.diff-code .tok-lit { color: var(--blue); }
+.diff-code .tok-cm { color: var(--fg-mute); font-style: italic; }
+.diff-empty { padding: 16px; font-size: 14px; color: var(--fg-mute); }
+#dr-nav {
+  display: flex; gap: 16px; margin: 12px 16px; flex-shrink: 0;
+  margin-bottom: max(16px, env(safe-area-inset-bottom));
+}
+#dr-nav button {
+  min-height: 44px; border-radius: 8px; border: 1px solid var(--bg2); background: var(--bg0);
+  color: var(--fg); font-family: var(--mono); font-size: 14px; cursor: pointer;
+}
+#dr-nav button:disabled { color: var(--fg-mute); }
+#dr-prev { width: 116px; flex-shrink: 0; }
+#dr-next { flex: 1; background: var(--bg1); }
+
+/* Entry points: the turn summary card and the pre-commit review row */
+.msg.turn-review {
+  background: var(--bg0); border-left: 3px solid var(--purple); font-family: var(--mono);
+}
+.msg.turn-review .tr-label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.5px; color: var(--purple); margin-bottom: 4px;
+}
+.msg.turn-review .tr-body { font-size: 13px; color: var(--fg-dim); margin-bottom: 8px; }
+.msg.turn-review .tr-open {
+  min-height: 44px; width: 100%; border-radius: 8px; border: 1px solid var(--bg2);
+  background: var(--bg1); color: var(--fg); font-family: var(--mono); font-size: 14px; cursor: pointer;
+}
+.msg.turn-review .tr-open:disabled { color: var(--fg-mute); }
+.msg.turn-review .tr-open[hidden] { display: none; }
+#review-bar { flex-shrink: 0; background: var(--bg0); padding: 0 12px; }
+#review-repo-btn {
+  width: 100%; min-height: 44px; background: none; border: none; border-top: 1px solid var(--bg2);
+  color: var(--fg-dim); font-family: var(--mono); font-size: 13px; text-align: left; cursor: pointer;
+}
+#review-repo-btn:disabled { color: var(--fg-mute); }
+#review-repo-btn b { color: var(--fg); font-weight: 600; }
+
 /* Messages area */
 #messages {
   flex: 1; overflow-y: auto; padding: 16px;
@@ -1585,10 +1758,43 @@ input, textarea, #fbv-content, .msg, .msg * {
   </div>
   <div id="fbv-content"></div>
 </div>
+<div id="diff-review" role="dialog" aria-label="Diff review">
+  <div id="dr-header">
+    <button id="dr-back" type="button" aria-label="Close review">&larr;</button>
+    <button id="dr-reader-back" type="button" aria-label="Back to files" hidden>&larr;</button>
+    <div id="dr-title"><div id="dr-title-main">Review</div><div id="dr-title-sub"></div></div>
+    <button id="dr-refresh" type="button">Refresh</button>
+  </div>
+  <div id="dr-tabs" role="tablist">
+    <button id="dr-tab-turn" type="button" role="tab" aria-selected="true">This turn</button>
+    <button id="dr-tab-repository" type="button" role="tab" aria-selected="false">Before commit</button>
+  </div>
+  <div id="dr-notice" hidden></div>
+  <div id="dr-list-view">
+    <div id="dr-identity"></div>
+    <div id="dr-scope"></div>
+    <div id="dr-summary"></div>
+    <div id="dr-list"></div>
+    <button id="dr-open-first" type="button" hidden>Open first file</button>
+  </div>
+  <div id="dr-reader" hidden>
+    <div id="dr-file-label"></div>
+    <div id="dr-controls">
+      <div id="dr-change-heading"></div>
+      <button id="dr-numbers-btn" type="button" aria-pressed="false">Hide numbers</button>
+    </div>
+    <div id="dr-viewport"></div>
+    <div id="dr-nav">
+      <button id="dr-prev" type="button">Previous</button>
+      <button id="dr-next" type="button">Next change</button>
+    </div>
+  </div>
+</div>
 <div id="messages"></div>
 <div id="swipe-indicator"></div>
 <button id="scroll-btn">&darr;</button>
 <div id="attach-row"></div>
+<div id="review-bar"><button id="review-repo-btn" type="button" disabled><b>Before commit:</b> review repository</button></div>
 <div id="input-area">
   <button id="attach-btn" aria-label="Attach image">+</button>
   <input type="file" id="attach-input" accept="image/jpeg,image/png,image/webp,image/gif" multiple>
@@ -3901,6 +4107,7 @@ async function redial() {
         // earlier failed attempts' backoff delay the reunion.
         if (same.pid !== currentSockPid) reconnectAttempts = 1;
         currentSockPid = same.pid;
+        updateReviewBar();
       } else if (!sessions.some(s => s.pid === currentSockPid)) {
         // Our socket is gone and the session hasn't resurfaced yet
         // (mid-reload on the rig, or killed, or its probe timed out).
@@ -4417,6 +4624,7 @@ function handleMessage(msg) {
     if (msg.result && msg.result.stopReason) {
       currentAgentMsg = null;
       endAnonymousThoughtRun();
+      if (localPromptIds.has(msg.id) && msg.result.stopReason !== 'cancelled') appendTurnReviewSummary();
       localPromptIds.delete(msg.id);
       if (!promptTurnOpen()) setProcessing(false);
       // Mark last sent user message as delivered
@@ -5315,6 +5523,7 @@ function selectSession(session) {
   markViewed(session);
   stashDraft(); // the chat being left keeps its own half-typed text
   currentSockPid = session.pid;
+  updateReviewBar();
   currentSessionKey = sKey(session);
   restoreDraft();
   // A NEW session: wipe before dialing so the old chat never sits under
@@ -5364,6 +5573,7 @@ function showOrrery() {
   chatViewEl.classList.remove('visible');
   orreryEl.classList.remove('hidden');
   clearMessages();
+  resetDiffReview();
   currentAgentMsg = null;
   currentUserMsg = null;
   lastSentMsg = null;
@@ -7655,6 +7865,451 @@ document.getElementById('pins-close').addEventListener('click', () => {
   pinsEl.classList.remove('visible');
   syncHistoryDock();
 });
+// --- Diff review ---
+// Read-only review of what changed: the latest turn started from this
+// phone (an immutable snapshot the server captured around the prompt)
+// and the repository's current staged, unstaged and untracked changes.
+// Nothing here can stage, commit, or write a file.
+const DIFF_LINE_NUMBERS_KEY = 'acp-diff-line-numbers';
+const diffReviewEl = document.getElementById('diff-review');
+const drTitleSub = document.getElementById('dr-title-sub');
+const drTabButtons = {turn: document.getElementById('dr-tab-turn'), repository: document.getElementById('dr-tab-repository')};
+const drRefreshBtn = document.getElementById('dr-refresh');
+const drListView = document.getElementById('dr-list-view');
+const drListEl = document.getElementById('dr-list');
+const drIdentity = document.getElementById('dr-identity');
+const drScope = document.getElementById('dr-scope');
+const drSummary = document.getElementById('dr-summary');
+const drOpenFirst = document.getElementById('dr-open-first');
+const drNotice = document.getElementById('dr-notice');
+const drReader = document.getElementById('dr-reader');
+const drFileLabel = document.getElementById('dr-file-label');
+const drChangeHeading = document.getElementById('dr-change-heading');
+const drNumbersBtn = document.getElementById('dr-numbers-btn');
+const drViewport = document.getElementById('dr-viewport');
+const drPrev = document.getElementById('dr-prev');
+const drNext = document.getElementById('dr-next');
+const reviewRepoBtn = document.getElementById('review-repo-btn');
+const drBackBtn = document.getElementById('dr-back');
+const drReaderBackBtn = document.getElementById('dr-reader-back');
+
+// var, not const: tests read it off the script scope.
+var diffReview = {
+  scope: 'turn',
+  results: {turn: null, repository: null},
+  file: -1,
+  hunk: 0,
+  scroll: {},     // scope:file -> reader scrollTop
+  listScroll: {}, // scope -> file list scrollTop
+  loading: 0,
+};
+
+// Line-number preference: one column, on by default, remembered across
+// files, scopes and reloads. Hiding it hands the 24px column and its
+// 4px gap to the code; the +/- marker stays in flow either way.
+function diffLineNumbersVisible() {
+  try { return localStorage.getItem(DIFF_LINE_NUMBERS_KEY) !== 'false'; } catch (_) { return true; }
+}
+function applyDiffLineNumbers(visible) {
+  diffReviewEl.classList.toggle('diff-numbers-hidden', !visible);
+  drNumbersBtn.setAttribute('aria-pressed', visible ? 'false' : 'true');
+  drNumbersBtn.textContent = visible ? 'Hide numbers' : 'Show numbers';
+}
+function setDiffLineNumbers(visible) {
+  try { localStorage.setItem(DIFF_LINE_NUMBERS_KEY, visible ? 'true' : 'false'); } catch (_) {}
+  applyDiffLineNumbers(!!visible);
+}
+
+// Language-aware colors on top of escaped text. The tokenizer only ever
+// sees output of escHtml, and entities are matched first so an `&lt;`
+// can never start a tag, a comment, or a string.
+const DIFF_LANGUAGES = {
+  js: 'js', mjs: 'js', cjs: 'js', jsx: 'js', ts: 'ts', tsx: 'ts', go: 'go', py: 'py',
+  sh: 'sh', bash: 'sh', zsh: 'sh', el: 'elisp', html: 'html', htm: 'html', css: 'css',
+  json: 'json', md: 'md', markdown: 'md',
+};
+const DIFF_KEYWORDS = {
+  js: 'const let var function return if else for while do switch case break continue new class extends import export from default try catch finally throw await async yield typeof instanceof in of this super static get set delete void',
+  go: 'package import func return if else for range switch case break continue default go defer chan map struct interface type var const select fallthrough goto',
+  py: 'def class return if elif else for while in not and or is import from as with try except finally raise pass break continue lambda yield global nonlocal assert del async await',
+  sh: 'if then else elif fi for while until do done case esac in function return export local exit source',
+  elisp: 'defun defvar defcustom defmacro defconst setq-local setq let\\* let if when unless cond progn lambda while dolist dotimes and or not require provide interactive function quote',
+};
+DIFF_KEYWORDS.ts = DIFF_KEYWORDS.js + ' interface type enum implements readonly declare namespace keyof';
+const DIFF_COMMENTS = {
+  js: '\\/\\/.*|\\/\\*.*?\\*\\/|\\/\\*.*', ts: '\\/\\/.*|\\/\\*.*?\\*\\/|\\/\\*.*', go: '\\/\\/.*|\\/\\*.*?\\*\\/|\\/\\*.*',
+  css: '\\/\\*.*?\\*\\/|\\/\\*.*', py: '#.*', sh: '#.*', elisp: ';.*', html: '&lt;!--.*?--&gt;|&lt;!--.*',
+};
+const diffTokenizers = {};
+function diffLanguage(path) {
+  const base = String(path || '').split('/').pop();
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) return /^(Makefile|Dockerfile)$/.test(base) ? 'sh' : 'text';
+  return DIFF_LANGUAGES[base.slice(dot + 1).toLowerCase()] || 'text';
+}
+function diffTokenizer(lang) {
+  if (lang in diffTokenizers) return diffTokenizers[lang];
+  const rules = [['', '&(?:lt|gt|amp);']];
+  if (DIFF_COMMENTS[lang]) rules.push(['tok-cm', DIFF_COMMENTS[lang]]);
+  const strings = '"(?:[^"\\\\]|\\\\.)*"|\'(?:[^\'\\\\]|\\\\.)*\'|`[^`]*`';
+  if (lang === 'md') {
+    rules.push(['tok-kw', '^#{1,6} .*']);
+    rules.push(['tok-str', '`[^`]*`']);
+    rules.push(['tok-fn', '\\[[^\\]]*\\]\\([^)]*\\)']);
+  } else if (lang === 'html') {
+    rules.push(['tok-str', '"[^"]*"|\'[^\']*\'']);
+    rules.push(['tok-kw', '&lt;\\/?[A-Za-z][\\w-]*|\\/?&gt;']);
+    rules.push(['tok-fn', '[A-Za-z_:][\\w:.-]*(?==)']);
+  } else if (lang === 'json') {
+    rules.push(['tok-fn', '"(?:[^"\\\\]|\\\\.)*"(?=\\s*:)']);
+    rules.push(['tok-str', '"(?:[^"\\\\]|\\\\.)*"']);
+    rules.push(['tok-lit', '\\b(?:true|false|null)\\b|-?\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b']);
+  } else if (lang === 'css') {
+    rules.push(['tok-str', strings]);
+    rules.push(['tok-kw', '@[a-z-]+|!important']);
+    rules.push(['tok-fn', '[a-z-]+(?=\\s*:)']);
+    rules.push(['tok-lit', '#[0-9a-fA-F]{3,8}\\b|\\b\\d+(?:\\.\\d+)?(?:px|em|rem|%|vh|vw|s|ms)?\\b']);
+  } else if (lang !== 'text') {
+    rules.push(['tok-str', strings]);
+    if (DIFF_KEYWORDS[lang]) rules.push(['tok-kw', '(?<![\\w-])(?:' + DIFF_KEYWORDS[lang].split(' ').join('|') + ')(?![\\w-])']);
+    rules.push(['tok-lit', '\\b(?:true|false|null|nil|None|True|False|undefined)\\b|\\b\\d+(?:\\.\\d+)?\\b']);
+    rules.push(['tok-fn', lang === 'elisp' ? '(?<=\\()[A-Za-z][\\w*+/<>=-]*' : '[A-Za-z_$][\\w$]*(?=\\()']);
+  }
+  let tokenizer = null;
+  try {
+    const re = new RegExp(rules.map(r => '(' + r[1] + ')').join('|'), 'g');
+    tokenizer = escaped => escaped.replace(re, (...args) => {
+      const match = args[0];
+      for (let i = 0; i < rules.length; i++) {
+        if (args[i + 1] !== undefined) {
+          return rules[i][0] ? '<span class="' + rules[i][0] + '">' + match + '</span>' : match;
+        }
+      }
+      return match;
+    });
+  } catch (_) {
+    tokenizer = escaped => escaped; // an engine without lookbehind keeps plain text
+  }
+  diffTokenizers[lang] = tokenizer;
+  return tokenizer;
+}
+function highlightCode(escaped, lang) {
+  return diffTokenizer(lang || 'text')(escaped);
+}
+
+// One row = one number, one marker, one wrapping code cell. Removals
+// show the old-file number, everything else the new-file number.
+function renderReviewLine(line, language) {
+  if (line.kind === 'marker') {
+    return '<div class="diff-row marker"><span class="diff-num"></span><span class="diff-mark"> </span>' +
+      '<span class="diff-code">\\ ' + escHtml(line.text || '') + '</span></div>';
+  }
+  const number = line.kind === 'removed' ? line.old : line.new;
+  const mark = line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
+  return '<div class="diff-row ' + escHtml(line.kind) + '"><span class="diff-num">' + (number || '') + '</span>' +
+    '<span class="diff-mark">' + mark + '</span>' +
+    '<span class="diff-code">' + highlightCode(escHtml(line.text || ''), language) + '</span></div>';
+}
+function renderDiffFile(file) {
+  if (file.binary) return '<div class="diff-empty">Binary file: not rendered</div>';
+  if (!file.hunks || file.hunks.length === 0) {
+    return '<div class="diff-empty">' + (file.status === 'renamed' ? 'Renamed without content changes' : 'No content changes') + '</div>';
+  }
+  const language = diffLanguage(file.path);
+  return file.hunks.map((hunk, i) =>
+    '<div class="diff-hunk" data-hunk="' + i + '"><div class="diff-hunk-header">' + escHtml(hunk.header || '') + '</div>' +
+    (hunk.lines || []).map(line => renderReviewLine(line, language)).join('') + '</div>').join('');
+}
+
+const DIFF_SOURCE_LABELS = {turn: 'This turn', staged: 'Staged', unstaged: 'Unstaged', untracked: 'Untracked'};
+const DIFF_STATUS_LABELS = {added: 'Added', deleted: 'Deleted', renamed: 'Renamed', modified: 'Modified'};
+function diffCounts(added, removed) { return '+' + (added || 0) + ' -' + (removed || 0); }
+function diffTimeLabel(iso) {
+  const d = new Date(iso || '');
+  return isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+}
+
+function renderDiffFileList(result) {
+  result = result || {files: []};
+  const files = result.files || [];
+  drListEl.innerHTML = '';
+  if (result.scope === 'turn') {
+    drIdentity.textContent = result.available
+      ? 'Turn saved ' + diffTimeLabel(result.capturedAt) + (result.branch ? ' on ' + result.branch : '')
+      : (result.pending ? 'Capturing this turn' : 'Snapshot unavailable');
+    drScope.textContent = 'Latest turn started from this phone';
+  } else {
+    drIdentity.textContent = (result.branch || 'Repository') + (result.available && result.capturedAt ? ' at ' + diffTimeLabel(result.capturedAt) : '');
+    drScope.textContent = 'Staged, unstaged and untracked changes';
+  }
+  drSummary.textContent = !result.available ? (result.reason || '')
+    : files.length === 0 ? (result.reason || 'No changes')
+    : files.length + ' file' + (files.length === 1 ? '' : 's') + ' · ' + diffCounts(result.added, result.removed) +
+      (result.truncated ? ' · output truncated' : '');
+  let lastSource = null;
+  files.forEach((file, index) => {
+    if (result.scope !== 'turn' && file.source !== lastSource) {
+      const section = document.createElement('div');
+      section.className = 'dr-section';
+      section.textContent = DIFF_SOURCE_LABELS[file.source] || file.source;
+      drListEl.appendChild(section);
+      lastSource = file.source;
+    }
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'dr-file';
+    row.setAttribute('data-file', String(index));
+    const detail = file.binary ? 'Binary file' : diffCounts(file.added, file.removed);
+    row.innerHTML = '<span class="dr-file-path">' + escHtml(file.path || '') + '</span>' +
+      (file.oldPath ? '<span class="dr-file-old">from ' + escHtml(file.oldPath) + '</span>' : '') +
+      '<span class="dr-file-meta"><span class="dr-badge ' + escHtml(file.source || '') + '">' +
+      escHtml(DIFF_SOURCE_LABELS[file.source] || file.source || '') + '</span><span>' +
+      escHtml(DIFF_STATUS_LABELS[file.status] || file.status || '') + '</span><span class="dr-counts">' + detail + '</span></span>';
+    row.addEventListener('click', () => openDiffFile(index));
+    drListEl.appendChild(row);
+  });
+  drOpenFirst.hidden = files.length === 0;
+}
+
+function setDiffNotice(text, kind) {
+  drNotice.textContent = text || '';
+  drNotice.hidden = !text;
+  drNotice.className = kind === 'warn' ? 'warn' : '';
+}
+function setDiffTab(scope) {
+  for (const key in drTabButtons) drTabButtons[key].setAttribute('aria-selected', key === scope ? 'true' : 'false');
+  drTitleSub.textContent = scope === 'turn' ? 'This turn' : 'Before commit';
+}
+function diffQuery(scope) {
+  if (scope === 'turn') return sessionId ? 'scope=turn&sessionId=' + encodeURIComponent(sessionId) : null;
+  return currentSockPid ? 'scope=repository&pid=' + encodeURIComponent(currentSockPid) : null;
+}
+async function fetchDiffReview(scope) {
+  const query = diffQuery(scope);
+  if (!query) throw new Error(scope === 'turn' ? 'No session yet' : 'No live session');
+  const resp = await fetch(basePath + '/api/diff-review?' + query, {cache: 'no-store'});
+  if (!resp.ok) throw new Error((await resp.text()) || ('HTTP ' + resp.status));
+  return resp.json();
+}
+
+// loadDiffReview fetches a scope and shows its file list. Data already
+// on screen is replaced only by a successful response; a failed refresh
+// keeps it and says so. A pending turn is polled while the view is open.
+async function loadDiffReview(scope, options = {}) {
+  diffReview.scope = scope;
+  setDiffTab(scope);
+  const previous = diffReview.results[scope];
+  if (previous && !options.refresh && !options.poll) {
+    renderDiffFileList(previous);
+    setDiffNotice(previous.available ? (previous.truncated ? 'Output truncated at 2 MB' : '') : (previous.reason || 'Unavailable'), previous.available ? '' : 'warn');
+    return previous;
+  }
+  const token = ++diffReview.loading;
+  if (!options.poll) setDiffNotice(previous ? 'Refreshing…' : 'Loading…', '');
+  try {
+    const result = await fetchDiffReview(scope);
+    if (token !== diffReview.loading) return result;
+    diffReview.results[scope] = result;
+    if (diffReview.scope === scope) {
+      renderDiffFileList(result);
+      if (result.pending) {
+        setDiffNotice('Capturing this turn…', '');
+        const tries = (options.tries || 0) + 1;
+        if (tries < 20 && diffReviewEl.classList.contains('visible')) {
+          setTimeout(() => { if (diffReview.scope === scope && diffReviewEl.classList.contains('visible')) loadDiffReview(scope, {poll: true, tries}); }, 700);
+        }
+      } else {
+        setDiffNotice(result.available ? (result.truncated ? 'Output truncated at 2 MB' : '') : (result.reason || 'Unavailable'), result.available ? '' : 'warn');
+      }
+    }
+    return result;
+  } catch (err) {
+    if (token !== diffReview.loading) return null;
+    if (previous) {
+      setDiffNotice('Refresh failed: ' + err.message, 'warn');
+      if (diffReview.scope === scope) renderDiffFileList(previous);
+    } else {
+      const empty = {scope, available: false, reason: err.message, files: []};
+      setDiffNotice(err.message, 'warn');
+      if (diffReview.scope === scope) renderDiffFileList(empty);
+    }
+    return null;
+  }
+}
+
+function openDiffReview(scope) {
+  diffReviewEl.classList.add('visible');
+  closeDiffReader(false);
+  loadDiffReview(scope || diffReview.scope, {refresh: true});
+}
+function closeDiffReview() {
+  diffReviewEl.classList.remove('visible');
+}
+function resetDiffReview() {
+  closeDiffReview();
+  closeDiffReader(false);
+  diffReview.results = {turn: null, repository: null};
+  diffReview.scroll = {};
+  diffReview.listScroll = {};
+  turnReviewPoll++;
+}
+function showDiffScope(scope) {
+  if (scope === diffReview.scope && !drReader.hidden) return;
+  diffReview.listScroll[diffReview.scope] = drListEl.scrollTop;
+  closeDiffReader(false);
+  loadDiffReview(scope).then(() => { drListEl.scrollTop = diffReview.listScroll[scope] || 0; });
+}
+
+// Reader: one file at a time, every hunk rendered, scroll position kept
+// per scope and file, change navigation across hunks and files.
+function diffScrollKey() { return diffReview.scope + ':' + diffReview.file; }
+function currentDiffFiles() {
+  const result = diffReview.results[diffReview.scope];
+  return (result && result.files) || [];
+}
+function diffHunkCount(file) { return file && file.hunks ? file.hunks.length : 0; }
+function saveDiffScroll() {
+  if (diffReview.file >= 0 && !drReader.hidden) diffReview.scroll[diffScrollKey()] = drViewport.scrollTop;
+}
+function updateDiffChangeHeading() {
+  const files = currentDiffFiles();
+  const file = files[diffReview.file];
+  const count = diffHunkCount(file);
+  drChangeHeading.textContent = (count ? 'Change ' + (diffReview.hunk + 1) + ' of ' + count : 'No changes') +
+    ' · file ' + (diffReview.file + 1) + ' of ' + files.length;
+  const prevFile = files.slice(0, diffReview.file).some(f => diffHunkCount(f) > 0);
+  const nextFile = files.slice(diffReview.file + 1).some(f => diffHunkCount(f) > 0);
+  drPrev.disabled = !(diffReview.hunk > 0 || prevFile);
+  drNext.disabled = !(diffReview.hunk + 1 < count || nextFile);
+}
+function scrollToDiffHunk(index) {
+  const hunks = drViewport.querySelectorAll('.diff-hunk');
+  const target = hunks[index];
+  drViewport.scrollTop = target ? target.offsetTop : 0;
+}
+function openDiffFile(fileIndex, hunkIndex = 0) {
+  const files = currentDiffFiles();
+  const file = files[fileIndex];
+  if (!file) return;
+  saveDiffScroll();
+  if (drReader.hidden) diffReview.listScroll[diffReview.scope] = drListEl.scrollTop;
+  diffReview.file = fileIndex;
+  diffReview.hunk = Math.max(0, Math.min(hunkIndex, Math.max(diffHunkCount(file) - 1, 0)));
+  drFileLabel.textContent = (DIFF_SOURCE_LABELS[file.source] || file.source) + ' · ' + file.path;
+  drViewport.innerHTML = renderDiffFile(file);
+  drListView.hidden = true;
+  drReader.hidden = false;
+  drBackBtn.hidden = true;
+  drReaderBackBtn.hidden = false;
+  updateDiffChangeHeading();
+  const key = diffScrollKey();
+  const restore = hunkIndex === 0 && key in diffReview.scroll;
+  requestAnimationFrame(() => {
+    if (restore) drViewport.scrollTop = diffReview.scroll[key];
+    else scrollToDiffHunk(diffReview.hunk);
+  });
+}
+function closeDiffReader(restoreList) {
+  saveDiffScroll();
+  drReader.hidden = true;
+  drListView.hidden = false;
+  drBackBtn.hidden = false;
+  drReaderBackBtn.hidden = true;
+  if (restoreList) requestAnimationFrame(() => { drListEl.scrollTop = diffReview.listScroll[diffReview.scope] || 0; });
+}
+function diffStepChange(delta) {
+  const files = currentDiffFiles();
+  if (diffReview.file < 0 || !files.length) return;
+  const count = diffHunkCount(files[diffReview.file]);
+  const next = diffReview.hunk + delta;
+  if (next >= 0 && next < count) {
+    diffReview.hunk = next;
+    updateDiffChangeHeading();
+    scrollToDiffHunk(next);
+    return;
+  }
+  let f = diffReview.file + delta;
+  while (f >= 0 && f < files.length && diffHunkCount(files[f]) === 0) f += delta;
+  if (f < 0 || f >= files.length) return;
+  openDiffFile(f, delta < 0 ? diffHunkCount(files[f]) - 1 : 0);
+  if (delta < 0) requestAnimationFrame(() => scrollToDiffHunk(diffReview.hunk));
+}
+
+// Entry point 1: after a prompt this phone sent gets its response, one
+// THIS TURN card at the bottom of the chat, polled while the server is
+// still writing the snapshot.
+let turnReviewPoll = 0;
+function updateTurnReviewCard(card, result) {
+  const body = card.children[1];
+  const button = card.children[2];
+  if (!result || !result.available) {
+    body.textContent = result && result.pending ? 'Still capturing…' : 'Snapshot unavailable';
+    button.hidden = true;
+    return;
+  }
+  const files = result.files || [];
+  body.textContent = files.length === 0 ? (result.reason || 'No changes in this turn')
+    : files.length + ' file' + (files.length === 1 ? '' : 's') + ' · ' + diffCounts(result.added, result.removed) +
+      ' · saved ' + diffTimeLabel(result.capturedAt);
+  button.hidden = false;
+  button.disabled = false;
+}
+function appendTurnReviewSummary() {
+  let card = document.getElementById('turn-review-card');
+  if (!card) {
+    card = document.createElement('div');
+    card.id = 'turn-review-card';
+    card.className = 'msg turn-review';
+  }
+  card.innerHTML = '';
+  const label = document.createElement('div');
+  label.className = 'tr-label';
+  label.textContent = 'THIS TURN';
+  const body = document.createElement('div');
+  body.className = 'tr-body';
+  body.textContent = 'Capturing changes…';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'tr-open';
+  button.textContent = 'Review changes';
+  button.disabled = true;
+  button.addEventListener('click', () => openDiffReview('turn'));
+  card.appendChild(label);
+  card.appendChild(body);
+  card.appendChild(button);
+  messagesEl.appendChild(card);
+  const token = ++turnReviewPoll;
+  let tries = 0;
+  const poll = async () => {
+    if (token !== turnReviewPoll) return;
+    let result;
+    try { result = await fetchDiffReview('turn'); } catch (err) { result = {available: false, reason: err.message}; }
+    if (token !== turnReviewPoll) return;
+    if (result.pending && tries++ < 20) { setTimeout(poll, 500); return; }
+    updateTurnReviewCard(card, result);
+  };
+  poll();
+  return card;
+}
+
+// Entry point 2: the row above the composer.
+function updateReviewBar() {
+  if (reviewRepoBtn) reviewRepoBtn.disabled = !currentSockPid;
+}
+
+drBackBtn.addEventListener('click', closeDiffReview);
+drRefreshBtn.addEventListener('click', () => loadDiffReview(diffReview.scope, {refresh: true}));
+drTabButtons.turn.addEventListener('click', () => showDiffScope('turn'));
+drTabButtons.repository.addEventListener('click', () => showDiffScope('repository'));
+drOpenFirst.addEventListener('click', () => openDiffFile(0));
+drNumbersBtn.addEventListener('click', () => setDiffLineNumbers(!diffLineNumbersVisible()));
+drPrev.addEventListener('click', () => diffStepChange(-1));
+drNext.addEventListener('click', () => diffStepChange(1));
+drReaderBackBtn.addEventListener('click', () => closeDiffReader(true));
+if (reviewRepoBtn) reviewRepoBtn.addEventListener('click', () => openDiffReview('repository'));
+applyDiffLineNumbers(diffLineNumbersVisible());
+// --- Diff review: end ---
+
 // --- Settings overlay ---
 function paintSettings() {
   const prefs = turnNav.prefs();
@@ -7702,6 +8357,9 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   // The inspector opens on top of everything, including the reader.
   if (mmvEl.classList.contains('visible')) closeDiagram();
+  else if (diffReviewEl.classList.contains('visible')) {
+    if (drReader.hidden) closeDiffReview(); else closeDiffReader(true);
+  }
   else if (readerEl.classList.contains('visible')) closeReader();
   else if (msgMenu.classList.contains('visible')) closeMsgMenu();
   else if (chatMenu.classList.contains('visible')) closeChatMenu();

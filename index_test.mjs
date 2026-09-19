@@ -1444,3 +1444,160 @@ test('renderMarkdown keeps a lone quoted line and non-quote lines apart', () => 
   assert.match(html, /plain/);
   assert.doesNotMatch(html, /&gt;/);
 });
+
+// --- Diff review: rows, highlighting, line-number preference, file list ---
+
+function loadDiffReview(overrides = {}) {
+  const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const start = html.indexOf('// --- Diff review ---');
+  const end = html.indexOf('// --- Diff review: end ---', start);
+  assert.notEqual(start, -1, 'diff review block should exist');
+  assert.notEqual(end, -1, 'diff review block should have an end marker');
+  const elements = new Map();
+  const element = id => {
+    if (!elements.has(id)) elements.set(id, new FakeElement(id));
+    return elements.get(id);
+  };
+  const stored = new Map(Object.entries(overrides.storage || {}));
+  const context = {
+    document: {
+      getElementById: element,
+      createElement: tag => { const el = new FakeElement(); el.tagName = tag.toUpperCase(); return el; },
+      activeElement: null,
+    },
+    localStorage: {
+      getItem: key => (stored.has(key) ? stored.get(key) : null),
+      setItem: (key, value) => stored.set(key, String(value)),
+      removeItem: key => stored.delete(key),
+    },
+    messagesEl: element('messages'),
+    basePath: '/phone',
+    sessionId: 'sess-1',
+    currentSockPid: 42,
+    escHtml: s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+    showToast: () => {},
+    fetch: async () => { throw new Error('unexpected fetch'); },
+    setTimeout: fn => { fn(); return 1; },
+    clearTimeout: () => {},
+    requestAnimationFrame: fn => { fn(); return 1; },
+    Array, Error, JSON, Promise, Map, Set, Date, Math, String, Number, Object, RegExp,
+    ...overrides,
+  };
+  delete context.storage;
+  vm.createContext(context);
+  vm.runInContext(html.slice(start, end), context, {filename: 'index.html#diff-review'});
+  return {context, elements, stored};
+}
+
+test('diff review rows carry one number: old for removals, new otherwise', () => {
+  const {context} = loadDiffReview();
+  const ctx = context.renderReviewLine({kind: 'context', old: 12, new: 15, text: 'keep'}, 'text');
+  const add = context.renderReviewLine({kind: 'added', new: 16, text: 'plus'}, 'text');
+  const del = context.renderReviewLine({kind: 'removed', old: 13, text: 'minus'}, 'text');
+  const mark = context.renderReviewLine({kind: 'marker', text: 'No newline at end of file'}, 'text');
+  assert.match(ctx, /<span class="diff-num">15<\/span>/);
+  assert.doesNotMatch(ctx, />12</);
+  assert.match(add, /<span class="diff-num">16<\/span>/);
+  assert.match(add, /<span class="diff-mark">\+<\/span>/);
+  assert.match(del, /<span class="diff-num">13<\/span>/);
+  assert.match(del, /<span class="diff-mark">-<\/span>/);
+  assert.match(ctx, /<span class="diff-mark"> <\/span>/);
+  assert.match(mark, /class="diff-row marker"/);
+  assert.doesNotMatch(mark, /diff-num">\d/);
+  assert.equal((add.match(/diff-num/g) || []).length, 1, 'exactly one number column');
+});
+
+test('diff review escapes code before highlighting it', () => {
+  const {context} = loadDiffReview();
+  const row = context.renderReviewLine({kind: 'added', new: 1, text: '<script>alert("x")</script> // c'}, 'js');
+  assert.doesNotMatch(row, /<script>/);
+  assert.match(row, /&lt;script&gt;/);
+  assert.match(row, /<span class="tok-str">"x"<\/span>/);
+  assert.match(row, /<span class="tok-cm">\/\/ c<\/span>/);
+  assert.match(row, /<span class="tok-fn">alert<\/span>/);
+  const go = context.renderReviewLine({kind: 'context', old: 1, new: 1, text: 'func main() { return nil }'}, 'go');
+  assert.match(go, /<span class="tok-kw">func<\/span>/);
+  assert.match(go, /<span class="tok-fn">main<\/span>/);
+  assert.match(go, /<span class="tok-lit">nil<\/span>/);
+  const el = context.renderReviewLine({kind: 'context', old: 1, new: 1, text: '(when (< a b) 1) ; note'}, 'elisp');
+  assert.match(el, /<span class="tok-cm">; note<\/span>/);
+  assert.doesNotMatch(el, /tok-cm">; a b/, 'the ; inside &lt; is an entity, not a comment');
+  assert.equal(context.diffLanguage('src/app.tsx'), 'ts');
+  assert.equal(context.diffLanguage('init.el'), 'elisp');
+  assert.equal(context.diffLanguage('notes/plan'), 'text');
+});
+
+test('diff review line-number preference defaults on and persists off', () => {
+  const {context, elements, stored} = loadDiffReview();
+  assert.equal(context.diffLineNumbersVisible(), true);
+  assert.equal(elements.get('diff-review').classList.contains('diff-numbers-hidden'), false);
+  assert.equal(elements.get('dr-numbers-btn').getAttribute('aria-pressed'), 'false');
+  assert.equal(elements.get('dr-numbers-btn').textContent, 'Hide numbers');
+  context.setDiffLineNumbers(false);
+  assert.equal(stored.get('acp-diff-line-numbers'), 'false');
+  assert.equal(elements.get('diff-review').classList.contains('diff-numbers-hidden'), true);
+  assert.equal(elements.get('dr-numbers-btn').getAttribute('aria-pressed'), 'true');
+  assert.equal(elements.get('dr-numbers-btn').textContent, 'Show numbers');
+  const row = context.renderReviewLine({kind: 'removed', old: 3, text: 'gone'}, 'text');
+  assert.match(row, /<span class="diff-mark">-<\/span>/, 'marker stays in the row when numbers hide');
+  context.setDiffLineNumbers(true);
+  assert.equal(stored.get('acp-diff-line-numbers'), 'true');
+  assert.equal(elements.get('diff-review').classList.contains('diff-numbers-hidden'), false);
+});
+
+test('diff review restores a saved hidden preference on load', () => {
+  const {context, elements} = loadDiffReview({storage: {'acp-diff-line-numbers': 'false'}});
+  assert.equal(context.diffLineNumbersVisible(), false);
+  assert.equal(elements.get('diff-review').classList.contains('diff-numbers-hidden'), true);
+  assert.equal(elements.get('dr-numbers-btn').textContent, 'Show numbers');
+});
+
+const reviewFixture = () => ({
+  scope: 'repository', repository: '/src/demo', branch: 'main', capturedAt: '2026-09-19T17:42:00Z',
+  available: true, added: 3, removed: 1,
+  files: [
+    {path: 'a.txt', status: 'modified', source: 'staged', added: 1, removed: 0,
+      hunks: [{header: '@@ -1,3 +1,4 @@', lines: [{kind: 'context', old: 1, new: 1, text: 'one'}, {kind: 'added', new: 2, text: 'two'}]}]},
+    {path: 'a.txt', status: 'modified', source: 'unstaged', added: 1, removed: 1,
+      hunks: [{header: '@@ -4 +4 @@', lines: [{kind: 'removed', old: 4, text: 'x'}, {kind: 'added', new: 4, text: 'y'}]}]},
+    {path: 'img.png', status: 'added', source: 'untracked', added: 0, removed: 0, binary: true},
+    {path: 'new dir/un tracked.txt', status: 'added', source: 'untracked', added: 1, removed: 0,
+      hunks: [{header: '@@ -0,0 +1 @@', lines: [{kind: 'added', new: 1, text: 'u'}]}]},
+  ],
+});
+
+test('diff review lists a partially staged file twice with separate sources', () => {
+  const {context, elements} = loadDiffReview();
+  context.renderDiffFileList(reviewFixture());
+  const rows = elements.get('dr-list').children.filter(c => c.classList.contains('dr-file'));
+  assert.equal(rows.length, 4);
+  assert.deepEqual(rows.map(r => r.getAttribute('data-file')), ['0', '1', '2', '3']);
+  assert.match(rows[0].innerHTML, /staged/);
+  assert.match(rows[1].innerHTML, /unstaged/);
+  assert.match(rows[2].innerHTML, /Binary file/);
+  assert.match(rows[3].innerHTML, /new dir\/un tracked\.txt/);
+  assert.match(elements.get('dr-summary').textContent, /4 files/);
+  assert.match(elements.get('dr-summary').textContent, /\+3/);
+  assert.match(elements.get('dr-summary').textContent, /-1/);
+});
+
+test('diff review keeps the reader on a failed refresh and marks unavailable turns', async () => {
+  let calls = 0;
+  const {context, elements} = loadDiffReview({
+    fetch: async url => {
+      calls++;
+      if (url.includes('scope=turn')) return {ok: true, json: async () => ({scope: 'turn', available: false, reason: 'Snapshot unavailable', files: []})};
+      if (calls === 2) return {ok: true, json: async () => reviewFixture()};
+      return {ok: false, status: 500, text: async () => 'boom'};
+    },
+  });
+  await context.loadDiffReview('turn');
+  assert.match(elements.get('dr-notice').textContent, /Snapshot unavailable/);
+  assert.equal(elements.get('dr-list').children.filter(c => c.classList.contains('dr-file')).length, 0);
+  await context.loadDiffReview('repository');
+  assert.equal(elements.get('dr-list').children.filter(c => c.classList.contains('dr-file')).length, 4);
+  await context.loadDiffReview('repository', {refresh: true});
+  assert.equal(elements.get('dr-list').children.filter(c => c.classList.contains('dr-file')).length, 4, 'a failed refresh keeps the previous data');
+  assert.match(elements.get('dr-notice').textContent, /boom|Refresh failed/);
+  assert.equal(context.diffReview.results.repository.files.length, 4);
+});
