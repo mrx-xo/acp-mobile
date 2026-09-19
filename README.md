@@ -13,8 +13,42 @@ Discovers all live acp-multiplex sockets on the machine, groups them by project,
 - **Session discovery** — automatically finds all active acp-multiplex sockets, groups by project
 - **Chat interface** — WebSocket bridge to any session with markdown rendering, streaming, tool call display
 - **File browser** — browse and view files from session working directories
+- **Diff review** — read-only, phone-first reader for what changed (see below)
 - **Auth** — random 256-bit authkey (generated on first run, stored in `~/.acp-mobile/authkey`)
 - **Security hardening** — CSRF protection, DNS rebinding protection, CSP headers, XSS-safe markdown
+
+## Diff review
+
+A read-only diff reader with two scopes, opened from inside a chat. It
+never touches the working tree, the index, or any ref.
+
+- **This turn** shows the latest completed turn that was started from
+  acp-mobile. The server stages the working tree into a temporary index
+  and object directory before it forwards the prompt, does it again when
+  the response arrives, and saves the diff of the two trees under
+  `~/.acp-mobile/turn-diffs/<sessionId>.json`. That snapshot is
+  immutable: later edits do not change it, and only the next completed
+  phone turn replaces it. Turns started from Emacs or another client have
+  no snapshot and the tab says `Snapshot unavailable`; the repository
+  diff is never substituted. A cancelled or failed prompt, a disconnect
+  mid-turn, or a server restart during a turn discards the capture.
+- **Before commit** is computed fresh from the session's repository on
+  every open or `Refresh`: staged changes against `HEAD` (or the empty
+  tree in a repository with no commits), unstaged changes against the
+  index, and untracked files as additions from `/dev/null`. A partially
+  staged file appears once under `Staged` and once under `Unstaged`.
+  Directories that are not a Git repository get a labelled reason.
+
+Binary files, renames without content changes, and output past the 2 MB
+cap are labelled rather than rendered as code; a truncated response
+says so in the summary. Rows carry one line-number column (old numbers
+for removals, new numbers otherwise) and a `+` / `-` marker that stays
+visible when `Hide numbers` is on; that preference is kept in
+`localStorage`.
+
+The endpoint is `GET /api/diff-review?scope=turn&sessionId=<id>` or
+`GET /api/diff-review?scope=repository&pid=<multiplex pid>`; the pid
+must belong to a live socket, an arbitrary path is never accepted.
 
 ## Setup
 
