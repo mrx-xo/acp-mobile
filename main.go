@@ -237,6 +237,7 @@ func main() {
 		log.Printf("webpush: vapid keys unavailable, phone push disabled: %v", err)
 	}
 	go runEscalation(context.Background())
+	cleanupTurnCaptures()
 
 	mux := http.NewServeMux()
 
@@ -331,6 +332,7 @@ func main() {
 	mux.HandleFunc("/api/push", handlePush)
 	mux.HandleFunc("/api/fork", handleFork)
 	mux.HandleFunc("/api/catalogue", handleCatalogue)
+	mux.HandleFunc("/api/diff-review", handleDiffReview)
 	mux.HandleFunc("/api/pin", handlePin)
 	mux.HandleFunc("/api/push-key", handlePushKey)
 	mux.HandleFunc("/api/push-subscribe", handlePushSubscribe)
@@ -2301,6 +2303,33 @@ func phoneTurnEnd(sid string) {
 	}
 }
 
+// turnCaptureTimeout bounds each side of a turn snapshot. A repository
+// too large to stage within it simply has no snapshot for that turn.
+const turnCaptureTimeout = 30 * time.Second
+
+// finishTurnCapture completes or aborts a baseline once its prompt
+// response arrives. A failed or cancelled prompt leaves no snapshot;
+// a completed one is saved in the background so the reply is not held.
+func finishTurnCapture(b *turnBaseline, response []byte) {
+	var rsp struct {
+		Error  json.RawMessage `json:"error"`
+		Result struct {
+			StopReason string `json:"stopReason"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(response, &rsp) != nil || len(rsp.Error) > 0 || rsp.Result.StopReason == "cancelled" {
+		abortTurnReview(b)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), turnCaptureTimeout)
+		defer cancel()
+		if _, err := completeTurnReview(ctx, b); err != nil {
+			log.Printf("diff-review: turn snapshot for %s failed: %v", b.SessionID, err)
+		}
+	}()
+}
+
 // pingInterval paces the keepalive notification the bridge sends to the
 // phone. x/net/websocket has no ping/pong frame API, so the JSON
 // notification IS the ping: anything reading the /ws stream must ignore
@@ -2361,18 +2390,24 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 
 	// Replay boundaries and live records share one ordered stream.
 	var brMu sync.Mutex
-	inflight := map[string]string{} // request id -> sessionId (this bridge's prompts)
+	inflight := map[string]string{}        // request id -> sessionId (this bridge's prompts)
+	captures := map[string]*turnBaseline{} // request id -> diff baseline taken before the prompt
 	var once sync.Once
 	closeAll := func() {
 		ws.Close()
 		conn.Close()
 		// If the phone vanishes mid-turn its response never routes back;
-		// don't leave the session stuck "busy".
+		// don't leave the session stuck "busy", and never let a baseline
+		// without its completion become a snapshot.
 		brMu.Lock()
 		for _, sid := range inflight {
 			phoneTurnEnd(sid)
 		}
 		inflight = map[string]string{}
+		for _, b := range captures {
+			abortTurnReview(b)
+		}
+		captures = map[string]*turnBaseline{}
 		brMu.Unlock()
 	}
 
@@ -2396,8 +2431,19 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 			if json.Unmarshal([]byte(msg), &req) == nil &&
 				req.Method == "session/prompt" &&
 				req.Params.SessionID != "" && len(req.ID) > 0 {
+				// Capture the tree before the agent sees the prompt, so the
+				// turn snapshot is exactly what this prompt changed.
+				captureCtx, cancelCapture := context.WithTimeout(context.Background(), turnCaptureTimeout)
+				baseline, err := beginTurnReview(captureCtx, req.Params.SessionID, sockPath)
+				cancelCapture()
+				if err != nil {
+					log.Printf("diff-review: no turn snapshot for %s: %v", req.Params.SessionID, err)
+				}
 				brMu.Lock()
 				inflight[string(req.ID)] = req.Params.SessionID
+				if baseline != nil {
+					captures[string(req.ID)] = baseline
+				}
 				brMu.Unlock()
 				phoneTurnStart(req.Params.SessionID)
 			}
@@ -2438,7 +2484,12 @@ func bridgeWebSocket(ws *websocket.Conn, sockPath string) {
 					delete(inflight, string(rsp.ID))
 					phoneTurnEnd(sid)
 				}
+				baseline := captures[string(rsp.ID)]
+				delete(captures, string(rsp.ID))
 				brMu.Unlock()
+				if baseline != nil {
+					finishTurnCapture(baseline, line)
+				}
 			}
 			websocket.Message.Send(ws, string(line))
 		}
