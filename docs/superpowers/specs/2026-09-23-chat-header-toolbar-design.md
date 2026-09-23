@@ -65,11 +65,12 @@ One line, 11px mono, segments separated by ` · ` in fg-mute:
   live region so the socket code and its node tests are untouched.
 - The provider icon shows steady state: full color when the socket is
   connected, 40% opacity when disconnected or waiting for a session.
-- The existing `.load-line` under the header shows transitions: yellow
-  sweep while connecting, reconnecting, or while the agent is replying;
-  red static line when disconnected. Hidden when connected and idle.
-- Error text such as `Reconnecting...` moves into the line's `aria-label`
-  and stays announced through `role=status`.
+- A second `.load-line` under the header, `#conn-line`, shows socket
+  transitions: yellow sweep while reconnecting, red static line when
+  disconnected, hidden otherwise. The existing `#history-loading` line
+  keeps showing history loads and replies. The first connect of a chat
+  shows only the dimmed icon, so opening a chat never looks busy.
+- The words in `#status-text` stay announced through `role=status`.
 
 ### Grabber and toolbar
 

@@ -1871,6 +1871,9 @@ func TestSendMotionIsVisibleAndGeneratingUsesHeaderLine(t *testing.T) {
 // the chat uses for history and generating; no separate glyph.
 func TestSessionFetchShowsOrreryHeaderLine(t *testing.T) {
 	page := openComposerTestPage(t, 844, 844)
+	// The page's own first session fetch must settle, or its count leaks
+	// into the sequence below.
+	page.waitFor(t, `navSpinCount === 0`)
 	state := page.evalObject(t, `(() => {
 		const line = document.getElementById('nav-loading');
 		const header = document.getElementById('nav-header');

@@ -734,6 +734,7 @@ function loadModelPicker(overrides = {}) {
     basePath: '/phone',
     currentBufferName: '*Agent @ demo*',
     closeChatMenu: () => {},
+    renderHeaderSub: () => {},
     fetch: async () => { throw new Error('unexpected fetch'); },
     setTimeout: (fn, delay) => { timers.push({fn, delay}); return timers.length; },
     Array, Error, JSON, Promise,

@@ -264,7 +264,8 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
   font-family: var(--mono);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-#header .header-title.labeled { color: var(--orange); }
+#header .header-title .ht-ord { color: var(--fg-mute); font-weight: 400; margin-left: 5px; }
+#header .header-title.labeled .ht-main { color: var(--orange); }
 #header .header-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 /* In-app push banner: a push about another chat while this app is in
    front.  iOS never tells the page about a tap on the system banner in
@@ -302,36 +303,53 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
 #header .bell-btn.on { color: var(--orange); }
 #header .bell-btn.on svg { fill: currentColor; }
 #header .bell-btn.pending { opacity: 0.5; }
-#header .header-buf {
-  font-size: 11px; color: var(--fg-mute); font-family: var(--mono);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
-}
+/* Row 2 is one line: provider icon, model, mode word, branch. */
 #header .header-sub {
-  display: flex; align-items: center; gap: 8px; margin-top: 2px;
+  display: flex; align-items: center; gap: 6px; margin-top: 2px;
+  font-size: 11px; font-family: var(--mono); color: var(--fg-dim); min-width: 0;
 }
+/* The connection words stay for screen readers and tests; the icon and
+   the load line carry the state visually. */
 #header .header-status {
-  font-size: 11px; color: var(--fg-mute); font-family: var(--mono);
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
 }
-/* Connected is the boring default — collapse it to a green dot;
-   connecting/error states keep their words. */
-#header .header-status.connected { font-size: 0; }
-#header .header-status.connected::before {
-  content: "\25CF"; font-size: 11px; color: var(--green);
-}
-#header .header-status.error { color: var(--red); }
-/* A drop that is still being redialed: busy-yellow, not dead-red. */
-#header .header-status.reconnecting { color: var(--yellow); }
 /* While the socket is down the old transcript stays on screen, but its
    permission cards belong to a request the new socket will replay
    fresh. Make them inert so a tap cannot answer a stale id. */
 #messages.reconnecting .msg.permission .perm-btn { pointer-events: none; opacity: 0.5; }
+#header .hs-agent { display: inline-flex; align-items: center; gap: 4px; min-width: 0; transition: opacity 0.2s ease; }
+#header .hs-agent.offline { opacity: 0.4; }
+#header .hs-agent .provider-icon { width: 14px; height: 14px; flex-basis: 14px; }
+#header .hs-sep { color: var(--fg-mute); }
 #header .mode-btn {
-  border: none !important; border-radius: 999px;
-  padding: 2px 9px; font-size: 10px; font-weight: 600;
-  color: var(--fg-dim); background: var(--bg1); cursor: pointer;
-  font-family: var(--mono);
+  border: none; background: none; padding: 0; margin: -8px 0;
+  min-height: 28px; font-size: 11px; font-weight: 600;
+  font-family: var(--mono); cursor: pointer; color: var(--fg-dim);
 }
 #header .mode-btn:active { opacity: 0.7; }
+#header .hs-git {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: none; background: none; padding: 0; margin: -8px 0; min-height: 28px;
+  color: var(--fg); font-family: var(--mono); font-size: 11px; cursor: pointer;
+  position: relative; -webkit-tap-highlight-color: transparent;
+}
+#header .hs-git svg { width: 12px; height: 12px; fill: none; stroke: var(--fg-dim); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#header .hs-git.dirty::after {
+  content: ""; position: absolute; left: 8px; top: 6px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--orange);
+}
+#header .hs-git:active { opacity: 0.7; }
+/* Menu: a bare icon button, same shape as the bell. */
+#header .menu-btn {
+  width: 28px; height: 28px; padding: 0; border: none; background: none;
+  border-radius: 6px; color: var(--fg-dim); display: flex; align-items: center;
+  justify-content: center; -webkit-tap-highlight-color: transparent;
+}
+#header .menu-btn svg { width: 18px; height: 18px; fill: currentColor; }
+#header .menu-btn:active { background: var(--bg2); }
+/* Dead socket: the load line goes solid red instead of sweeping. */
+.load-line.dead::before { animation: none; left: 0; width: 100%; background: var(--red); }
 #header .back-btn {
   background: transparent; border: none; color: var(--orange);
   font-size: 18px; cursor: pointer; padding: 4px 8px;
@@ -1727,20 +1745,24 @@ input, textarea, #fbv-content, .msg, .msg * {
   <button class="back-btn" id="back-btn">&larr;</button>
   <div class="header-info">
     <div class="header-row">
-      <div class="header-title" id="header-title">ACP</div>
+      <div class="header-title" id="header-title"><span class="ht-main">ACP</span><span class="ht-ord"></span></div>
       <button class="bell-btn" id="bell-btn" aria-label="Phone push" aria-pressed="false" title="Phone push for this chat"><svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button>
     </div>
     <div class="header-sub">
-      <span class="header-status" id="status-text">Connecting...</span>
-      <span class="header-buf" id="header-buf"></span>
-      <button class="mode-btn" id="mode-btn" style="display:none">Ask</button>
+      <span class="header-status" id="status-text" role="status" aria-live="polite">Connecting...</span>
+      <span class="hs-agent" id="hs-agent"><span id="hs-provider"></span><span id="hs-model"></span></span>
+      <span class="hs-sep" id="hs-sep-mode" hidden>&middot;</span>
+      <button class="mode-btn" id="mode-btn" hidden>Ask</button>
+      <span class="hs-sep" id="hs-sep-git" hidden>&middot;</span>
+      <button class="hs-git" id="hs-git" hidden aria-label="Review repository changes"><svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg><span id="hs-branch"></span></button>
     </div>
   </div>
   <div class="header-actions">
     <button class="files-btn" id="files-btn">Files</button>
-    <button class="files-btn" id="chat-menu-btn" aria-label="Menu" style="display:none">&#8942;</button>
+    <button class="menu-btn" id="chat-menu-btn" aria-label="Menu" style="display:none"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
   </div>
   <div id="history-loading" class="load-line" role="status" aria-live="polite" hidden><span>Loading chat…</span></div>
+  <div id="conn-line" class="load-line" aria-hidden="true" hidden></div>
 </div>
 <div id="file-browser">
   <div id="fb-header">
@@ -1951,7 +1973,6 @@ const CSP_NONCE = document.currentScript.nonce;
 const messagesEl = document.getElementById('messages');
 const statusText = document.getElementById('status-text');
 const headerTitle = document.getElementById('header-title');
-const headerBuf = document.getElementById('header-buf');
 // Chat header: user label (orange) as the title with the Emacs buffer
 // name demoted to the sub row; unlabeled convos title with the buffer name.
 const bellBtn = document.getElementById('bell-btn');
@@ -1959,14 +1980,119 @@ function setBell(on) {
   bellBtn.classList.toggle('on', !!on);
   bellBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
+const headerTitleMain = headerTitle.querySelector('.ht-main');
+const headerTitleOrd = headerTitle.querySelector('.ht-ord');
+const hsAgent = document.getElementById('hs-agent');
+const hsProvider = document.getElementById('hs-provider');
+const hsModel = document.getElementById('hs-model');
+const hsSepMode = document.getElementById('hs-sep-mode');
+const hsSepGit = document.getElementById('hs-sep-git');
+const hsGit = document.getElementById('hs-git');
+const hsBranch = document.getElementById('hs-branch');
+let headerModel = '';
+let headerGit = null;
+
+// "Claude Agent @ acp-mobile<4>" -> {project: "acp-mobile", ordinal: "4"}.
+function parseBufferName(name) {
+  const m = /^(.*?) @ (.+?)(?:<(\d+)>)?$/.exec(name || '');
+  return m ? {agent: m[1], project: m[2], ordinal: m[3] || ''} : {agent: '', project: '', ordinal: ''};
+}
+
 function updateChatHeader() {
   const s = lastSessions.find(x => x.bufferName === currentBufferName) || {};
   const label = (s.label || '').trim();
-  headerTitle.textContent = label || currentBufferName || headerTitle.textContent;
+  const parsed = parseBufferName(currentBufferName);
+  const project = s.project || parsed.project;
   headerTitle.classList.toggle('labeled', !!label);
-  headerBuf.textContent = label ? (currentBufferName || '') : '';
+  if (label) {
+    headerTitleMain.textContent = label;
+    headerTitleOrd.textContent = '';
+  } else if (project) {
+    headerTitleMain.textContent = project;
+    headerTitleOrd.textContent = parsed.ordinal;
+  } else if (currentBufferName) {
+    headerTitleMain.textContent = currentBufferName;
+    headerTitleOrd.textContent = '';
+  }
   bellBtn.classList.toggle('visible', !!currentBufferName);
   setBell(!!s.push);
+  renderHeaderSub();
+}
+
+// Row 2: provider icon and model, mode word, branch. Separators show
+// only between visible neighbours.
+function renderHeaderSub() {
+  hsProvider.innerHTML = providerIcon(currentBufferName || '');
+  hsModel.textContent = headerModel;
+  hsSepMode.hidden = modeBtn.hidden;
+  const gitVisible = !!(headerGit && headerGit.branch);
+  hsGit.hidden = !gitVisible;
+  hsSepGit.hidden = !gitVisible;
+  if (gitVisible) {
+    hsBranch.textContent = headerGit.branch;
+    const dirty = (headerGit.staged || 0) + (headerGit.unstaged || 0) + (headerGit.untracked || 0) > 0;
+    hsGit.classList.toggle('dirty', dirty);
+    hsGit.title = dirty
+      ? headerGit.staged + ' staged, ' + headerGit.unstaged + ' changed, ' + headerGit.untracked + ' new'
+      : 'Clean tree';
+  }
+  if (typeof chatToolbar !== 'undefined' && !chatToolbar.hidden) renderToolbar();
+}
+
+// Model name for row 2: one Emacs round trip per chat open.
+let headerModelToken = 0;
+async function fetchHeaderModel() {
+  const token = ++headerModelToken;
+  const bufferName = currentBufferName;
+  headerModel = '';
+  renderHeaderSub();
+  if (!bufferName) return;
+  try {
+    const resp = await fetch(basePath + '/api/models', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({bufferName})
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (token !== headerModelToken || bufferName !== currentBufferName) return;
+    headerModel = typeof data.current === 'string' ? data.current : '';
+    renderHeaderSub();
+  } catch (_) { /* icon only until the picker is opened */ }
+}
+
+// Branch and dirty counts: on chat open, after each reply, on toolbar open.
+let gitStatusToken = 0;
+async function fetchGitStatus() {
+  const token = ++gitStatusToken;
+  const pid = currentSockPid;
+  if (!pid) { headerGit = null; renderHeaderSub(); return; }
+  try {
+    const resp = await fetch(basePath + '/api/git-status?pid=' + encodeURIComponent(pid), {cache: 'no-store'});
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    if (token !== gitStatusToken || pid !== currentSockPid) return;
+    headerGit = data && typeof data.branch === 'string' ? data : null;
+  } catch (_) {
+    if (token !== gitStatusToken) return;
+    // keep the last value; a later fetch or chat switch replaces it
+  }
+  renderHeaderSub();
+}
+
+// Connection state drives the icon opacity and the load line. The words
+// in #status-text stay the single source of truth so the socket block
+// (extracted verbatim by index_test.mjs) is untouched.
+const connLineEl = document.getElementById('conn-line');
+function renderConnectionState() {
+  const cls = statusText.className;
+  const connected = cls.includes('connected');
+  const dead = cls.includes('error');
+  // The first connect shows only the dimmed icon; the sweep is for a
+  // drop that is being redialed, so a chat opening never looks busy.
+  const reconnecting = cls.includes('reconnecting');
+  hsAgent.classList.toggle('offline', !connected);
+  connLineEl.classList.toggle('dead', dead);
+  connLineEl.hidden = !(reconnecting || dead);
 }
 const modeBtn = document.getElementById('mode-btn');
 const promptEl = document.getElementById('prompt');
@@ -3778,6 +3904,8 @@ function busyLine(el) {
   };
 }
 const chatBusy = busyLine(historyLoadingEl);
+new MutationObserver(renderConnectionState).observe(statusText, {attributes: true, attributeFilter: ['class']});
+renderConnectionState();
 const navBusy = busyLine(document.getElementById('nav-loading'));
 
 function cancelHistoryLoad() {
@@ -3874,18 +4002,24 @@ messagesEl.addEventListener('keydown', e => {
 // Generating = the header busy line plus the Stop button in the composer.
 // Nothing is added above the composer, so the message list keeps its height.
 function setProcessing(v) {
+  const processingWas = processing;
   processing = v;
   chatBusy.set('reply', v);
+  if (!v && processingWas) fetchGitStatus();
   sendBtn.style.display = v ? 'none' : '';
   stopBtn.style.display = v ? 'flex' : 'none';
 }
 
+const MODE_SHORT_NAMES = {bypassPermissions: 'bypass', acceptEdits: 'accept edits', plan: 'plan', default: 'ask', ask: 'ask'};
+function modeShortName(id) {
+  if (MODE_SHORT_NAMES[id]) return MODE_SHORT_NAMES[id];
+  return String(modeName(id) || id).toLowerCase();
+}
 function updateModeBtn() {
-  const label = modeName(currentMode);
-  const color = modeColor(currentMode);
-  modeBtn.textContent = label;
-  modeBtn.style.color = color;
-  modeBtn.style.borderColor = color;
+  modeBtn.textContent = modeShortName(currentMode);
+  modeBtn.style.color = modeColor(currentMode);
+  modeBtn.hidden = availableModes.length === 0;
+  renderHeaderSub();
 }
 
 function cycleMode() {
@@ -4351,7 +4485,7 @@ function flushReplay() {
           availableModes = msg.result.modes.availableModes || [];
           currentMode = msg.result.modes.currentModeId || 'default';
           if (availableModes.length > 0) {
-            modeBtn.style.display = '';
+            modeBtn.hidden = false;
             updateModeBtn();
           }
         }
@@ -4369,6 +4503,7 @@ function flushReplay() {
       flushPendingUser();
       currentBufferName = msg.params.name;
       updateChatHeader();
+      fetchHeaderModel();
       document.getElementById('chat-menu-btn').style.display = '';
       continue;
     }
@@ -4615,7 +4750,7 @@ function handleMessage(msg) {
         availableModes = msg.result.modes.availableModes || [];
         currentMode = msg.result.modes.currentModeId || 'default';
         if (availableModes.length > 0) {
-          modeBtn.style.display = '';
+          modeBtn.hidden = false;
           updateModeBtn();
         }
       }
@@ -4638,6 +4773,7 @@ function handleMessage(msg) {
   if (msg.method === 'acp-multiplex/meta' && msg.params && msg.params.name) {
     currentBufferName = msg.params.name;
     updateChatHeader();
+    fetchHeaderModel();
     document.getElementById('chat-menu-btn').style.display = '';
     return;
   }
@@ -5524,6 +5660,9 @@ function selectSession(session) {
   stashDraft(); // the chat being left keeps its own half-typed text
   currentSockPid = session.pid;
   updateReviewBar();
+  headerGit = null;
+  headerModel = '';
+  fetchGitStatus();
   currentSessionKey = sKey(session);
   restoreDraft();
   // A NEW session: wipe before dialing so the old chat never sits under
@@ -5542,6 +5681,7 @@ function selectSession(session) {
   updateChatHeader();
   document.getElementById('chat-menu-btn').style.display = currentBufferName ? '' : 'none';
   availableModes = [];
+  modeBtn.hidden = true;
   pendingPermissions = [];
   sendBtn.disabled = true;
   setProcessing(false);
@@ -6117,6 +6257,8 @@ async function chooseModel(id) {
     }
     if (token !== modelPickerToken || bufferName !== currentBufferName) return;
     modelPickerData = {...modelPickerData, current: data.current || id};
+    headerModel = modelPickerData.current;
+    renderHeaderSub();
     renderModelRows(modelPickerData);
     setTimeout(() => {
       if (token === modelPickerToken && bufferName === currentBufferName) closeModelPicker();
@@ -6635,6 +6777,7 @@ window.addEventListener('pageshow', refreshOrreryOnResume);
 window.addEventListener('focus', refreshOrreryOnResume);
 document.getElementById('back-btn').addEventListener('click', navigateBack);
 document.getElementById('mode-btn').addEventListener('click', cycleMode);
+hsGit.addEventListener('click', () => openDiffReview('repository'));
 document.getElementById('files-btn').addEventListener('click', openFileBrowser);
 
 // Tap the chat title → label this convo. Goes through Emacs (single
