@@ -69,6 +69,10 @@ func newHeaderTestPage(t *testing.T, label string) *chromePage {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"current":"fable","models":[{"id":"fable","name":"fable"},{"id":"opus","name":"opus"}]}`)
 	})
+	mux.HandleFunc("/api/fork", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"supported":true}`)
+	})
 	mux.HandleFunc("/api/git-status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"branch":"syzygy","staged":3,"unstaged":2,"untracked":1}`)
@@ -154,4 +158,48 @@ func TestHeaderConnectionVisuals(t *testing.T) {
 	}
 	page.eval(t, `statusText.textContent='Connected'; statusText.className='header-status connected'`)
 	page.waitFor(t, `document.getElementById('conn-line').hidden === true && !document.getElementById('conn-line').classList.contains('dead')`)
+}
+
+func TestHeaderToolbar(t *testing.T) {
+	page := newHeaderTestPage(t, "")
+	page.waitFor(t, `document.getElementById('hs-branch').textContent === 'syzygy'`)
+	closed := page.evalObject(t, `(()=>{const g=document.getElementById('header-grabber');const r=g.getBoundingClientRect();const b=g.querySelector('span').getBoundingClientRect();
+		return {height:r.height + 22, pillW:b.width, hidden:document.getElementById('chat-toolbar').hidden, messages:document.getElementById('messages').getBoundingClientRect().height,
+			reviewBar:!!document.getElementById('review-bar'), kebab:[...document.querySelectorAll('#chat-menu button')].filter(b=>b.style.display!=='none').map(b=>b.id).join(',')};})()`)
+	if closed["hidden"] != true || closed["reviewBar"] != false || closed["pillW"] != float64(36) {
+		t.Fatalf("closed state = %v", closed)
+	}
+	if h, _ := closed["height"].(float64); h < 44 {
+		t.Fatalf("grabber tap target %v px, want at least 44", h)
+	}
+	if closed["kebab"] != "cm-turn-nav,cm-pin,cm-kill" {
+		t.Fatalf("kebab items = %v", closed["kebab"])
+	}
+	page.eval(t, `document.getElementById('header-grabber').click()`)
+	page.waitFor(t, `document.getElementById('chat-toolbar').hidden === false && document.getElementById('tb-git').classList.contains('dirty')`)
+	saveUIShot(t, page, "header-toolbar-open")
+	open := page.evalObject(t, `(()=>{const tb=document.getElementById('chat-toolbar');
+		return {items:[...tb.querySelectorAll('button')].map(b=>b.id).join(','), labels:[...tb.querySelectorAll('.tb-label')].map(e=>e.textContent).join(','),
+			height:tb.getBoundingClientRect().height, messages:document.getElementById('messages').getBoundingClientRect().height,
+			stored:localStorage.getItem('acp-toolbar-open'), expanded:document.getElementById('header-grabber').getAttribute('aria-expanded')};})()`)
+	if open["items"] != "tb-git,tb-model,tb-pinned,tb-fork,tb-clone,tb-catalogue" {
+		t.Fatalf("toolbar items = %v", open["items"])
+	}
+	if open["labels"] != "syzygy,fable,Pinned,Fork,Clone,Catalogue" || open["stored"] != "true" || open["expanded"] != "true" {
+		t.Fatalf("toolbar labels = %v", open)
+	}
+	before, _ := closed["messages"].(float64)
+	after, _ := open["messages"].(float64)
+	barH, _ := open["height"].(float64)
+	if before-after < barH-1 || before-after > barH+1 {
+		t.Fatalf("message list shrank by %v, toolbar is %v", before-after, barH)
+	}
+	page.eval(t, `document.getElementById('tb-git').click()`)
+	page.waitFor(t, `document.getElementById('diff-review').classList.contains('visible') && diffReview.scope === 'repository'`)
+	page.eval(t, `closeDiffReview(); location.reload()`)
+	page.waitFor(t, `typeof connect === 'function' && Array.isArray(lastSessions)`)
+	page.eval(t, `selectSession({pid:1, sessionId:'s1', bufferName:'Claude Agent @ acp-mobile<4>', project:'acp-mobile', cwd:'/src/acp-mobile'})`)
+	page.waitFor(t, `document.getElementById('chat-toolbar').hidden === false`)
+	page.eval(t, `document.getElementById('header-grabber').click()`)
+	page.waitFor(t, `document.getElementById('chat-toolbar').hidden === true && localStorage.getItem('acp-toolbar-open') === 'false'`)
 }

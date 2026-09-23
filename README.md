@@ -32,8 +32,9 @@ never touches the working tree, the index, or any ref.
   no snapshot and the tab says `Snapshot unavailable`; the repository
   diff is never substituted. A cancelled or failed prompt, a disconnect
   mid-turn, or a server restart during a turn discards the capture.
-- **Before commit** is computed fresh from the session's repository on
-  every open or `Refresh`: staged changes against `HEAD` (or the empty
+- **Before commit** opens from the branch segment in the chat header or
+  the git button on the pull-down toolbar, and is computed fresh from the
+  session's repository on every open or `Refresh`: staged changes against `HEAD` (or the empty
   tree in a repository with no commits), unstaged changes against the
   index, and untracked files as additions from `/dev/null`. A partially
   staged file appears once under `Staged` and once under `Unstaged`.

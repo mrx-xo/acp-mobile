@@ -2140,11 +2140,11 @@ func TestChatMenuCloneSpawnsFromCurrentBufferAndOpensIt(t *testing.T) {
 		};
 		window.__selected = null;
 		selectSession = (s) => { window.__selected = s.sessionId; };
-		document.getElementById('chat-menu-btn').click();
-		const menuOpen = chatMenu.classList.contains('visible');
-		const clone = document.getElementById('cm-clone');
+		setToolbarOpen(true);
+		const menuOpen = !document.getElementById('chat-toolbar').hidden;
+		const clone = document.getElementById('tb-clone');
 		clone.click();
-		const busyLabel = clone.textContent;
+		const busyLabel = clone.querySelector('.tb-label').textContent;
 		for (let i = 0; i < 100 && !window.__selected; i++) await new Promise(r => setTimeout(r, 10));
 		return {
 			menuOpen,

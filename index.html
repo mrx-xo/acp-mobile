@@ -607,13 +607,45 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
 }
 .msg.turn-review .tr-open:disabled { color: var(--fg-mute); }
 .msg.turn-review .tr-open[hidden] { display: none; }
-#review-bar { flex-shrink: 0; background: var(--bg0); padding: 0 12px; }
-#review-repo-btn {
-  width: 100%; min-height: 44px; background: none; border: none; border-top: 1px solid var(--bg2);
-  color: var(--fg-dim); font-family: var(--mono); font-size: 13px; text-align: left; cursor: pointer;
+/* Grabber: a pill under row 2 that pulls the toolbar down. The header
+   wraps so the grabber takes its own full-width line. */
+#header { flex-wrap: wrap; padding-bottom: 0; }
+#header-grabber {
+  flex-basis: 100%; height: 22px; margin-top: -8px; padding: 0;
+  border: none; background: none; display: flex; align-items: flex-end;
+  justify-content: center; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  touch-action: pan-x; position: relative;
 }
-#review-repo-btn:disabled { color: var(--fg-mute); }
-#review-repo-btn b { color: var(--fg); font-weight: 600; }
+#header-grabber::before { content: ""; position: absolute; inset: -22px 0 0 0; }
+#header-grabber span {
+  width: 36px; height: 4px; border-radius: 2px; background: var(--bg2);
+  margin-bottom: 6px; transition: background 0.15s ease;
+}
+#header-grabber[aria-expanded="true"] span { background: var(--fg-mute); }
+#chat-toolbar {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  padding: 6px 12px 8px; background: var(--bg0); border-bottom: 1px solid var(--bg2);
+  flex-shrink: 0;
+}
+#chat-toolbar[hidden] { display: none; }
+#chat-toolbar button {
+  width: 56px; min-height: 48px; padding: 4px 0 2px; border: none; background: none;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  color: var(--fg-dim); font-family: var(--mono); font-size: 10px; cursor: pointer;
+  position: relative; -webkit-tap-highlight-color: transparent;
+}
+#chat-toolbar button:active { color: var(--fg); }
+#chat-toolbar button:disabled { color: var(--fg-mute); cursor: default; }
+#chat-toolbar button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#chat-toolbar .tb-label { max-width: 56px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#tb-git .tb-label { color: var(--fg); }
+#tb-git:disabled .tb-label { color: var(--fg-mute); }
+#tb-git.dirty::after {
+  content: ""; position: absolute; left: 34px; top: 2px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--orange);
+}
+#tb-catalogue.kept svg { fill: currentColor; }
+#tb-catalogue.kept { color: var(--yellow); }
 
 /* Messages area */
 #messages {
@@ -1761,8 +1793,17 @@ input, textarea, #fbv-content, .msg, .msg * {
     <button class="files-btn" id="files-btn">Files</button>
     <button class="menu-btn" id="chat-menu-btn" aria-label="Menu" style="display:none"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
   </div>
+  <button id="header-grabber" type="button" aria-label="Toolbar" aria-expanded="false" aria-controls="chat-toolbar"><span></span></button>
   <div id="history-loading" class="load-line" role="status" aria-live="polite" hidden><span>Loading chat…</span></div>
   <div id="conn-line" class="load-line" aria-hidden="true" hidden></div>
+</div>
+<div id="chat-toolbar" hidden>
+  <button id="tb-git" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg><span class="tb-label">git</span></button>
+  <button id="tb-model" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/></svg><span class="tb-label">model</span></button>
+  <button id="tb-pinned" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg><span class="tb-label">Pinned</span></button>
+  <button id="tb-fork" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/></svg><span class="tb-label">Fork</span></button>
+  <button id="tb-clone" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg><span class="tb-label">Clone</span></button>
+  <button id="tb-catalogue" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg><span class="tb-label">Catalogue</span></button>
 </div>
 <div id="file-browser">
   <div id="fb-header">
@@ -1784,7 +1825,6 @@ input, textarea, #fbv-content, .msg, .msg * {
 <div id="swipe-indicator"></div>
 <button id="scroll-btn">&darr;</button>
 <div id="attach-row"></div>
-<div id="review-bar"><button id="review-repo-btn" type="button" disabled><b>Before commit:</b> review repository</button></div>
 <div id="input-area">
   <button id="attach-btn" aria-label="Attach image">+</button>
   <input type="file" id="attach-input" accept="image/jpeg,image/png,image/webp,image/gif" multiple>
@@ -1833,14 +1873,9 @@ input, textarea, #fbv-content, .msg, .msg * {
 </div>
 <div id="cm-scrim"></div>
 <div id="chat-menu">
-  <button id="cm-pinned">Pinned</button>
-  <button id="cm-clone">Clone</button>
-  <button id="cm-fork">Fork</button>
-  <button id="cm-model">Model</button>
   <button id="cm-turn-nav">Show turn nav</button>
-  <button id="cm-catalogue">Catalogue</button>
-  <button id="cm-uncatalogue" style="display:none">Uncatalogue</button>
   <button id="cm-pin">Pin chat</button>
+  <button id="cm-uncatalogue" style="display:none">Uncatalogue</button>
   <button id="cm-kill" style="color:var(--red)">Kill session</button>
 </div>
 <!-- Turn nav sits at the root: it floats over the chat AND over the
@@ -2036,7 +2071,8 @@ function renderHeaderSub() {
       ? headerGit.staged + ' staged, ' + headerGit.unstaged + ' changed, ' + headerGit.untracked + ' new'
       : 'Clean tree';
   }
-  if (typeof chatToolbar !== 'undefined' && !chatToolbar.hidden) renderToolbar();
+  const tb = document.getElementById('chat-toolbar');
+  if (tb && !tb.hidden) renderToolbar();
 }
 
 // Model name for row 2: one Emacs round trip per chat open.
@@ -4241,7 +4277,6 @@ async function redial() {
         // earlier failed attempts' backoff delay the reunion.
         if (same.pid !== currentSockPid) reconnectAttempts = 1;
         currentSockPid = same.pid;
-        updateReviewBar();
       } else if (!sessions.some(s => s.pid === currentSockPid)) {
         // Our socket is gone and the session hasn't resurfaced yet
         // (mid-reload on the rig, or killed, or its probe timed out).
@@ -5659,7 +5694,6 @@ function selectSession(session) {
   markViewed(session);
   stashDraft(); // the chat being left keeps its own half-typed text
   currentSockPid = session.pid;
-  updateReviewBar();
   headerGit = null;
   headerModel = '';
   fetchGitStatus();
@@ -6013,15 +6047,14 @@ async function cloneSession() {
     alert('No buffer name available for this session');
     return;
   }
-  const btn = document.getElementById('cm-clone');
-  btn.disabled = true; btn.textContent = 'Cloning\u2026';
+  const btn = document.getElementById('tb-clone');
+  btn.disabled = true; setToolLabel(btn, 'Cloning\u2026');
   try {
     await spawnAndOpen({ cloneOf: currentBufferName });
   } catch (err) {
     alert('Clone failed: ' + err.message);
   } finally {
-    btn.disabled = false; btn.textContent = 'Clone';
-    closeChatMenu();
+    btn.disabled = false; setToolLabel(btn, 'Clone');
   }
 }
 
@@ -6039,8 +6072,8 @@ async function forkSession() {
   const source = currentBufferName;
   if (forkPending.has(source)) return;
   forkPending.add(source);
-  const btn = document.getElementById('cm-fork');
-  btn.disabled = true; btn.textContent = 'Forking\u2026';
+  const btn = document.getElementById('tb-fork');
+  btn.disabled = true; setToolLabel(btn, 'Forking\u2026');
   try {
     const resp = await fetch(basePath + '/api/fork', {
       method: 'POST',
@@ -6063,7 +6096,7 @@ async function forkSession() {
     alert('Fork failed: ' + err.message);
   } finally {
     forkPending.delete(source);
-    btn.disabled = false; btn.textContent = 'Fork';
+    btn.disabled = false; setToolLabel(btn, 'Fork');
     closeChatMenu();
   }
 }
@@ -6075,12 +6108,12 @@ async function forkSession() {
 const forkSupport = new Map();
 async function refreshForkEntry(btn) {
   const name = currentBufferName;
-  if (!name) { btn.disabled = true; btn.textContent = 'Fork'; return; }
+  if (!name) { btn.disabled = true; setToolLabel(btn, 'Fork'); return; }
   // A fork already in flight for this chat keeps the entry busy, so
   // reopening the menu cannot start a second one.
-  if (forkPending.has(name)) { btn.disabled = true; btn.textContent = 'Forking\u2026'; return; }
-  if (forkSupport.get(name)) { btn.disabled = false; btn.textContent = 'Fork'; return; }
-  btn.disabled = true; btn.textContent = 'Fork';
+  if (forkPending.has(name)) { btn.disabled = true; setToolLabel(btn, 'Forking\u2026'); return; }
+  if (forkSupport.get(name)) { btn.disabled = false; setToolLabel(btn, 'Fork'); return; }
+  btn.disabled = true; setToolLabel(btn, 'Fork');
   try {
     const resp = await fetch(basePath + '/api/fork?bufferName=' + encodeURIComponent(name));
     const data = await resp.json();
@@ -6089,10 +6122,10 @@ async function refreshForkEntry(btn) {
       forkSupport.set(name, true);
       btn.disabled = false;
     } else {
-      btn.textContent = 'Fork (not supported by this agent)';
+      setToolLabel(btn, 'Fork (not supported by this agent)');
     }
   } catch (err) {
-    if (name === currentBufferName) btn.textContent = 'Fork (unavailable)';
+    if (name === currentBufferName) setToolLabel(btn, 'Fork (unavailable)');
   }
 }
 
@@ -7035,32 +7068,83 @@ bellBtn.addEventListener('click', async () => {
 // out unless the agent advertises session/fork), turn nav, Kill
 const cmScrim = document.getElementById('cm-scrim');
 const chatMenu = document.getElementById('chat-menu');
-const cmPinned = document.getElementById('cm-pinned');
 const cmTurnNav = document.getElementById('cm-turn-nav');
-const cmFork = document.getElementById('cm-fork');
 function closeChatMenu() {
   cmScrim.classList.remove('visible');
   chatMenu.classList.remove('visible');
 }
 const cmPin = document.getElementById('cm-pin');
-const cmCatalogue = document.getElementById('cm-catalogue');
 const cmUncatalogue = document.getElementById('cm-uncatalogue');
+// --- Toolbar: pulled down from the header grabber ---
+const TOOLBAR_KEY = 'acp-toolbar-open';
+const headerGrabber = document.getElementById('header-grabber');
+const chatToolbar = document.getElementById('chat-toolbar');
+const tbGit = document.getElementById('tb-git');
+const tbModel = document.getElementById('tb-model');
+const tbCatalogue = document.getElementById('tb-catalogue');
+function setToolLabel(btn, text) { btn.querySelector('.tb-label').textContent = text; }
+function toolbarOpen() {
+  try { return localStorage.getItem(TOOLBAR_KEY) === 'true'; } catch (_) { return false; }
+}
+function setToolbarOpen(open) {
+  try { localStorage.setItem(TOOLBAR_KEY, open ? 'true' : 'false'); } catch (_) {}
+  chatToolbar.hidden = !open;
+  headerGrabber.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) { renderToolbar(); fetchGitStatus(); }
+}
+function renderToolbar() {
+  const git = headerGit && headerGit.branch ? headerGit : null;
+  tbGit.disabled = !git;
+  setToolLabel(tbGit, git ? git.branch : 'git');
+  tbGit.classList.toggle('dirty', !!git && (git.staged + git.unstaged + git.untracked) > 0);
+  setToolLabel(tbModel, headerModel || 'model');
+  refreshForkEntry(document.getElementById('tb-fork'));
+  refreshCatalogueEntry();
+}
+headerGrabber.addEventListener('click', () => setToolbarOpen(chatToolbar.hidden));
+// Drag: down past 24px opens, up past 24px closes. Tap still toggles.
+(() => {
+  let startY = null;
+  headerGrabber.addEventListener('touchstart', e => { startY = e.touches[0].clientY; }, {passive: true});
+  headerGrabber.addEventListener('touchmove', e => {
+    if (startY === null) return;
+    const dy = e.touches[0].clientY - startY;
+    if (dy > 24 && chatToolbar.hidden) { setToolbarOpen(true); startY = null; }
+    else if (dy < -24 && !chatToolbar.hidden) { setToolbarOpen(false); startY = null; }
+  }, {passive: true});
+  headerGrabber.addEventListener('touchend', () => { startY = null; });
+})();
+tbGit.addEventListener('click', () => openDiffReview('repository'));
+tbModel.addEventListener('click', openModelPicker);
+document.getElementById('tb-pinned').addEventListener('click', () => { renderPins(); pinsEl.classList.add('visible'); });
+document.getElementById('tb-clone').addEventListener('click', () => { cloneSession(); });
+document.getElementById('tb-fork').addEventListener('click', () => { forkSession(); });
+tbCatalogue.addEventListener('click', async () => {
+  const id = currentSessionIdForCatalogue();
+  if (!id) { alert('This chat has no session id yet.'); return; }
+  const chat = currentBufferName;
+  const stillHere = () => currentBufferName === chat && chatViewEl.classList.contains('visible');
+  try { await catalogueFlow(id, stillHere); }
+  catch (err) { if (stillHere()) alert('Catalogue failed: ' + err.message); }
+});
+setToolbarOpen(toolbarOpen());
 // Catalogue entry: "Catalogue" for a chat that was never kept, "Catalogued
 // · note" once saved (tap edits), with Uncatalogue shown beside it.  The
 // state comes from the rig on every open, so the Mac and the phone agree.
 let cmCatalogueSerial = 0;
 function paintCatalogueEntry(state) {
   const kept = !!(state && state.catalogued);
-  cmCatalogue.textContent = kept
-    ? 'Catalogued' + (state.note ? ' \u00b7 ' + state.note : '') : 'Catalogue';
+  tbCatalogue.classList.toggle('kept', kept);
+  setToolLabel(tbCatalogue, kept ? 'Catalogued' : 'Catalogue');
+  tbCatalogue.title = kept && state.note ? state.note : '';
   cmUncatalogue.style.display = kept ? '' : 'none';
 }
 async function refreshCatalogueEntry() {
   const serial = ++cmCatalogueSerial;
   const sessionIdNow = currentSessionIdForCatalogue();
-  cmCatalogue.disabled = !sessionIdNow;
+  tbCatalogue.disabled = !sessionIdNow;
   cmUncatalogue.style.display = 'none';
-  if (!sessionIdNow) { cmCatalogue.textContent = 'Catalogue'; return; }
+  if (!sessionIdNow) { setToolLabel(tbCatalogue, 'Catalogue'); return; }
   paintCatalogueEntry(catalogueStates.get(sessionIdNow));
   try {
     const state = await fetchCatalogueState(sessionIdNow);
@@ -7073,11 +7157,9 @@ function currentSessionIdForCatalogue() {
   return (s && s.sessionId) || sessionId || null;
 }
 document.getElementById('chat-menu-btn').addEventListener('click', () => {
-  cmPinned.style.display = loadPins().length ? '' : 'none';
   cmTurnNav.textContent = turnNav.isEnabled() ? 'Hide turn nav' : 'Show turn nav';
   cmPin.textContent = isChatPinned(currentBufferName) ? 'Unpin chat' : 'Pin chat';
   cmPin.disabled = !currentBufferName;
-  refreshForkEntry(cmFork);
   refreshCatalogueEntry();
   cmScrim.classList.add('visible');
   chatMenu.classList.add('visible');
@@ -7088,15 +7170,6 @@ cmPin.addEventListener('click', async () => {
   try { await toggleChatPin(currentBufferName); }
   catch (err) { alert('Pin failed: ' + err.message); }
 });
-cmCatalogue.addEventListener('click', async () => {
-  closeChatMenu();
-  const id = currentSessionIdForCatalogue();
-  if (!id) { alert('This chat has no session id yet.'); return; }
-  const chat = currentBufferName;
-  const stillHere = () => currentBufferName === chat && chatViewEl.classList.contains('visible');
-  try { await catalogueFlow(id, stillHere); }
-  catch (err) { if (stillHere()) alert('Catalogue failed: ' + err.message); }
-});
 cmUncatalogue.addEventListener('click', async () => {
   closeChatMenu();
   const id = currentSessionIdForCatalogue();
@@ -7106,14 +7179,6 @@ cmUncatalogue.addEventListener('click', async () => {
   catch (err) { alert('Uncatalogue failed: ' + err.message); }
 });
 cmScrim.addEventListener('click', closeChatMenu);
-cmPinned.addEventListener('click', () => {
-  closeChatMenu();
-  renderPins();
-  pinsEl.classList.add('visible');
-});
-document.getElementById('cm-clone').addEventListener('click', () => { cloneSession(); });
-cmFork.addEventListener('click', () => { forkSession(); });
-document.getElementById('cm-model').addEventListener('click', openModelPicker);
 cmTurnNav.addEventListener('click', () => {
   closeChatMenu();
   turnNav.setEnabled(!turnNav.isEnabled());
@@ -8032,7 +8097,6 @@ const drNumbersBtn = document.getElementById('dr-numbers-btn');
 const drViewport = document.getElementById('dr-viewport');
 const drPrev = document.getElementById('dr-prev');
 const drNext = document.getElementById('dr-next');
-const reviewRepoBtn = document.getElementById('review-repo-btn');
 const drBackBtn = document.getElementById('dr-back');
 const drReaderBackBtn = document.getElementById('dr-reader-back');
 
@@ -8435,10 +8499,8 @@ function appendTurnReviewSummary() {
   return card;
 }
 
-// Entry point 2: the row above the composer.
-function updateReviewBar() {
-  if (reviewRepoBtn) reviewRepoBtn.disabled = !currentSockPid;
-}
+// Entry point 2: the branch segment in the header and the toolbar's git
+// button, both wired where the toolbar is set up.
 
 drBackBtn.addEventListener('click', closeDiffReview);
 drRefreshBtn.addEventListener('click', () => loadDiffReview(diffReview.scope, {refresh: true}));
@@ -8449,7 +8511,6 @@ drNumbersBtn.addEventListener('click', () => setDiffLineNumbers(!diffLineNumbers
 drPrev.addEventListener('click', () => diffStepChange(-1));
 drNext.addEventListener('click', () => diffStepChange(1));
 drReaderBackBtn.addEventListener('click', () => closeDiffReader(true));
-if (reviewRepoBtn) reviewRepoBtn.addEventListener('click', () => openDiffReview('repository'));
 applyDiffLineNumbers(diffLineNumbersVisible());
 // --- Diff review: end ---
 
