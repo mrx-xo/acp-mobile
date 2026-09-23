@@ -97,7 +97,7 @@ One line, 11px mono, segments separated by ` · ` in fg-mute:
 
 - `#review-bar` and `#review-repo-btn`, their CSS, and the enable logic.
 - `#mode-btn` pill styling. The element stays as the mode segment.
-- `#status-text`, `#header-buf`.
+- `#header-buf`.
 - Kebab items `Pinned`, `Clone`, `Fork`, `Model`, `Catalogue`.
 
 ## Server
