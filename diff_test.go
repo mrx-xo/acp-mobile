@@ -840,3 +840,79 @@ func TestBridgeCapturesTurnSnapshot(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+func TestParsePorcelainStatus(t *testing.T) {
+	// git status --porcelain=v1 -z: "XY path\x00", renames add "\x00orig".
+	raw := []byte("M  a.txt\x00 M b.txt\x00MM c.txt\x00?? new.txt\x00R  moved.txt\x00old.txt\x00A  added.txt\x00")
+	got := parsePorcelainStatus(raw)
+	want := gitStatusResult{Staged: 4, Unstaged: 2, Untracked: 1}
+	if got != want {
+		t.Fatalf("parsePorcelainStatus = %+v, want %+v", got, want)
+	}
+	if got := parsePorcelainStatus(nil); got != (gitStatusResult{}) {
+		t.Fatalf("empty status = %+v, want zero", got)
+	}
+}
+
+func TestGitStatusHandler(t *testing.T) {
+	get := func(t *testing.T, query string) *httptest.ResponseRecorder {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handleGitStatus(rec, httptest.NewRequest(http.MethodGet, "/api/git-status?"+query, nil))
+		return rec
+	}
+	decode := func(t *testing.T, rec *httptest.ResponseRecorder) gitStatusResult {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("git status must not be cached: %q", rec.Header().Get("Cache-Control"))
+		}
+		var res gitStatusResult
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	t.Setenv("HOME", t.TempDir())
+	dir := initTestRepo(t)
+	pid, _ := fakeSession(t, dir)
+
+	rec := httptest.NewRecorder()
+	handleGitStatus(rec, httptest.NewRequest(http.MethodPost, "/api/git-status?pid=1", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST must be refused: %d", rec.Code)
+	}
+	for _, bad := range []string{"", "pid=abc", "pid=0"} {
+		if rec := get(t, bad); rec.Code != http.StatusBadRequest {
+			t.Fatalf("query %q must be rejected with 400, got %d", bad, rec.Code)
+		}
+	}
+	if rec := get(t, "pid=999999"); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown pid must be 404, got %d", rec.Code)
+	}
+
+	clean := decode(t, get(t, fmt.Sprintf("pid=%d", pid)))
+	if clean.Branch != "main" || clean.Staged+clean.Unstaged+clean.Untracked != 0 {
+		t.Fatalf("clean repo = %+v", clean)
+	}
+
+	writeRepoFile(t, dir, "a.txt", "one\ntwo\nthree\nfour\n")
+	gitIn(t, dir, "add", "a.txt")
+	writeRepoFile(t, dir, "a.txt", "one\ntwo\nthree\nfour\nfive\n")
+	writeRepoFile(t, dir, "new.txt", "hi\n")
+	dirty := decode(t, get(t, fmt.Sprintf("pid=%d", pid)))
+	if dirty.Branch != "main" || dirty.Staged != 1 || dirty.Unstaged != 1 || dirty.Untracked != 1 {
+		t.Fatalf("partially staged repo = %+v, want staged 1 unstaged 1 untracked 1", dirty)
+	}
+
+	plain := t.TempDir()
+	previous := sessionCwd
+	sessionCwd = func(int) string { return plain }
+	t.Cleanup(func() { sessionCwd = previous })
+	none := decode(t, get(t, fmt.Sprintf("pid=%d", pid)))
+	if none != (gitStatusResult{}) {
+		t.Fatalf("non-repo cwd = %+v, want empty", none)
+	}
+}

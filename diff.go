@@ -389,6 +389,96 @@ func inspectRepository(ctx context.Context, dir string) (repoInfo, error) {
 	return info, nil
 }
 
+// gitStatusResult is the header's view of a repository: the branch and
+// how many paths are staged, unstaged and untracked. A path that is
+// both staged and unstaged counts once in each.
+type gitStatusResult struct {
+	Branch    string `json:"branch"`
+	Staged    int    `json:"staged"`
+	Unstaged  int    `json:"unstaged"`
+	Untracked int    `json:"untracked"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// parsePorcelainStatus counts entries of `git status --porcelain=v1 -z`.
+// Entries are "XY path" separated by NUL; a rename or copy carries the
+// original path in the following NUL field, which is skipped.
+func parsePorcelainStatus(raw []byte) gitStatusResult {
+	var res gitStatusResult
+	fields := bytes.Split(raw, []byte{0})
+	for i := 0; i < len(fields); i++ {
+		entry := fields[i]
+		if len(entry) < 3 {
+			continue
+		}
+		x, y := entry[0], entry[1]
+		if x == '?' && y == '?' {
+			res.Untracked++
+			continue
+		}
+		if x == '!' && y == '!' {
+			continue
+		}
+		if x != ' ' {
+			res.Staged++
+		}
+		if y != ' ' {
+			res.Unstaged++
+		}
+		if x == 'R' || x == 'C' || y == 'R' || y == 'C' {
+			i++ // the original path travels in the next field
+		}
+	}
+	return res
+}
+
+// gitStatus reads the branch and counts for dir. A directory that is
+// not a repository yields an empty branch and zero counts, not an error.
+func gitStatus(ctx context.Context, dir string) (gitStatusResult, error) {
+	info, err := inspectRepository(ctx, dir)
+	if err != nil {
+		return gitStatusResult{}, nil
+	}
+	raw, truncated, err := runGitBounded(ctx, info.Root, nil, diffOutputLimit, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return gitStatusResult{}, err
+	}
+	res := parsePorcelainStatus(raw)
+	res.Branch = info.Branch
+	res.Truncated = truncated
+	return res, nil
+}
+
+// handleGitStatus serves GET /api/git-status?pid=PID for a live session.
+func handleGitStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pid, err := strconv.Atoi(r.URL.Query().Get("pid"))
+	if err != nil || pid <= 0 {
+		http.Error(w, "invalid pid", http.StatusBadRequest)
+		return
+	}
+	if findSocket(strconv.Itoa(pid)) == "" {
+		http.Error(w, "no such session", http.StatusNotFound)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	var res gitStatusResult
+	if dir := sessionCwd(pid); dir != "" {
+		if res, err = gitStatus(ctx, dir); err != nil {
+			log.Printf("git-status: %v", err)
+			http.Error(w, "status failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
+}
+
 // baseTree is what the index is compared against: HEAD, or the empty
 // tree in a repository that has no commit yet.
 func baseTree(ctx context.Context, info repoInfo) (string, error) {

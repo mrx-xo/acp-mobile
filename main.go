@@ -333,6 +333,7 @@ func main() {
 	mux.HandleFunc("/api/fork", handleFork)
 	mux.HandleFunc("/api/catalogue", handleCatalogue)
 	mux.HandleFunc("/api/diff-review", handleDiffReview)
+	mux.HandleFunc("/api/git-status", handleGitStatus)
 	mux.HandleFunc("/api/pin", handlePin)
 	mux.HandleFunc("/api/push-key", handlePushKey)
 	mux.HandleFunc("/api/push-subscribe", handlePushSubscribe)
