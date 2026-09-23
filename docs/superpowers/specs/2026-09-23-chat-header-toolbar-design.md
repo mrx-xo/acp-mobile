@@ -61,7 +61,8 @@ One line, 11px mono, segments separated by ` · ` in fg-mute:
 
 ### Status
 
-- The status dot and the `Connected` text are removed.
+- The status dot is removed. `#status-text` stays as a visually hidden
+  live region so the socket code and its node tests are untouched.
 - The provider icon shows steady state: full color when the socket is
   connected, 40% opacity when disconnected or waiting for a session.
 - The existing `.load-line` under the header shows transitions: yellow
@@ -87,7 +88,9 @@ One line, 11px mono, segments separated by ` · ` in fg-mute:
   4. Fork, 5. Clone: existing actions.
   6. Catalogue: bookmark icon, label flips to `Catalogued` and the icon
      fills when the chat is catalogued. Toggles catalogue state.
-- The kebab keeps `Show turn nav`, `Pin chat`, `Kill session`.
+- The kebab keeps `Show turn nav`, `Pin chat`, `Kill session`, and
+  `Uncatalogue` shown only while the chat is catalogued, since the toolbar
+  button only saves or edits.
 - Opening the toolbar does not scroll the message list; the list shrinks.
 
 ### Removed
@@ -95,8 +98,7 @@ One line, 11px mono, segments separated by ` · ` in fg-mute:
 - `#review-bar` and `#review-repo-btn`, their CSS, and the enable logic.
 - `#mode-btn` pill styling. The element stays as the mode segment.
 - `#status-text`, `#header-buf`.
-- Kebab items `Pinned`, `Clone`, `Fork`, `Model`, `Catalogue`,
-  `Uncatalogue`.
+- Kebab items `Pinned`, `Clone`, `Fork`, `Model`, `Catalogue`.
 
 ## Server
 
@@ -140,7 +142,7 @@ Chrome, in a new `header_ui_test.go` at 393x852:
 - Grabber tap opens the toolbar with six items, the message list height
   shrinks by the toolbar height, the state survives a reload, and the git
   item opens the review on the repository scope.
-- The kebab lists exactly three items.
+- The kebab lists exactly three visible items for an uncatalogued chat.
 
 Existing tests that click `#review-repo-btn` or read `#status-text`
 change to the new elements. Update `README.md` where it names the review
