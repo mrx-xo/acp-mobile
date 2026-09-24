@@ -54,3 +54,45 @@ func handlePresets(w http.ResponseWriter, r *http.Request) {
 		log.Printf("presets: %v", err)
 	}
 }
+
+// --- Mode words ---
+//
+// The header mode button shows the rig's one word per permission mode
+// ("full", "accept edits", ...) from major-pane-mode-words, via
+// syzygy-mode-words-json.  index.html keeps a built-in copy only as the
+// offline fallback.
+
+type modeWords struct {
+	Words map[string]string `json:"words"`
+	Alert []string          `json:"alert"`
+}
+
+// handleModeWords replies with the rig's mode-id -> word table.
+// 404 when major-pane is not loaded on the rig.
+func handleModeWords(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw, err := callElispJSON(r.Context(), "syzygy-mode-words-json")
+	var words modeWords
+	if err == nil {
+		if jerr := json.Unmarshal(raw, &words); jerr != nil {
+			err = &elispError{err: jerr, output: string(raw)}
+		}
+	}
+	if writeElispError(w, "mode-words", err, "no mode words on the rig") {
+		return
+	}
+	if words.Words == nil {
+		words.Words = map[string]string{}
+	}
+	if words.Alert == nil {
+		words.Alert = []string{}
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(words); err != nil {
+		log.Printf("mode-words: %v", err)
+	}
+}

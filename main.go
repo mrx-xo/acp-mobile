@@ -323,6 +323,7 @@ func main() {
 	mux.HandleFunc("/api/statuses", handleStatuses)
 	mux.HandleFunc("/api/spawn", handleSpawn)
 	mux.HandleFunc("/api/presets", handlePresets)
+	mux.HandleFunc("/api/mode-words", handleModeWords)
 	mux.HandleFunc("/api/launch-options", handleLaunchOptions)
 	registerModelHandlers(mux)
 	mux.HandleFunc("/api/projects", handleProjects)

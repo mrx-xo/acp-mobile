@@ -139,3 +139,25 @@ func installFakeSpawnScript(t *testing.T) string {
 	t.Cleanup(func() { appConfig = previousConfig })
 	return argsFile
 }
+
+func TestModeWordsHandlerReturnsRigTable(t *testing.T) {
+	argsFile := installFakeEmacsclient(t, elispB64Output(`{"words":{"bypass":"full","agent-full-access":"full","read-only":"ask"},"alert":["full"]}`))
+	rec := postJSON(t, handleModeWords, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var resp modeWords
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Words["bypass"] != "full" || resp.Words["read-only"] != "ask" {
+		t.Fatalf("words = %+v", resp.Words)
+	}
+	if len(resp.Alert) != 1 || resp.Alert[0] != "full" {
+		t.Fatalf("alert = %+v", resp.Alert)
+	}
+	args, _ := os.ReadFile(argsFile)
+	if !strings.Contains(string(args), "(syzygy-mode-words-json)") {
+		t.Fatalf("emacsclient args = %q", args)
+	}
+}

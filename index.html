@@ -2365,12 +2365,12 @@ function modeName(id) {
   return mode ? mode.name : id;
 }
 function modeColor(id) {
-  // Heuristic coloring based on common mode semantics
-  const lower = id.toLowerCase();
-  if (lower.includes('yolo') || lower.includes('bypass')) return '#fb4934';
-  if (lower.includes('plan') || lower.includes('architect')) return '#fabd2f';
-  if (lower.includes('edit') || lower.includes('code') || lower.includes('auto')) return '#b8bb26';
-  if (lower.includes('dont') || lower.includes("don't")) return '#83a598';
+  // Colour by the rig's mode word (see MODE_SHORT_NAMES), so every
+  // vendor's no-guardrails mode is red, not only ids containing "bypass".
+  const word = modeShortName(id);
+  if (MODE_ALERT_WORDS.includes(word)) return '#fb4934';
+  if (word === 'plan') return '#fabd2f';
+  if (word === 'accept edits' || word === 'auto' || word === 'build') return '#b8bb26';
   return '#928374';
 }
 
@@ -4080,6 +4080,9 @@ function setProcessing(v) {
   stopBtn.style.display = v ? 'flex' : 'none';
 }
 
+// Offline fallback only: loadModeWords() replaces both from the rig's
+// major-pane-mode-words through /api/mode-words.
+let MODE_ALERT_WORDS = ['full'];
 const MODE_SHORT_NAMES = {
   bypassPermissions: 'full',
   'agent-full-access': 'full',
@@ -4093,6 +4096,16 @@ const MODE_SHORT_NAMES = {
   build: 'build',
   plan: 'plan',
 };
+async function loadModeWords() {
+  try {
+    const resp = await fetch(basePath + '/api/mode-words', {method: 'POST'});
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data && data.words && typeof data.words === 'object') Object.assign(MODE_SHORT_NAMES, data.words);
+    if (data && Array.isArray(data.alert) && data.alert.length) MODE_ALERT_WORDS = data.alert;
+    updateModeBtn();
+  } catch (_) { /* keep the built-in table */ }
+}
 function modeShortName(id) {
   if (MODE_SHORT_NAMES[id]) return MODE_SHORT_NAMES[id];
   return String(modeName(id) || id).toLowerCase();
@@ -8622,6 +8635,8 @@ document.addEventListener('keydown', (e) => {
     if (historyBackFn) historyBackFn(); else closeHistory();
   }
 });
+
+loadModeWords();
 
 // Start: try loading sessions (discover mode), fall back to direct connect.
 // ?session=<bufferName> (a push tap with no window open) lands on that chat.
