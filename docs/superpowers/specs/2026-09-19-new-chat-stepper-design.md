@@ -8,7 +8,8 @@ Status: approved in chat, pending spec review
 The New chat sheet packs the project row, a horizontally scrolling preset
 chip strip, four setting rows, the first-message box and two icon tools into
 one screen, with ten sub-views hanging off it. On a phone it is cramped, the
-chip strip is hard to use, and a repeat launch such as "Fable in dotfiles"
+chip strip is hard to use, and a repeat launch such as `Fable 5.1 · Full` in
+dotfiles
 takes as many taps as a brand new one.
 
 Comfort matters more than tap count. Each decision gets a full screen.
@@ -40,8 +41,11 @@ the same path.
 
 - Two lists, `Pinned` then `Recent`. A heading is omitted when its list is
   empty.
-- Each row: preset label as the title, project name plus short path as the
-  detail, and a pin icon on the right that toggles pinned state. A pinned
+- Each row: the provider icon (`providerIcon` of the agent) on the left; the
+  title `<model> in <project>`, for example `Opus 5.5 in dotfiles`; the
+  detail line is the mode word coloured by `modeColor`, then the short path,
+  for example `plan  ~/.dotfiles`; and a pin icon on the right that toggles
+  pinned state. A pinned
   combo leaves `Recent` and appears under `Pinned`; unpinning moves it back
   to the top of `Recent`.
 - Tapping a row copies the combo into the draft and opens Prompt.
@@ -61,7 +65,9 @@ the same path.
 ### Agent (step 2 of 3)
 
 - A tall list of presets: rig presets in rig order, then custom presets, each
-  showing label and `agent / model / mode / effort`. Custom presets keep
+  showing its label and a detail line `agent / model / mode / effort` in
+  display words (see Vocabulary), for example `Codex / Sol 5.6 / full / high`.
+  Custom presets keep
   their delete icon. The selected preset is highlighted.
 - Tapping a preset applies it and advances to Prompt.
 - Below the presets a `Customize` row with a chevron. Tapping it expands the
@@ -103,12 +109,26 @@ the same path.
   an empty project or incomplete settings resumes on the first incomplete
   step instead.
 
+### Vocabulary
+
+The stepper uses the same words as the chat header, and never introduces its own:
+
+- Preset labels come verbatim from the rig: `Fable 5.1 · Full`,
+  `Opus 5.5 · Plan`, `Sol 5.6 · Full`.
+- Model names go through `canonicalModelName`: `Sol 6`, `Astra 6`,
+  `Opus 5.5`. Raw ids like `gpt-6-astra` are never shown.
+- Mode names go through `modeShortName`, which reads the rig's mode words from
+  `/api/mode-words`: `full`, `accept edits`, `auto`, `ask`, `manual`,
+  `plan`, `build`. "Bypass" and "Full access" are never shown.
+- Row names stay `Agent`, `Model`, `Permissions`, `Effort`. Empty effort
+  reads `Agent default`. `Custom` marks settings that match no preset.
+
 ## Data
 
 ### New localStorage key `syzygy.launch.combos`
 
 ```json
-{"pins":[{"cwd":"/src/dotfiles","preset":"f","settings":{"agent":"claude","model":"fable","mode":"bypass","effort":""}}],
+{"pins":[{"cwd":"/src/dotfiles","preset":"f","settings":{"agent":"claude","model":"fable[1m]","mode":"bypassPermissions","effort":""}}],
  "recent":[...]}
 ```
 
@@ -124,8 +144,9 @@ the same path.
 ### Label rule
 
 Preset label when the combo settings equal a preset from the rig or the
-custom list, otherwise the agent name followed by ` / Custom`. Used on Home
-rows and the Prompt summary card.
+custom list, otherwise the agent name followed by ` / Custom`. Used on the
+Prompt summary card. Home rows use their own `<model> in <project>` title
+instead.
 
 ### Draft
 
