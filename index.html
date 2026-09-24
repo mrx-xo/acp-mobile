@@ -5857,6 +5857,25 @@ spCustom = Array.isArray(spCustom) ? spCustom.filter(spValidPreset) : [];
 let spPins = spRead('pins', []), spRecent = spRead('recent', []);
 spPins = Array.isArray(spPins) ? spPins.filter(p => typeof p === 'string') : [];
 spRecent = Array.isArray(spRecent) ? spRecent.filter(p => typeof p === 'string') : [];
+// Launch combos: a project plus the four settings, remembered on this device.
+// The preset key is informational; identity is cwd plus settings.
+function spComboValid(c) { return !!c && typeof c.cwd === 'string' && !!c.cwd && !!c.settings && ['agent','model','mode'].every(k => typeof c.settings[k] === 'string' && c.settings[k]) && (c.settings.effort === undefined || typeof c.settings.effort === 'string'); }
+function spCombo(c) { return {cwd:c.cwd, preset:typeof c.preset === 'string' ? c.preset : '', settings:spSettings(c.settings)}; }
+function spComboSame(a, b) { return a.cwd === b.cwd && spFields.every(k => a.settings[k] === b.settings[k]); }
+let spCombos = spRead('combos', {});
+spCombos = {pins:Array.isArray(spCombos.pins) ? spCombos.pins.filter(spComboValid).map(spCombo) : [], recent:Array.isArray(spCombos.recent) ? spCombos.recent.filter(spComboValid).map(spCombo) : []};
+function spComboPinned(c) { return spCombos.pins.some(p => spComboSame(p, c)); }
+function spRecordCombo(c) {
+  c = spCombo(c);
+  if (!spComboPinned(c)) spCombos.recent = [c, ...spCombos.recent.filter(r => !spComboSame(r, c))].slice(0, 8);
+  spWrite('combos', spCombos);
+}
+function spToggleComboPin(c) {
+  c = spCombo(c);
+  if (spComboPinned(c)) { spCombos.pins = spCombos.pins.filter(p => !spComboSame(p, c)); spCombos.recent = [c, ...spCombos.recent.filter(r => !spComboSame(r, c))].slice(0, 8); }
+  else { spCombos.recent = spCombos.recent.filter(r => !spComboSame(r, c)); spCombos.pins = [...spCombos.pins, c]; }
+  spWrite('combos', spCombos);
+}
 let spawnPresets = [], spawnProjects = [], spCatalog = {agents:[], defaultAgent:''};
 let spawnPresetsLoad = 0, spawnProjectsLoad = 0, spCatalogLoad = 0;
 let spView = 'main', spBusy = false, spReturnFocus = null, spPickerOrigin = null;
@@ -5876,6 +5895,15 @@ function spChoiceName(field, value) { return spChoices(field).find(c => c.id ===
 function spAllPresets() { return [...spawnPresets, ...spCustom]; }
 function spSelectedPreset() { return spAllPresets().find(p => p.key === spDraft.preset); }
 function spComplete() { return ['agent','model','mode'].every(k => spChoices(k).some(c => c.id === spDraft.settings[k])) && (!spDraft.settings.effort || spChoices('effort').some(c => c.id === spDraft.settings.effort)); }
+// Labels reuse the header's words: canonicalModelName, modeShortName.
+function spAgentFor(settings) { return spCatalog.agents.find(a => a.id === settings.agent); }
+function spMatchingPreset(settings) { return spAllPresets().find(p => spFields.every(k => (p[k] || '') === settings[k])); }
+function spProjectName(cwd) { return spawnProjects.find(p => p.path === cwd)?.name || cwd.split('/').filter(Boolean).pop() || cwd; }
+function spModelName(settings) { const a = spAgentFor(settings); return canonicalModelName(settings.model, a?.models || [], (a?.name || '') + ' '); }
+function spModeWord(settings) { return modeShortName(settings.mode); }
+function spComboTitle(c) { return spModelName(c.settings) + ' in ' + spProjectName(c.cwd); }
+function spSummaryLabel(settings) { const p = spMatchingPreset(settings); return p ? p.label : (spAgentFor(settings)?.name || settings.agent || 'Agent') + ' / Custom'; }
+function spPresetDetail(p) { return [spAgentFor(p)?.name || p.agent, spModelName(p), spModeWord(p), p.effort || 'Agent default'].join(' / '); }
 
 // Preserve the keyboard during a tap; a drag or pointer cancellation never picks.
 let spTapSuppressUntil = 0;

@@ -932,6 +932,11 @@ function loadSpawnSheet(overrides = {}) {
     Error,
     JSON,
     Promise,
+    canonicalModelName: (id, models = []) => ({'gpt-5.6-sol':'Sol 5.6','opus[1m]':'Opus 5.5'}[id] || models.find(m => m.id === id)?.name || id),
+    modeShortName: id => ({bypassPermissions:'full','agent-full-access':'full',plan:'plan'}[id] || id),
+    modeColor: () => '#928374',
+    providerIcon: agent => agent === 'claude' || agent === 'codex' ? '<span class="provider-icon"></span>' : '',
+    localStorage: (() => { const m = new Map(); return {getItem:k => m.has(k) ? m.get(k) : null, setItem:(k,v) => m.set(k,String(v)), removeItem:k => m.delete(k)}; })(),
     ...overrides,
   };
   vm.createContext(context);
@@ -989,6 +994,54 @@ test('project search matches names and shortened paths without changing a draft 
   assert.equal(context.projectMatches(project,'~/.dot'),true);
   assert.equal(context.projectMatches(project,'missing'),false);
   assert.equal(get('spDraft.cwd'),'/selected');
+});
+
+const combo = (cwd, model='gpt-5.6-sol', mode='agent-full-access') => ({cwd, preset:'c', settings:{agent:'codex', model, mode, effort:'high'}});
+
+test('combos drop malformed entries on read and normalise settings', () => {
+  const store = new Map([['syzygy.launch.combos', JSON.stringify({pins:[combo('/a'), {cwd:''}, null], recent:[{cwd:'/b', settings:{agent:'codex'}}, combo('/c')]})]]);
+  const {get} = loadSpawnSheet({localStorage:{getItem:k => store.get(k) ?? null, setItem(){}, removeItem(){}}});
+  assert.deepEqual(JSON.parse(JSON.stringify(get('spCombos'))), {pins:[combo('/a')], recent:[combo('/c')]});
+});
+
+test('recording a combo dedupes on cwd plus settings, caps recent at 8, and skips pinned combos', () => {
+  const {context, get} = loadSpawnSheet();
+  for (let i = 0; i < 10; i++) context.spRecordCombo(combo('/p' + i));
+  assert.equal(get('spCombos.recent.length'), 8);
+  assert.equal(get('spCombos.recent[0].cwd'), '/p9');
+  context.spRecordCombo(combo('/p5'));
+  assert.equal(get('spCombos.recent[0].cwd'), '/p5');
+  assert.equal(get('spCombos.recent.length'), 8);
+  context.spRecordCombo({...combo('/p5'), preset:'other'});
+  assert.equal(get('spCombos.recent.filter(c => c.cwd === "/p5").length'), 1, 'preset key is informational, not identity');
+  context.spToggleComboPin(combo('/p5'));
+  context.spRecordCombo(combo('/p5'));
+  assert.equal(get('spCombos.recent.some(c => c.cwd === "/p5")'), false);
+  assert.equal(get('spCombos.pins.length'), 1);
+});
+
+test('unpinning puts the combo back at the front of recent and persists', () => {
+  const {context, get} = loadSpawnSheet();
+  context.spRecordCombo(combo('/a')); context.spRecordCombo(combo('/b'));
+  context.spToggleComboPin(combo('/a'));
+  assert.deepEqual(JSON.parse(JSON.stringify(get('spCombos.recent.map(c => c.cwd)'))), ['/b']);
+  context.spToggleComboPin(combo('/a'));
+  assert.deepEqual(JSON.parse(JSON.stringify(get('spCombos.recent.map(c => c.cwd)'))), ['/a', '/b']);
+  assert.equal(JSON.parse(get('localStorage').getItem('syzygy.launch.combos')).recent[0].cwd, '/a');
+});
+
+test('labels use the header vocabulary', () => {
+  const {context, set} = loadSpawnSheet();
+  set('spCatalog', {defaultAgent:'codex', agents:[{id:'codex', name:'Codex', models:[], modes:[], efforts:[]}, {id:'claude', name:'Claude Code', models:[], modes:[], efforts:[]}]});
+  set('spawnPresets', [{key:'c', label:'Sol 5.6 · Full', agent:'codex', model:'gpt-5.6-sol', mode:'agent-full-access', effort:'high'}]);
+  set('spawnProjects', [{name:'dotfiles', path:'/u/.dotfiles'}]);
+  assert.equal(context.spComboTitle(combo('/u/.dotfiles')), 'Sol 5.6 in dotfiles');
+  assert.equal(context.spComboTitle(combo('/u/src/atlas')), 'Sol 5.6 in atlas');
+  assert.equal(context.spModeWord(combo('/x').settings), 'full');
+  assert.equal(context.spSummaryLabel(combo('/x').settings), 'Sol 5.6 · Full');
+  assert.equal(context.spSummaryLabel({agent:'claude', model:'opus[1m]', mode:'plan', effort:''}), 'Claude Code / Custom');
+  assert.equal(context.spPresetDetail({agent:'codex', model:'gpt-5.6-sol', mode:'agent-full-access', effort:'high'}), 'Codex / Sol 5.6 / full / high');
+  assert.equal(context.spPresetDetail({agent:'claude', model:'opus[1m]', mode:'plan', effort:''}), 'Claude Code / Opus 5.5 / plan / Agent default');
 });
 
 test('touch scrolling cancels a choice and synthetic clicks cannot choose twice', () => {
