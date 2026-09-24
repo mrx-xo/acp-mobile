@@ -67,7 +67,7 @@ func newHeaderTestPage(t *testing.T, label string) *chromePage {
 	})
 	mux.HandleFunc("/api/models", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"current":"fable","models":[{"id":"fable","name":"fable"},{"id":"opus","name":"opus"}]}`)
+		fmt.Fprint(w, `{"current":"fable[1m]","models":[{"id":"fable[1m]","name":"Fable"},{"id":"opus[1m]","name":"Opus (1M context)"}]}`)
 	})
 	mux.HandleFunc("/api/fork", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -95,7 +95,7 @@ func newHeaderTestPage(t *testing.T, label string) *chromePage {
 
 func TestHeaderTitleAndRow(t *testing.T) {
 	page := newHeaderTestPage(t, "")
-	page.waitFor(t, `document.getElementById('hs-model').textContent === 'fable' && document.getElementById('hs-branch').textContent === 'syzygy'`)
+	page.waitFor(t, `document.getElementById('hs-model').textContent === 'Fable 5.1' && document.getElementById('hs-branch').textContent === 'syzygy'`)
 	saveUIShot(t, page, "header-row")
 	state := page.evalObject(t, `(()=>{
 		const t = document.getElementById('header-title');
@@ -119,7 +119,7 @@ func TestHeaderTitleAndRow(t *testing.T) {
 	if state["title"] != "acp-mobile" || state["ordinal"] != "4" || state["labeled"] != false {
 		t.Fatalf("title = %v", state)
 	}
-	if state["provider"] != true || state["mode"] != "bypass" || state["modeColor"] != "rgb(251, 73, 52)" || state["modeBg"] != "rgba(0, 0, 0, 0)" {
+	if state["provider"] != true || state["mode"] != "full" || state["modeColor"] != "rgb(251, 73, 52)" || state["modeBg"] != "rgba(0, 0, 0, 0)" {
 		t.Fatalf("row 2 = %v", state)
 	}
 	if state["dirty"] != true || state["gitHidden"] != false || state["dotGone"] != true || state["bufGone"] != true || state["kebabBorder"] != "none" {
@@ -130,6 +130,32 @@ func TestHeaderTitleAndRow(t *testing.T) {
 	got := labeled.evalObject(t, `(()=>{const t=document.getElementById('header-title');return {main:t.querySelector('.ht-main').textContent, ord:t.querySelector('.ht-ord').textContent, labeled:t.classList.contains('labeled')};})()`)
 	if got["main"] != "fix keyboard dismiss" || got["ord"] != "" || got["labeled"] != true {
 		t.Fatalf("labeled title = %v", got)
+	}
+}
+
+func TestHeaderCanonicalVocabulary(t *testing.T) {
+	page := newHeaderTestPage(t, "")
+	got := page.evalObject(t, `(()=>{
+		if (typeof canonicalModelName !== 'function') return {missing:true};
+		const models = [
+			['fable[1m]', 'Claude Agent @ x'],
+			['opus[1m]', 'Claude Agent @ x'],
+			['sonnet', 'Claude Agent @ x'],
+			['default', 'Claude Agent @ x'],
+			['default', 'DeepSeek Agent @ x'],
+			['gpt-6-astra', 'Codex Agent @ x'],
+			['gpt-5.6-sol', 'Codex Agent @ x'],
+			['openai/gpt-5.6-luna', 'OpenCode Agent @ x'],
+			['openrouter/z-ai/glm-5.3-flash', 'OpenCode Agent @ x'],
+		].map(([id, buffer]) => canonicalModelName(id, [], buffer));
+		const modes = ['bypassPermissions','agent-full-access','bypass','acceptEdits','agent','auto','read-only','default','build','plan'].map(modeShortName);
+		return {models:models.join('|'), modes:modes.join('|')};
+	})()`)
+	if got["models"] != "Fable 5.1|Opus 5.5|Sonnet 5|Opus 5.5|DeepSeek Chat|Astra 6|Sol 5.6|Luna 5.6|GLM 5.3 Flash" {
+		t.Fatalf("canonical models = %v", got)
+	}
+	if got["modes"] != "full|full|full|accept edits|auto|auto|ask|manual|build|plan" {
+		t.Fatalf("canonical modes = %v", got)
 	}
 }
 
@@ -185,7 +211,7 @@ func TestHeaderToolbar(t *testing.T) {
 	if open["items"] != "tb-git,tb-model,tb-pinned,tb-fork,tb-clone,tb-catalogue" {
 		t.Fatalf("toolbar items = %v", open["items"])
 	}
-	if open["labels"] != "syzygy,fable,Pinned,Fork,Clone,Catalogue" || open["stored"] != "true" || open["expanded"] != "true" {
+	if open["labels"] != "syzygy,Fable 5.1,Pinned,Fork,Clone,Catalogue" || open["stored"] != "true" || open["expanded"] != "true" {
 		t.Fatalf("toolbar labels = %v", open)
 	}
 	before, _ := closed["messages"].(float64)

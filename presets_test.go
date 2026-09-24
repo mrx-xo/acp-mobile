@@ -36,9 +36,9 @@ func TestCallElispJSONRejectsUnarmoredOutput(t *testing.T) {
 
 func TestPresetsHandlerMirrorsRigOrder(t *testing.T) {
 	argsFile := installFakeEmacsclient(t, elispB64Output(`[
-	  {"key":"f","label":"Fable 5.1 · Bypass","model":"fable[1m]","mode":"bypassPermissions","agent":"claude","effort":""},
-	  {"key":"F","label":"Fable 5 · Bypass","model":"claude-fable-5[1m]","mode":"bypassPermissions","agent":"claude","effort":""},
-	  {"key":"a","label":"Astra · Full","model":"gpt-6-astra","mode":"agent-full-access","agent":"codex","effort":"high"}
+	  {"key":"f","label":"Fable 5.1 · Full","model":"fable[1m]","mode":"bypassPermissions","agent":"claude","effort":""},
+	  {"key":"o","label":"Opus 5.5 · Plan","model":"default","mode":"plan","agent":"claude","effort":""},
+	  {"key":"a","label":"Astra 6 · Full","model":"gpt-6-astra","mode":"agent-full-access","agent":"codex","effort":"high"}
 	]`))
 	rec := postJSON(t, handlePresets, `{}`)
 	if rec.Code != http.StatusOK {
@@ -53,10 +53,10 @@ func TestPresetsHandlerMirrorsRigOrder(t *testing.T) {
 	if len(resp.Presets) != 3 {
 		t.Fatalf("presets = %+v", resp.Presets)
 	}
-	if resp.Presets[0].Key != "f" || resp.Presets[1].Key != "F" || resp.Presets[2].Key != "a" {
+	if resp.Presets[0].Key != "f" || resp.Presets[1].Key != "o" || resp.Presets[2].Key != "a" {
 		t.Fatalf("order = %+v", resp.Presets)
 	}
-	if resp.Presets[0].Label != "Fable 5.1 · Bypass" {
+	if resp.Presets[0].Label != "Fable 5.1 · Full" {
 		t.Fatalf("label = %q, non-ASCII must survive the armor", resp.Presets[0].Label)
 	}
 	if resp.Presets[2].Agent != "codex" || resp.Presets[2].Effort != "high" {

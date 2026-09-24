@@ -2030,6 +2030,35 @@ const hsBranch = document.getElementById('hs-branch');
 let headerModel = '';
 let headerGit = null;
 
+const CANONICAL_MODEL_NAMES = {
+  'fable[1m]': 'Fable 5.1',
+  'claude-fable-5-1[1m]': 'Fable 5.1',
+  'claude-fable-5[1m]': 'Fable 5',
+  'opus[1m]': 'Opus 5.5',
+  sonnet: 'Sonnet 5',
+  haiku: 'Haiku 4.5',
+  'gpt-6-astra': 'Astra 6',
+  'gpt-6-sol': 'Sol 6',
+  'gpt-6-luna': 'Luna 6',
+  'gpt-5.6-sol': 'Sol 5.6',
+  'gpt-5.6-terra': 'Terra 5.6',
+  'gpt-5.6-luna': 'Luna 5.6',
+  'gpt-5.5': 'GPT 5.5',
+  'gpt-5.4': 'GPT 5.4',
+  'gpt-5.4-mini': 'GPT 5.4 Mini',
+  'gpt-5.3-codex-spark': 'Codex Spark 5.3',
+  'glm-5.3-flash': 'GLM 5.3 Flash',
+};
+
+function canonicalModelName(id, models = [], bufferName = '') {
+  const raw = String(id || '');
+  if (raw === 'default') return bufferName.startsWith('DeepSeek ') ? 'DeepSeek Chat' : 'Opus 5.5';
+  const leaf = raw.split('/').pop();
+  if (CANONICAL_MODEL_NAMES[raw]) return CANONICAL_MODEL_NAMES[raw];
+  if (CANONICAL_MODEL_NAMES[leaf]) return CANONICAL_MODEL_NAMES[leaf];
+  return models.find(model => model && model.id === raw)?.name || raw;
+}
+
 // "Claude Agent @ acp-mobile<4>" -> {project: "acp-mobile", ordinal: "4"}.
 function parseBufferName(name) {
   const m = /^(.*?) @ (.+?)(?:<(\d+)>)?$/.exec(name || '');
@@ -2094,7 +2123,9 @@ async function fetchHeaderModel() {
     if (!resp.ok) return;
     const data = await resp.json();
     if (token !== headerModelToken || bufferName !== currentBufferName) return;
-    headerModel = typeof data.current === 'string' ? data.current : '';
+    headerModel = typeof data.current === 'string'
+      ? canonicalModelName(data.current, Array.isArray(data.models) ? data.models : [], bufferName)
+      : '';
     renderHeaderSub();
   } catch (_) { /* icon only until the picker is opened */ }
 }
@@ -4049,7 +4080,19 @@ function setProcessing(v) {
   stopBtn.style.display = v ? 'flex' : 'none';
 }
 
-const MODE_SHORT_NAMES = {bypassPermissions: 'bypass', acceptEdits: 'accept edits', plan: 'plan', default: 'ask', ask: 'ask'};
+const MODE_SHORT_NAMES = {
+  bypassPermissions: 'full',
+  'agent-full-access': 'full',
+  bypass: 'full',
+  acceptEdits: 'accept edits',
+  agent: 'auto',
+  auto: 'auto',
+  'read-only': 'ask',
+  default: 'manual',
+  ask: 'ask',
+  build: 'build',
+  plan: 'plan',
+};
 function modeShortName(id) {
   if (MODE_SHORT_NAMES[id]) return MODE_SHORT_NAMES[id];
   return String(modeName(id) || id).toLowerCase();
@@ -6293,7 +6336,7 @@ async function chooseModel(id) {
     }
     if (token !== modelPickerToken || bufferName !== currentBufferName) return;
     modelPickerData = {...modelPickerData, current: data.current || id};
-    headerModel = modelPickerData.current;
+    headerModel = canonicalModelName(modelPickerData.current, modelPickerData.models, bufferName);
     renderHeaderSub();
     renderModelRows(modelPickerData);
     setTimeout(() => {
