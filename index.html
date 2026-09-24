@@ -340,14 +340,6 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
   border-radius: 50%; background: var(--orange);
 }
 #header .hs-git:active { opacity: 0.7; }
-/* Menu: a bare icon button, same shape as the bell. */
-#header .menu-btn {
-  width: 28px; height: 28px; padding: 0; border: none; background: none;
-  border-radius: 6px; color: var(--fg-dim); display: flex; align-items: center;
-  justify-content: center; -webkit-tap-highlight-color: transparent;
-}
-#header .menu-btn svg { width: 18px; height: 18px; fill: currentColor; }
-#header .menu-btn:active { background: var(--bg2); }
 /* Dead socket: the load line goes solid red instead of sweeping. */
 .load-line.dead::before { animation: none; left: 0; width: 100%; background: var(--red); }
 #header .back-btn {
@@ -623,16 +615,19 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
 }
 #header-grabber[aria-expanded="true"] span { background: var(--fg-mute); }
 #chat-toolbar {
-  display: flex; justify-content: space-between; align-items: flex-start;
+  display: flex; align-items: flex-start; gap: 8px; overflow-x: auto; overflow-y: hidden;
   padding: 6px 12px 8px; background: var(--bg0); border-bottom: 1px solid var(--bg2);
-  flex-shrink: 0;
+  flex-shrink: 0; scroll-snap-type: x proximity; overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch; scrollbar-width: none;
 }
+#chat-toolbar::-webkit-scrollbar { display: none; }
 #chat-toolbar[hidden] { display: none; }
 #chat-toolbar button {
-  width: 56px; min-height: 48px; padding: 4px 0 2px; border: none; background: none;
+  width: 56px; min-width: 56px; min-height: 48px; padding: 4px 0 2px; border: none; background: none;
   display: flex; flex-direction: column; align-items: center; gap: 4px;
   color: var(--fg-dim); font-family: var(--mono); font-size: 10px; cursor: pointer;
-  position: relative; -webkit-tap-highlight-color: transparent;
+  position: relative; flex: 0 0 56px; scroll-snap-align: start;
+  -webkit-tap-highlight-color: transparent;
 }
 #chat-toolbar button:active { color: var(--fg); }
 #chat-toolbar button:disabled { color: var(--fg-mute); cursor: default; }
@@ -646,6 +641,13 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
 }
 #tb-catalogue.kept svg { fill: currentColor; }
 #tb-catalogue.kept { color: var(--yellow); }
+#tb-pin.pinned svg { fill: currentColor; }
+#tb-pin.pinned, #tb-turn-nav.enabled { color: var(--yellow); }
+#tb-kill { color: var(--red); margin-left: 4px; }
+#tb-kill::before {
+  content: ""; position: absolute; left: -7px; top: 4px; bottom: 4px;
+  width: 1px; background: var(--bg2);
+}
 
 /* Messages area */
 #messages {
@@ -1096,26 +1098,25 @@ input, textarea, #fbv-content, .msg, .msg * {
 }
 #msg-menu button + button { border-top: 1px solid var(--bg2); }
 #msg-menu button:active { background: var(--bg2); }
-/* Chat ⋮ menu: same bottom-sheet pattern as the message menu */
-#cm-scrim {
+/* A catalogued chat keeps edit/remove in a focused secondary sheet. */
+#catalogue-menu-scrim {
   position: fixed; inset: 0; background: rgba(0,0,0,0.45);
   display: none; z-index: 129;
 }
-#cm-scrim.visible { display: block; }
-#chat-menu {
+#catalogue-menu-scrim.visible { display: block; }
+#catalogue-menu {
   position: fixed; left: 16px; right: 16px; z-index: 130;
   bottom: max(16px, env(safe-area-inset-bottom));
   background: var(--bg1); border: 1px solid var(--bg2); border-radius: 14px;
   display: none; flex-direction: column; overflow: hidden;
 }
-#chat-menu.visible { display: flex; }
-#chat-menu button {
+#catalogue-menu.visible { display: flex; }
+#catalogue-menu button {
   background: none; border: none; color: var(--fg); font-family: var(--mono);
   font-size: 15px; padding: 15px; cursor: pointer; text-align: center;
 }
-#chat-menu button + button { border-top: 1px solid var(--bg2); }
-#chat-menu button:active { background: var(--bg2); }
-#chat-menu button:disabled { color: var(--fg-mute); cursor: default; }
+#catalogue-menu button + button { border-top: 1px solid var(--bg2); }
+#catalogue-menu button:active { background: var(--bg2); }
 /* Diagram inspector: same full-screen sheet shape as #reader, one layer
    above it because a diagram can be tapped from inside the reader. */
 #mmv {
@@ -1792,10 +1793,7 @@ input, textarea, #fbv-content, .msg, .msg * {
       <button class="hs-git" id="hs-git" hidden aria-label="Review repository changes"><svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg><span id="hs-branch"></span></button>
     </div>
   </div>
-  <div class="header-actions">
-    <button class="files-btn" id="files-btn">Files</button>
-    <button class="menu-btn" id="chat-menu-btn" aria-label="Menu" style="display:none"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></button>
-  </div>
+  <div class="header-actions"><button class="files-btn" id="files-btn">Files</button></div>
   <button id="header-grabber" type="button" aria-label="Toolbar" aria-expanded="false" aria-controls="chat-toolbar"><span></span></button>
   <div id="history-loading" class="load-line" role="status" aria-live="polite" hidden><span>Loading chat…</span></div>
   <div id="conn-line" class="load-line" aria-hidden="true" hidden></div>
@@ -1803,10 +1801,12 @@ input, textarea, #fbv-content, .msg, .msg * {
 <div id="chat-toolbar" hidden>
   <button id="tb-git" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg><span class="tb-label">git</span></button>
   <button id="tb-model" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/></svg><span class="tb-label">model</span></button>
-  <button id="tb-pinned" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg><span class="tb-label">Pinned</span></button>
   <button id="tb-fork" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/></svg><span class="tb-label">Fork</span></button>
   <button id="tb-clone" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg><span class="tb-label">Clone</span></button>
   <button id="tb-catalogue" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg><span class="tb-label">Catalogue</span></button>
+  <button id="tb-pin" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg><span class="tb-label">Pin chat</span></button>
+  <button id="tb-turn-nav" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7 4-4 4 4"/><path d="M12 3v18"/><path d="m8 17 4 4 4-4"/></svg><span class="tb-label">Turn nav</span></button>
+  <button id="tb-kill" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/><path d="M12 2v10"/></svg><span class="tb-label">Kill</span></button>
 </div>
 <div id="file-browser">
   <div id="fb-header">
@@ -1874,12 +1874,10 @@ input, textarea, #fbv-content, .msg, .msg * {
   <button id="mm-pin">Pin message</button>
   <button id="mm-copy">Copy text</button>
 </div>
-<div id="cm-scrim"></div>
-<div id="chat-menu">
-  <button id="cm-turn-nav">Show turn nav</button>
-  <button id="cm-pin">Pin chat</button>
-  <button id="cm-uncatalogue" style="display:none">Uncatalogue</button>
-  <button id="cm-kill" style="color:var(--red)">Kill session</button>
+<div id="catalogue-menu-scrim"></div>
+<div id="catalogue-menu">
+  <button id="catalogue-edit">Edit catalogue entry</button>
+  <button id="catalogue-remove" style="color:var(--red)">Uncatalogue</button>
 </div>
 <!-- Turn nav sits at the root: it floats over the chat AND over the
      History overlay, and #chat-view is display:none while History is
@@ -4598,7 +4596,6 @@ function flushReplay() {
       currentBufferName = msg.params.name;
       updateChatHeader();
       fetchHeaderModel();
-      document.getElementById('chat-menu-btn').style.display = '';
       continue;
     }
     // Permission requests from agent (reverse calls)
@@ -4868,7 +4865,6 @@ function handleMessage(msg) {
     currentBufferName = msg.params.name;
     updateChatHeader();
     fetchHeaderModel();
-    document.getElementById('chat-menu-btn').style.display = '';
     return;
   }
 
@@ -5602,6 +5598,8 @@ function acceptOrreryPins(pins, generation = orreryPinsGeneration) {
     renderSessions(lastSessions);
     navListEl.scrollTop = st;
   }
+  if (typeof document !== 'undefined' && document.getElementById('tb-pin') &&
+      !document.getElementById('chat-toolbar').hidden) renderPinEntry();
 }
 async function loadOrreryPins() {
   const generation = orreryPinsGeneration;
@@ -5772,13 +5770,15 @@ function selectSession(session) {
   // explicitly rather than depend on that class-timing.
   sendPresence(true, { bufferName: session.bufferName || '' });
   updateChatHeader();
-  document.getElementById('chat-menu-btn').style.display = currentBufferName ? '' : 'none';
   availableModes = [];
   modeBtn.hidden = true;
   pendingPermissions = [];
   sendBtn.disabled = true;
   setProcessing(false);
-  if (window.turnNav) turnNav.setEnabled(false);
+  if (window.turnNav) {
+    turnNav.setEnabled(false);
+    if (!chatToolbar.hidden) renderTurnNavEntry();
+  }
 
   showChat();
   connect(String(session.pid));
@@ -6156,7 +6156,6 @@ async function forkSession() {
   } finally {
     forkPending.delete(source);
     btn.disabled = false; setToolLabel(btn, 'Fork');
-    closeChatMenu();
   }
 }
 // Fork support is per agent (claude-code-acp advertises session/fork,
@@ -6290,7 +6289,6 @@ function closeModelPicker() {
 }
 
 async function openModelPicker() {
-  closeChatMenu();
   const token = ++modelPickerToken;
   const bufferName = currentBufferName;
   modelPickerBuffer = bufferName;
@@ -7123,17 +7121,6 @@ bellBtn.addEventListener('click', async () => {
     bellBtn.classList.remove('pending');
   }
 });
-// Chat ⋮ menu: Pinned (only when this chat has pins), Clone, Fork (greyed
-// out unless the agent advertises session/fork), turn nav, Kill
-const cmScrim = document.getElementById('cm-scrim');
-const chatMenu = document.getElementById('chat-menu');
-const cmTurnNav = document.getElementById('cm-turn-nav');
-function closeChatMenu() {
-  cmScrim.classList.remove('visible');
-  chatMenu.classList.remove('visible');
-}
-const cmPin = document.getElementById('cm-pin');
-const cmUncatalogue = document.getElementById('cm-uncatalogue');
 // --- Toolbar: pulled down from the header grabber ---
 const TOOLBAR_KEY = 'acp-toolbar-open';
 const headerGrabber = document.getElementById('header-grabber');
@@ -7141,7 +7128,23 @@ const chatToolbar = document.getElementById('chat-toolbar');
 const tbGit = document.getElementById('tb-git');
 const tbModel = document.getElementById('tb-model');
 const tbCatalogue = document.getElementById('tb-catalogue');
+const tbPin = document.getElementById('tb-pin');
+const tbTurnNav = document.getElementById('tb-turn-nav');
+const catalogueMenuScrim = document.getElementById('catalogue-menu-scrim');
+const catalogueMenu = document.getElementById('catalogue-menu');
 function setToolLabel(btn, text) { btn.querySelector('.tb-label').textContent = text; }
+function renderPinEntry() {
+  const pinned = isChatPinned(currentBufferName);
+  tbPin.disabled = !currentBufferName;
+  tbPin.classList.toggle('pinned', pinned);
+  setToolLabel(tbPin, pinned ? 'Unpin' : 'Pin chat');
+  tbPin.title = pinned ? 'Unpin this chat' : 'Pin this chat';
+}
+function renderTurnNavEntry() {
+  const enabled = !!window.turnNav && turnNav.isEnabled();
+  tbTurnNav.classList.toggle('enabled', enabled);
+  setToolLabel(tbTurnNav, enabled ? 'Hide nav' : 'Turn nav');
+}
 function toolbarOpen() {
   try { return localStorage.getItem(TOOLBAR_KEY) === 'true'; } catch (_) { return false; }
 }
@@ -7157,6 +7160,8 @@ function renderToolbar() {
   setToolLabel(tbGit, git ? git.branch : 'git');
   tbGit.classList.toggle('dirty', !!git && (git.staged + git.unstaged + git.untracked) > 0);
   setToolLabel(tbModel, headerModel || 'model');
+  renderPinEntry();
+  renderTurnNavEntry();
   refreshForkEntry(document.getElementById('tb-fork'));
   refreshCatalogueEntry();
 }
@@ -7175,39 +7180,58 @@ headerGrabber.addEventListener('click', () => setToolbarOpen(chatToolbar.hidden)
 })();
 tbGit.addEventListener('click', () => openDiffReview('repository'));
 tbModel.addEventListener('click', openModelPicker);
-document.getElementById('tb-pinned').addEventListener('click', () => { renderPins(); pinsEl.classList.add('visible'); });
 document.getElementById('tb-clone').addEventListener('click', () => { cloneSession(); });
 document.getElementById('tb-fork').addEventListener('click', () => { forkSession(); });
 tbCatalogue.addEventListener('click', async () => {
   const id = currentSessionIdForCatalogue();
   if (!id) { alert('This chat has no session id yet.'); return; }
+  const state = catalogueStates.get(id);
+  if (state && state.catalogued) {
+    catalogueMenuScrim.classList.add('visible');
+    catalogueMenu.classList.add('visible');
+    return;
+  }
   const chat = currentBufferName;
   const stillHere = () => currentBufferName === chat && chatViewEl.classList.contains('visible');
-  try { await catalogueFlow(id, stillHere); }
+  try {
+    const next = await catalogueFlow(id, stillHere);
+    if (next && stillHere()) paintCatalogueEntry(next);
+  }
   catch (err) { if (stillHere()) alert('Catalogue failed: ' + err.message); }
 });
+tbPin.addEventListener('click', async () => {
+  if (!currentBufferName || tbPin.disabled) return;
+  tbPin.disabled = true;
+  try { await toggleChatPin(currentBufferName); }
+  catch (err) { alert('Pin failed: ' + err.message); }
+  finally { renderPinEntry(); }
+});
+tbTurnNav.addEventListener('click', () => {
+  if (!window.turnNav) return;
+  turnNav.setEnabled(!turnNav.isEnabled());
+  renderTurnNavEntry();
+});
+document.getElementById('tb-kill').addEventListener('click', killSession);
 setToolbarOpen(toolbarOpen());
-// Catalogue entry: "Catalogue" for a chat that was never kept, "Catalogued
-// · note" once saved (tap edits), with Uncatalogue shown beside it.  The
-// state comes from the rig on every open, so the Mac and the phone agree.
-let cmCatalogueSerial = 0;
+// Catalogue entry: "Catalogue" for a chat that was never kept and
+// "Catalogued" once saved. Tapping the latter opens edit/remove choices.
+// State comes from the rig on every open, so the Mac and the phone agree.
+let toolbarCatalogueSerial = 0;
 function paintCatalogueEntry(state) {
   const kept = !!(state && state.catalogued);
   tbCatalogue.classList.toggle('kept', kept);
   setToolLabel(tbCatalogue, kept ? 'Catalogued' : 'Catalogue');
   tbCatalogue.title = kept && state.note ? state.note : '';
-  cmUncatalogue.style.display = kept ? '' : 'none';
 }
 async function refreshCatalogueEntry() {
-  const serial = ++cmCatalogueSerial;
+  const serial = ++toolbarCatalogueSerial;
   const sessionIdNow = currentSessionIdForCatalogue();
   tbCatalogue.disabled = !sessionIdNow;
-  cmUncatalogue.style.display = 'none';
   if (!sessionIdNow) { setToolLabel(tbCatalogue, 'Catalogue'); return; }
   paintCatalogueEntry(catalogueStates.get(sessionIdNow));
   try {
     const state = await fetchCatalogueState(sessionIdNow);
-    if (serial !== cmCatalogueSerial) return;
+    if (serial !== toolbarCatalogueSerial) return;
     paintCatalogueEntry(state);
   } catch (_) { /* unknown to the index yet: leave the plain entry */ }
 }
@@ -7215,36 +7239,29 @@ function currentSessionIdForCatalogue() {
   const s = lastSessions.find(x => x.bufferName === currentBufferName);
   return (s && s.sessionId) || sessionId || null;
 }
-document.getElementById('chat-menu-btn').addEventListener('click', () => {
-  cmTurnNav.textContent = turnNav.isEnabled() ? 'Hide turn nav' : 'Show turn nav';
-  cmPin.textContent = isChatPinned(currentBufferName) ? 'Unpin chat' : 'Pin chat';
-  cmPin.disabled = !currentBufferName;
-  refreshCatalogueEntry();
-  cmScrim.classList.add('visible');
-  chatMenu.classList.add('visible');
-});
-cmPin.addEventListener('click', async () => {
-  closeChatMenu();
-  if (!currentBufferName) return;
-  try { await toggleChatPin(currentBufferName); }
-  catch (err) { alert('Pin failed: ' + err.message); }
-});
-cmUncatalogue.addEventListener('click', async () => {
-  closeChatMenu();
+function closeCatalogueMenu() {
+  catalogueMenuScrim.classList.remove('visible');
+  catalogueMenu.classList.remove('visible');
+}
+catalogueMenuScrim.addEventListener('click', closeCatalogueMenu);
+document.getElementById('catalogue-edit').addEventListener('click', async () => {
+  closeCatalogueMenu();
   const id = currentSessionIdForCatalogue();
   if (!id) return;
-  if (!window.confirm('Remove this chat from the catalogue? The note and tags are kept for a later re-save.')) return;
-  try { await uncatalogue(id); }
+  const chat = currentBufferName;
+  const stillHere = () => currentBufferName === chat && chatViewEl.classList.contains('visible');
+  try {
+    const next = await catalogueFlow(id, stillHere);
+    if (next && stillHere()) paintCatalogueEntry(next);
+  }
+  catch (err) { if (stillHere()) alert('Catalogue failed: ' + err.message); }
+});
+document.getElementById('catalogue-remove').addEventListener('click', async () => {
+  closeCatalogueMenu();
+  const id = currentSessionIdForCatalogue();
+  if (!id || !window.confirm('Remove this chat from the catalogue? The note and tags are kept for a later re-save.')) return;
+  try { paintCatalogueEntry(await uncatalogue(id)); }
   catch (err) { alert('Uncatalogue failed: ' + err.message); }
-});
-cmScrim.addEventListener('click', closeChatMenu);
-cmTurnNav.addEventListener('click', () => {
-  closeChatMenu();
-  turnNav.setEnabled(!turnNav.isEnabled());
-});
-document.getElementById('cm-kill').addEventListener('click', () => {
-  closeChatMenu();
-  killSession();
 });
 document.getElementById('fb-back').addEventListener('click', fbNavigateUp);
 document.getElementById('fb-hidden-toggle').addEventListener('click', fbToggleHidden);
@@ -8625,7 +8642,7 @@ document.addEventListener('keydown', (e) => {
   }
   else if (readerEl.classList.contains('visible')) closeReader();
   else if (msgMenu.classList.contains('visible')) closeMsgMenu();
-  else if (chatMenu.classList.contains('visible')) closeChatMenu();
+  else if (catalogueMenu.classList.contains('visible')) closeCatalogueMenu();
   else if (settingsEl.classList.contains('visible')) closeSettings();
   else if (pinsEl.classList.contains('visible')) {
     pinsEl.classList.remove('visible');

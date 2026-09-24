@@ -2118,9 +2118,9 @@ func TestComposerDraftStaysWithItsChat(t *testing.T) {
 	}
 }
 
-// The chat menu's Clone item asks the rig to copy THIS convo (by buffer
+// The toolbar's Clone item asks the rig to copy THIS convo (by buffer
 // name only), then walks into the new session once its socket shows up.
-func TestChatMenuCloneSpawnsFromCurrentBufferAndOpensIt(t *testing.T) {
+func TestToolbarCloneSpawnsFromCurrentBufferAndOpensIt(t *testing.T) {
 	page := openComposerTestPage(t, 844, 844)
 	state := page.evalObject(t, `(async () => {
 		showChat();
@@ -2153,7 +2153,6 @@ func TestChatMenuCloneSpawnsFromCurrentBufferAndOpensIt(t *testing.T) {
 			url: window.__posts[0] ? window.__posts[0].url : '',
 			body: window.__posts[0] ? window.__posts[0].body : null,
 			selected: window.__selected,
-			menuClosed: !chatMenu.classList.contains('visible'),
 			label: clone.textContent,
 			enabled: !clone.disabled
 		};
@@ -2168,8 +2167,8 @@ func TestChatMenuCloneSpawnsFromCurrentBufferAndOpensIt(t *testing.T) {
 	if state["busyLabel"] == "Clone" || state["selected"] != "fresh" {
 		t.Fatalf("clone should show progress and open the new session, got %v", state)
 	}
-	if state["menuClosed"] != true || state["label"] != "Clone" || state["enabled"] != true {
-		t.Fatalf("menu should close and the item reset after cloning, got %v", state)
+	if state["label"] != "Clone" || state["enabled"] != true {
+		t.Fatalf("toolbar item should reset after cloning, got %v", state)
 	}
 }
 

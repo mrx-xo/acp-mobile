@@ -73,6 +73,20 @@ func newHeaderTestPage(t *testing.T, label string) *chromePage {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"supported":true}`)
 	})
+	pinned := false
+	mux.HandleFunc("/api/pin", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			pinned = !pinned
+			if pinned {
+				fmt.Fprint(w, `{"bufferName":"Claude Agent @ acp-mobile<4>","pinned":true,"pins":["Claude Agent @ acp-mobile<4>"]}`)
+			} else {
+				fmt.Fprint(w, `{"bufferName":"Claude Agent @ acp-mobile<4>","pinned":false,"pins":[]}`)
+			}
+			return
+		}
+		fmt.Fprint(w, `{"pins":[]}`)
+	})
 	mux.HandleFunc("/api/git-status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"branch":"syzygy","staged":3,"unstaged":2,"untracked":1}`)
@@ -113,7 +127,7 @@ func TestHeaderTitleAndRow(t *testing.T) {
 			gitHidden: git.hidden,
 			dotGone: getComputedStyle(statusText).position === 'absolute',
 			bufGone: !document.getElementById('header-buf'),
-			kebabBorder: getComputedStyle(document.getElementById('chat-menu-btn')).borderStyle,
+			menuGone: !document.getElementById('chat-menu-btn'),
 		};
 	})()`)
 	if state["title"] != "acp-mobile" || state["ordinal"] != "4" || state["labeled"] != false {
@@ -122,7 +136,7 @@ func TestHeaderTitleAndRow(t *testing.T) {
 	if state["provider"] != true || state["mode"] != "full" || state["modeColor"] != "rgb(251, 73, 52)" || state["modeBg"] != "rgba(0, 0, 0, 0)" {
 		t.Fatalf("row 2 = %v", state)
 	}
-	if state["dirty"] != true || state["gitHidden"] != false || state["dotGone"] != true || state["bufGone"] != true || state["kebabBorder"] != "none" {
+	if state["dirty"] != true || state["gitHidden"] != false || state["dotGone"] != true || state["bufGone"] != true || state["menuGone"] != true {
 		t.Fatalf("row 2 git/status = %v", state)
 	}
 
@@ -191,15 +205,15 @@ func TestHeaderToolbar(t *testing.T) {
 	page.waitFor(t, `document.getElementById('hs-branch').textContent === 'syzygy'`)
 	closed := page.evalObject(t, `(()=>{const g=document.getElementById('header-grabber');const r=g.getBoundingClientRect();const b=g.querySelector('span').getBoundingClientRect();
 		return {height:r.height + 22, pillW:b.width, hidden:document.getElementById('chat-toolbar').hidden, messages:document.getElementById('messages').getBoundingClientRect().height,
-			reviewBar:!!document.getElementById('review-bar'), kebab:[...document.querySelectorAll('#chat-menu button')].filter(b=>b.style.display!=='none').map(b=>b.id).join(',')};})()`)
+			reviewBar:!!document.getElementById('review-bar'), menu:!!document.getElementById('chat-menu')};})()`)
 	if closed["hidden"] != true || closed["reviewBar"] != false || closed["pillW"] != float64(36) {
 		t.Fatalf("closed state = %v", closed)
 	}
 	if h, _ := closed["height"].(float64); h < 44 {
 		t.Fatalf("grabber tap target %v px, want at least 44", h)
 	}
-	if closed["kebab"] != "cm-turn-nav,cm-pin,cm-kill" {
-		t.Fatalf("kebab items = %v", closed["kebab"])
+	if closed["menu"] != false {
+		t.Fatalf("header menu should be removed: %v", closed)
 	}
 	page.eval(t, `document.getElementById('header-grabber').click()`)
 	page.waitFor(t, `document.getElementById('chat-toolbar').hidden === false && document.getElementById('tb-git').classList.contains('dirty')`)
@@ -207,13 +221,25 @@ func TestHeaderToolbar(t *testing.T) {
 	open := page.evalObject(t, `(()=>{const tb=document.getElementById('chat-toolbar');
 		return {items:[...tb.querySelectorAll('button')].map(b=>b.id).join(','), labels:[...tb.querySelectorAll('.tb-label')].map(e=>e.textContent).join(','),
 			height:tb.getBoundingClientRect().height, messages:document.getElementById('messages').getBoundingClientRect().height,
-			stored:localStorage.getItem('acp-toolbar-open'), expanded:document.getElementById('header-grabber').getAttribute('aria-expanded')};})()`)
-	if open["items"] != "tb-git,tb-model,tb-pinned,tb-fork,tb-clone,tb-catalogue" {
+			stored:localStorage.getItem('acp-toolbar-open'), expanded:document.getElementById('header-grabber').getAttribute('aria-expanded'),
+			overflow:tb.scrollWidth > tb.clientWidth, overflowX:getComputedStyle(tb).overflowX};})()`)
+	if open["items"] != "tb-git,tb-model,tb-fork,tb-clone,tb-catalogue,tb-pin,tb-turn-nav,tb-kill" {
 		t.Fatalf("toolbar items = %v", open["items"])
 	}
-	if open["labels"] != "syzygy,Fable 5.1,Pinned,Fork,Clone,Catalogue" || open["stored"] != "true" || open["expanded"] != "true" {
+	if open["labels"] != "syzygy,Fable 5.1,Fork,Clone,Catalogue,Pin chat,Turn nav,Kill" || open["stored"] != "true" || open["expanded"] != "true" || open["overflow"] != true || open["overflowX"] != "auto" {
 		t.Fatalf("toolbar labels = %v", open)
 	}
+	page.eval(t, `document.getElementById('tb-pin').click()`)
+	page.waitFor(t, `document.querySelector('#tb-pin .tb-label').textContent === 'Unpin' && document.getElementById('tb-pin').classList.contains('pinned')`)
+	page.eval(t, `document.getElementById('tb-turn-nav').click()`)
+	page.waitFor(t, `document.querySelector('#tb-turn-nav .tb-label').textContent === 'Hide nav' && document.getElementById('tb-turn-nav').classList.contains('enabled')`)
+	page.eval(t, `catalogueStates.set('s1',{sessionId:'s1',catalogued:'2026-09-24T00:00:00Z',note:'keep'}); paintCatalogueEntry(catalogueStates.get('s1')); document.getElementById('tb-catalogue').click()`)
+	page.waitFor(t, `document.getElementById('catalogue-menu').classList.contains('visible')`)
+	secondary := page.evalObject(t, `(()=>({items:[...document.querySelectorAll('#catalogue-menu button')].map(b=>b.textContent).join(','), headerMenu:!!document.getElementById('chat-menu')}))()`)
+	if secondary["items"] != "Edit catalogue entry,Uncatalogue" || secondary["headerMenu"] != false {
+		t.Fatalf("catalogue secondary actions = %v", secondary)
+	}
+	page.eval(t, `closeCatalogueMenu()`)
 	before, _ := closed["messages"].(float64)
 	after, _ := open["messages"].(float64)
 	barH, _ := open["height"].(float64)

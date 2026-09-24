@@ -4,10 +4,10 @@ Mobile web frontend for ACP (Agent Communication Protocol) sessions.
 
 ## Debugging
 
-Use `ssh fugue` for testing. Start acp-mobile in test mode on a separate port:
+Start acp-mobile locally in test mode on a separate port:
 
 ```bash
-ssh fugue 'cd ~/code/acp-mobile && ./acp-mobile --test-mode 18091 &'
+go run . --test-mode 18091
 ```
 
 `--test-mode` skips Origin header checks on WebSocket, so you can connect with curl/python/websocat.
@@ -44,10 +44,15 @@ while True:
     print(json.dumps(msg, indent=2)[:200])
 ```
 
-### Deploying changes to fugue
+### Deploying changes on MrX
 
-```bash
-scp index.html fugue:~/code/acp-mobile/index.html
-ssh fugue 'cd ~/code/acp-mobile && CGO_ENABLED=0 go build -o acp-mobile .'
-# Restart: pkill and relaunch
-```
+Production runs locally from `~/.local/bin/acp-mobile` under the launchd job
+`com.marcosandrade.acp-mobile` on port 8090. Do not copy files to a separate host.
+
+1. Commit the reviewed changes on `syzygy` and push them to `fork`.
+2. Update `ACP_MOBILE_COMMIT` and its adjacent history comment in
+   `~/.dotfiles/macos/syzygy/build-acp-tools.sh` to the exact pushed commit.
+3. Run `~/.dotfiles/macos/syzygy/build-acp-tools.sh`. It builds the pinned
+   commits into `~/.local/bin` and kickstarts the launchd job when it is loaded.
+4. The build script leaves this checkout detached at the pin; switch it back to
+   `syzygy` after verifying the live service.

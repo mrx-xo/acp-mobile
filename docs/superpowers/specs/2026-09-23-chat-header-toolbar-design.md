@@ -1,7 +1,7 @@
 # Chat header and pull-down toolbar
 
 Date: 2026-09-23
-Status: approved in chat
+Status: implemented; toolbar amended in chat 2026-09-24
 
 Figma: `SYZYGY` file, page `Chat Study`, frames `D toolbar closed` and
 `D toolbar open`. The header text described below supersedes the row 2
@@ -21,7 +21,7 @@ above the composer.
 - Agent shown by provider icon, not name.
 - Connection and busy state shown without the status dot.
 - Git branch and dirty state in the header. One tap to the review.
-- Frequent actions on a pull-down toolbar. The kebab keeps the rest.
+- All chat actions on one horizontally scrollable pull-down toolbar.
 - The bottom review bar goes away.
 
 ## Non-goals
@@ -35,8 +35,8 @@ Two rows in `#header`, same padding as today.
 
 ### Row 1
 
-- Back arrow, title, bell, kebab, unchanged in order.
-- The kebab becomes a bare 28px icon button like the bell. No border.
+- Back arrow, title, and bell, unchanged in order. There is no overflow
+  menu in the header.
 - Title rule: the user label when set, in orange. Otherwise the project
   name from the session in fg, followed by the buffer ordinal in fg-mute
   when the buffer name ends in `<N>`. `acp-mobile 4`. Falls back to the
@@ -78,20 +78,27 @@ One line, 11px mono, segments separated by ` · ` in fg-mute:
   zone that is a 44px tap target through padding.
 - Tap or drag down opens the toolbar. Tap or drag up closes it. Open
   state persists in localStorage key `acp-toolbar-open` across chats.
-- The toolbar is a 62px row under the header, bg0, 1px bg2 bottom border.
-  Six items, each an icon over a 10px label, 56px wide, spaced evenly:
+- The toolbar is a 62px horizontally scrollable row under the header, bg0,
+  with a 1px bg2 bottom border. Items remain 56px wide instead of shrinking;
+  the partially visible next item makes the overflow discoverable. In order:
   1. Git: branch icon with the dirty dot, label is the branch name. Opens
      the review on the repository scope. Disabled with fg-mute when there
      is no git status.
   2. Model: chip icon, label is the model name or `model`. Opens the model
      picker.
-  3. Pinned: pin icon. Opens pinned messages.
-  4. Fork, 5. Clone: existing actions.
-  6. Catalogue: bookmark icon, label flips to `Catalogued` and the icon
-     fills when the chat is catalogued. Toggles catalogue state.
-- The kebab keeps `Show turn nav`, `Pin chat`, `Kill session`, and
-  `Uncatalogue` shown only while the chat is catalogued, since the toolbar
-  button only saves or edits.
+  3. Fork, 4. Clone: existing actions.
+  5. Catalogue: bookmark icon, label flips to `Catalogued` and the icon
+     fills when the chat is catalogued. Starts the save flow or opens the
+     existing entry's edit/remove choices.
+  6. Pin chat: pin icon. Flips to `Unpin` and fills when this chat is pinned
+     in the Orrery.
+  7. Turn nav: enables or hides the floating turn navigation for this chat.
+  8. Kill: red power icon, visually separated at the trailing end. The
+     existing confirmation remains mandatory.
+- There is no pinned-messages shortcut in the toolbar and no kebab menu.
+  Tapping `Catalogued` opens a focused sheet containing `Edit catalogue
+  entry` and `Uncatalogue`, so the secondary removal action remains
+  available without consuming permanent toolbar space.
 - Opening the toolbar does not scroll the message list; the list shrinks.
 
 ### Removed
@@ -99,7 +106,8 @@ One line, 11px mono, segments separated by ` · ` in fg-mute:
 - `#review-bar` and `#review-repo-btn`, their CSS, and the enable logic.
 - `#mode-btn` pill styling. The element stays as the mode segment.
 - `#header-buf`.
-- Kebab items `Pinned`, `Clone`, `Fork`, `Model`, `Catalogue`.
+- The header kebab and its chat action sheet.
+- The toolbar's pinned-messages shortcut.
 
 ## Server
 
@@ -140,10 +148,12 @@ Chrome, in a new `header_ui_test.go` at 393x852:
   stubbed `/api/git-status`.
 - Disconnecting the socket dims the icon and shows the red line;
   reconnecting shows the sweep.
-- Grabber tap opens the toolbar with six items, the message list height
-  shrinks by the toolbar height, the state survives a reload, and the git
-  item opens the review on the repository scope.
-- The kebab lists exactly three visible items for an uncatalogued chat.
+- Grabber tap opens the toolbar with eight fixed-width items, the row
+  overflows horizontally at 393px, the message list height shrinks by the
+  toolbar height, the state survives a reload, and the git item opens the
+  review on the repository scope.
+- The header kebab is absent. Pin and turn-nav actions update their labels
+  and selected styling in place.
 
 Existing tests that click `#review-repo-btn` or read `#status-text`
 change to the new elements. Update `README.md` where it names the review

@@ -733,7 +733,6 @@ function loadModelPicker(overrides = {}) {
     },
     basePath: '/phone',
     currentBufferName: '*Agent @ demo*',
-    closeChatMenu: () => {},
     canonicalModelName: (id, models) => models.find(model => model.id === id)?.name || id,
     renderHeaderSub: () => {},
     fetch: async () => { throw new Error('unexpected fetch'); },
@@ -753,9 +752,7 @@ const modelData = () => ({current: 'first', models: [
 const modelReply = data => ({ok: true, json: async () => data});
 
 test('model picker lists models in rig order with the current model marked', async () => {
-  let menuClosed = false;
   const {context, elements} = loadModelPicker({
-    closeChatMenu: () => { menuClosed = true; },
     fetch: async (url, options) => {
       assert.equal(url, '/phone/api/models');
       assert.equal(options.method, 'POST');
@@ -766,7 +763,6 @@ test('model picker lists models in rig order with the current model marked', asy
   });
   await context.openModelPicker();
   const rows = elements.get('md-list').children;
-  assert.equal(menuClosed, true);
   assert.deepEqual(rows.map(row => row.textContent), ['First (current)', 'Second']);
   assert.equal(rows[0].children[0].textContent, 'Fast model');
   assert.equal(rows[0].classList.contains('md-row'), true);
@@ -924,7 +920,6 @@ function loadSpawnSheet(overrides = {}) {
     syncHistoryDock: () => {},
     loadSessions: async () => {},
     selectSession: () => {},
-    closeChatMenu: () => {},
     currentBufferName: null,
     fetch: async () => { throw new Error('unexpected fetch'); },
     alert: () => {},
