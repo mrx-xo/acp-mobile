@@ -17,6 +17,19 @@ Discovers all live acp-multiplex sockets on the machine, groups them by project,
 - **Auth** — random 256-bit authkey (generated on first run, stored in `~/.acp-mobile/authkey`)
 - **Security hardening** — CSRF protection, DNS rebinding protection, CSP headers, XSS-safe markdown
 
+## Message spacing and copying
+
+Sent and queued prompts retain their original line breaks, blank lines, tabs,
+and spaces. Message bubbles preserve whitespace when displaying plain text;
+agent replies still render Markdown. Whitespace-only prompts are not sent.
+
+Swipe left on a message and choose `Copy text` to copy its original plain
+text, including leading and trailing whitespace. Code-block copy buttons also
+retain the source's whitespace. Native text selection follows browser rules
+and may omit a final newline at a block boundary. Rich-text copying is not
+provided. Whitespace already stripped from older sent messages cannot be
+recovered.
+
 ## Diff review
 
 A read-only diff reader with two scopes, opened from inside a chat. It

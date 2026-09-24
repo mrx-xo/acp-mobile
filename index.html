@@ -676,7 +676,7 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
 .msg.user .role::before { content: "𐆖 "; }
 .msg.user .text {
   color: var(--fg); font-size: 14px; line-height: 21px;
-  font-family: var(--mono);
+  font-family: var(--mono); white-space: pre-wrap;
 }
 .msg.user .text:empty { display: none; }
 .msg.user.has-images { width: 85%; }
@@ -1716,7 +1716,10 @@ input, textarea, #fbv-content, .msg, .msg * {
   border: none; border-top: 1px solid var(--bg1); margin: 8px 0;
 }
 :is(.msg.agent, .pv-msg.agent) .md p { margin: 4px 0; }
-:is(.msg.agent, .pv-msg.agent) .md { color: var(--fg); font-size: 15px; line-height: 22px; }
+:is(.msg.agent, .pv-msg.agent) .md {
+  color: var(--fg); font-size: 15px; line-height: 22px;
+  white-space: pre-wrap;
+}
 :is(.msg.agent, .pv-msg.agent) .agent-cue-prefix {
   color: var(--cue-fg); background: var(--cue-bg); font-weight: 700;
 }
@@ -2766,7 +2769,7 @@ function renderMarkdown(text) {
     // source is unrecoverable from the DOM — which is what the copy button
     // has been hitting (multi-line blocks copied as one joined line) and
     // what a mermaid fence needs before it can be rendered.
-    '<div class="code-block" data-code="' + encodeCodeSource(unescHtml(code.trimEnd())) + '">' +
+    '<div class="code-block" data-code="' + encodeCodeSource(unescHtml(code)) + '">' +
     '<div class="code-header">' +
     '<span class="code-language">' + (lang || 'code') + '</span>' +
     '<button class="code-copy" type="button" aria-label="Copy code">' +
@@ -2821,7 +2824,7 @@ function renderMarkdown(text) {
     wrapList('ol', / data-ol=""/g));
 
   // Paragraphs
-  html = html.replace(/\n\n+/g, '</p><p>');
+  html = html.replace(/\n\n+/g, breaks => '</p><p>' + '<br>'.repeat(breaks.length - 2));
   html = html.replace(/\n/g, '<br>');
 
   return '<p>' + html + '</p>';
@@ -5135,8 +5138,8 @@ function restoreDraft() {
 }
 
 function sendPrompt() {
-  const text = promptEl.value.trim();
-  if ((!text && pendingImages.length === 0 && pendingRefs.length === 0) || !sessionId) return;
+  const text = promptEl.value;
+  if ((!text.trim() && pendingImages.length === 0 && pendingRefs.length === 0) || !sessionId) return;
 
   const refs = pendingRefs.splice(0);
   renderAttachRow();
@@ -5147,7 +5150,7 @@ function sendPrompt() {
 
   if (processing) {
     // Images keep waiting in the composer; text refs belong to this queued turn.
-    if (text || refs.length) {
+    if (text.trim() || refs.length) {
       messageQueue.push({ text, refs });
       addUserMsg(formatReferencedPrompt(text, refs), 'queued');
     }

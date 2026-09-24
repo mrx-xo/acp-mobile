@@ -1420,9 +1420,7 @@ test('data-code preserves exact UTF-8 fence source through later markdown passes
     const html = renderMarkdown('```mermaid\n' + source + trailing + '```');
     const match = html.match(/<div class="code-block" data-code="([A-Za-z0-9+/=]+)">/);
     assert.ok(match, 'fence should carry base64 source');
-    // trimEnd: the newline before the closing fence is the fence's, not the
-    // diagram's, and Mermaid is given the source without it.
-    assert.equal(Buffer.from(match[1], 'base64').toString('utf8'), source);
+    assert.equal(Buffer.from(match[1], 'base64').toString('utf8'), source + trailing);
   }
 });
 
