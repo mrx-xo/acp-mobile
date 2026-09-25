@@ -410,3 +410,76 @@ func TestNewChatResumeFallsBackWhenSettingsGoStale(t *testing.T) {
 		t.Fatalf("a stale resumed Prompt must fall back to Agent once the catalog loads, got %v", view)
 	}
 }
+
+func TestNewChatLoadOrderEdges(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1 && spawnProjects.length === 2`)
+	state := page.evalObject(t, `(async()=>{
+  const sol={agent:'codex',model:'sol',mode:'full',effort:'high'};
+  // Agent opened before presets arrive: Customize follows the late match.
+  spawnPresets=[];spDraft.settings={...sol};openSpawnView('preset');
+  const early=spEl('customize').getAttribute('aria-expanded');
+  await loadSpawnPresets();
+  const late=spEl('customize').getAttribute('aria-expanded');
+  // Once toggled by hand, a late preset load leaves Customize alone.
+  spawnPresets=[];openSpawnView('prompt');openSpawnView('preset');spEl('customize').click();spEl('customize').click();
+  await loadSpawnPresets();
+  const touched=spEl('customize').getAttribute('aria-expanded');
+  // Prompt before the catalog: no raw agent id.
+  const cat=spCatalog;spCatalog={defaultAgent:'',agents:[]};spawnPresets=[];openSpawnView('prompt');
+  const loading=spEl('summary').textContent;spCatalog=cat;
+  // Typing on a resumed stale Prompt: stay put, explain.
+  await loadSpawnPresets();spDraft.settings={...sol,model:'retired'};openSpawnView('prompt');spTask.focus();spResumeCheck=true;
+  await loadSpawnCatalog();
+  const typing={view:spView,focus:document.activeElement===spTask,msg:spEl('message').textContent};
+  return {early,late,touched,loading,typing};
+ })()`)
+	if state["early"] != "true" || state["late"] != "false" || state["touched"] != "true" {
+		t.Fatalf("Customize follows a late preset match until toggled: %#v", state)
+	}
+	if l := state["loading"].(string); strings.Contains(l, "codex") || !strings.Contains(l, "Loading") {
+		t.Fatalf("summary before catalog: %#v", state)
+	}
+	typing := state["typing"].(map[string]interface{})
+	if typing["view"] != "prompt" || typing["focus"] != true || !strings.Contains(typing["msg"].(string), "no longer available") {
+		t.Fatalf("typing on a stale resume: %#v", typing)
+	}
+}
+
+func TestNewChatPinKeepsFocusAndEmptyProjectResume(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1 && spawnProjects.length === 2`)
+	state := page.evalObject(t, `(()=>{
+  spCombos.recent=[{cwd:'/src/dotfiles',preset:'s',settings:{agent:'codex',model:'sol',mode:'full',effort:'high'}}];
+  openSpawnView('home');
+  {const b=document.querySelector('#sp-home-list button[aria-label="Pin Sol in dotfiles"]');b.focus();b.click();}
+  const homeFocus=document.activeElement.getAttribute('aria-label');
+  openSpawnView('project');
+  {const b=document.querySelector('#sp-picker-list button[aria-label="Pin dotfiles"]');b.focus();b.click();}
+  const projectFocus=document.activeElement.getAttribute('aria-label');
+  openSpawnView('prompt');spDraft.cwd='';spRecent=['/src/acp-mobile'];persistSpawnDraft();
+  hideSpawnSheet();openSpawnSheet();
+  return {homeFocus,projectFocus,resumed:spView,cwd:spDraft.cwd};
+ })()`)
+	if state["homeFocus"] != "Unpin Sol in dotfiles" || state["projectFocus"] != "Unpin dotfiles" {
+		t.Fatalf("pin toggles keep focus: %#v", state)
+	}
+	if state["resumed"] != "project" || state["cwd"] != "/src/acp-mobile" {
+		t.Fatalf("a Prompt draft with no project resumes on Project, prefilled: %#v", state)
+	}
+}
+
+func TestNewChatComboMatchingPresetButMissingFromCatalog(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1`)
+	state := page.evalObject(t, `(()=>{
+  const ghost={agent:'codex',model:'ghost',mode:'full',effort:'high'};
+  spawnPresets=[...spawnPresets,{key:'g',label:'Ghost · Full',...ghost}];
+  spCombos.recent=[{cwd:'/src/dotfiles',preset:'g',settings:ghost}];
+  openSpawnView('home');document.querySelector('#sp-home-list .sp-combo').click();
+  return {view:spView,go:spGo.disabled,summary:spEl('summary').textContent};
+ })()`)
+	if state["view"] != "prompt" || state["go"] != true || !strings.Contains(state["summary"].(string), "Codex / Custom") || strings.Contains(state["summary"].(string), "Ghost") {
+		t.Fatalf("a preset whose ids left the catalog reads Custom: %#v", state)
+	}
+}

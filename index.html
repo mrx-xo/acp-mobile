@@ -5879,7 +5879,7 @@ function spToggleComboPin(c) {
 }
 let spawnPresets = [], spawnProjects = [], spCatalog = {agents:[], defaultAgent:''};
 let spawnPresetsLoad = 0, spawnProjectsLoad = 0, spCatalogLoad = 0;
-let spView = 'home', spBusy = false, spReturnFocus = null, spPickerOrigin = null, spCustomizeOpen = false, spNameOpen = false;
+let spView = 'home', spBusy = false, spReturnFocus = null, spPickerOrigin = null, spCustomizeOpen = false, spCustomizeTouched = false, spNameOpen = false;
 const spInertSiblings = new Map();
 // An accepted launch must never be posted again just because its socket is late.
 let spRecoveryBuffer = typeof spStoredDraft.pendingBuffer === 'string' ? spStoredDraft.pendingBuffer : '';
@@ -5939,7 +5939,10 @@ function spBackOf(view) { return {path:'project', save:'preset', agent:'preset',
 function spPinButton(label, pinned, toggle) {
   const pin=document.createElement('button'); pin.type='button'; pin.className='sp-icon';
   pin.setAttribute('aria-label',(pinned ? 'Unpin ' : 'Pin ')+label); pin.title=pin.getAttribute('aria-label'); pin.setAttribute('aria-pressed',String(pinned));
-  pin.innerHTML=SP_PIN_SVG; onTapPick(pin,toggle); return pin;
+  pin.innerHTML=SP_PIN_SVG;
+  // The list re-renders on toggle; put focus back on the new button for this row.
+  onTapPick(pin,()=>{const had=document.activeElement===pin;toggle();if(had)spEl('body').querySelector('button[aria-label="'+CSS.escape((pinned ? 'Pin ' : 'Unpin ')+label)+'"]')?.focus({preventScroll:true});});
+  return pin;
 }
 function renderSpawnHome() {
   const list=spEl('home-list'); list.replaceChildren();
@@ -5998,7 +6001,7 @@ function renderSpawnPresetStep() {
 function renderSpawnPrompt() {
   const locked=spBusy || !!spRecoveryBuffer;
   // A stale combo reads Custom even when its ids still match a preset.
-  const label=spComplete() ? spSummaryLabel(spDraft.settings) : (spAgentFor(spDraft.settings)?.name || spDraft.settings.agent || 'Agent')+' / Custom';
+  const label=!spCatalog.agents.length ? 'Loading agents…' : spComplete() ? spSummaryLabel(spDraft.settings) : (spAgentFor(spDraft.settings)?.name || spDraft.settings.agent || 'Agent')+' / Custom';
   spRowContent(spEl('summary'),label,spDraft.cwd ? spProjectName(spDraft.cwd)+'  '+shortPath(spDraft.cwd) : 'Choose a project','chevron');
   spEl('summary').disabled=locked; spTask.disabled=locked;
   const open=spNameOpen || !!spDraft.name;
@@ -6034,7 +6037,10 @@ async function spFetch(endpoint, property) {
 async function loadSpawnPresets() {
   const token=++spawnPresetsLoad;
   try { const data=await spFetch('presets','presets'); if (token !== spawnPresetsLoad) return;
-    spawnPresets=data.presets.filter(p => spValidPreset(p) && p.key.length === 1); renderSpawnStep();
+    spawnPresets=data.presets.filter(p => spValidPreset(p) && p.key.length === 1);
+    // Agent may have opened before presets arrived; follow the late match until the user toggles.
+    if (spView === 'preset' && !spCustomizeTouched) spCustomizeOpen=!spMatchingPreset(spDraft.settings);
+    renderSpawnStep();
   } catch (_) { if (token === spawnPresetsLoad && !spawnPresets.length) spMessage('Presets unavailable. You can still choose settings individually.'); }
 }
 async function loadSpawnProjects() {
@@ -6053,7 +6059,10 @@ async function loadSpawnCatalog() {
       if (a) spDraft.settings=spSettings({...a.defaults,agent:a.id}); persistSpawnDraft();
     }
     renderSpawnStep(); if (['agent','model','mode','effort'].includes(spView)) renderSpawnPicker();
-    if (spResumeCheck && spView === 'prompt' && !spComplete()) openSpawnView('preset');
+    if (spResumeCheck && spView === 'prompt' && !spComplete()) {
+      if (document.activeElement === spTask) spMessage('These settings are no longer available. Tap the summary to choose new ones.');
+      else openSpawnView('preset');
+    }
     spResumeCheck=false;
   } catch (_) { if (token === spCatalogLoad) spMessage('Agent choices could not refresh. Reopen New chat to retry.'); }
 }
@@ -6099,7 +6108,7 @@ function openSpawnView(view) {
   // A chat that already exists pins the sheet to Prompt until released.
   if ((spBusy || spRecoveryBuffer) && view !== 'prompt') return;
   if (SP_SUBVIEWS.includes(view) && spView === 'preset') spPickerOrigin=document.activeElement;
-  if (view === 'preset' && !SP_SUBVIEWS.includes(spView)) spCustomizeOpen=!spMatchingPreset(spDraft.settings);
+  if (view === 'preset' && !SP_SUBVIEWS.includes(spView)) { spCustomizeOpen=!spMatchingPreset(spDraft.settings); spCustomizeTouched=false; }
   if (view === 'model') spModelOpen=new Set([modelGroupKey(spDraft.settings.model)]);
   spView=view;
   if (view === 'home' || SP_STEPS[view]) { spDraft.step=view; persistSpawnDraft(); }
@@ -6139,11 +6148,12 @@ function openSpawnSheet(cwd, step='') {
   spReturnFocus=document.activeElement;
   spMessage('');
   if (cwd && !spRecoveryBuffer) spDraft.cwd=cwd;
+  // Judge the resume step before prefilling, so an empty project resumes on Project.
+  const view=spRecoveryBuffer ? 'prompt' : step || spResumeStep();
   if (!spDraft.cwd) spDraft.cwd=spRecent[0] || lastSessions.find(s=>s.cwd)?.cwd || '';
   spName.value=spDraft.name;spTask.value=spDraft.task;spDir.value=spDraft.cwd;spNameOpen=false;
   for(const el of spSheet.parentElement.children) if(el !== spSheet && el !== spScrim && !spInertSiblings.has(el)){spInertSiblings.set(el,el.inert);el.inert=true;}
   spScrim.classList.add('visible');spSheet.classList.add('visible');
-  const view=spRecoveryBuffer ? 'prompt' : step || spResumeStep();
   spResumeCheck=view === 'prompt' && !spRecoveryBuffer && !step;
   openSpawnView(view);
   if(spRecoveryBuffer)spMessage('A chat was already created. Use the arrow below to open it; it will not start another chat.');
@@ -6160,7 +6170,7 @@ spScrim.addEventListener('click',hideSpawnSheet);spEl('close').addEventListener(
 spEl('back').addEventListener('click',()=>{const back=spBackOf(spView);if(back)openSpawnView(back);});
 for (const field of spFields) spEl(field).addEventListener('click',()=>openSpawnView(field));
 spEl('save').addEventListener('click',()=>{spEl('save-name').value='';openSpawnView('save');});
-spEl('customize').addEventListener('click',()=>{spCustomizeOpen=!spCustomizeOpen;renderSpawnStep();});
+spEl('customize').addEventListener('click',()=>{spCustomizeOpen=!spCustomizeOpen;spCustomizeTouched=true;renderSpawnStep();});
 spEl('summary').addEventListener('click',()=>openSpawnView('preset'));
 spEl('name-toggle').addEventListener('click',()=>{spNameOpen=!(spNameOpen || !!spDraft.name);renderSpawnStep();if(spNameOpen)spName.focus({preventScroll:true});});
 spEl('next').addEventListener('click',()=>{if(spEl('next').disabled)return;openSpawnView(spView === 'home' ? 'project' : 'prompt');});
