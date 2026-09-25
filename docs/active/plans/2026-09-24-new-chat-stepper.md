@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: active, not started | Owner: acp-mobile New chat sheet (`index.html` spawn block)
+Status: implemented on syzygy (not deployed) | Owner: acp-mobile New chat sheet (`index.html` spawn block)
 
 **Goal:** Replace the one-screen New chat sheet with a Home, Project, Agent, Prompt stepper that remembers launch combos.
 
