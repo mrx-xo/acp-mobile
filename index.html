@@ -5966,6 +5966,7 @@ function renderSpawnHome() {
   }
 }
 function pickSpawnCombo(c) {
+  spResumeCheck=false;
   spDraft.cwd=c.cwd; spDraft.settings=spSettings(c.settings); spDraft.preset=spMatchingPreset(spDraft.settings)?.key || '';
   spDir.value=c.cwd; persistSpawnDraft(); spMessage(''); openSpawnView('prompt');
 }
@@ -6049,6 +6050,8 @@ async function loadSpawnCatalog() {
       if (a) spDraft.settings=spSettings({...a.defaults,agent:a.id}); persistSpawnDraft();
     }
     renderSpawnStep(); if (['agent','model','mode','effort'].includes(spView)) renderSpawnPicker();
+    if (spResumeCheck && spView === 'prompt' && !spComplete()) openSpawnView('preset');
+    spResumeCheck=false;
   } catch (_) { if (token === spCatalogLoad) spMessage('Agent choices could not refresh. Reopen New chat to retry.'); }
 }
 function pickSpawnProject(path) { spDraft.cwd=path; spDir.value=path; persistSpawnDraft(); openSpawnView('preset'); }
@@ -6120,6 +6123,15 @@ function openSpawnView(view) {
   if (view === 'preset' && spPickerOrigin?.isConnected && spEl('preset-step').contains(spPickerOrigin)) { spPickerOrigin.focus({preventScroll:true}); spPickerOrigin=null; }
   else (back ? spEl('back') : spEl('close')).focus({preventScroll:true});
 }
+// Reopening resumes the saved step; a Prompt draft is checked again once the
+// catalog arrives, because validity cannot be judged against an empty catalog.
+let spResumeCheck = false;
+function spResumeStep() {
+  const s=spDraft.step;
+  if (s === 'prompt' || s === 'preset') return spDraft.cwd ? s : 'project';
+  if (s === 'project') return 'project';
+  return spHomeEmpty() ? 'project' : 'home';
+}
 function openSpawnSheet(cwd, step='') {
   spReturnFocus=document.activeElement;
   spMessage('');
@@ -6128,7 +6140,9 @@ function openSpawnSheet(cwd, step='') {
   spName.value=spDraft.name;spTask.value=spDraft.task;spDir.value=spDraft.cwd;spNameOpen=false;
   for(const el of spSheet.parentElement.children) if(el !== spSheet && el !== spScrim && !spInertSiblings.has(el)){spInertSiblings.set(el,el.inert);el.inert=true;}
   spScrim.classList.add('visible');spSheet.classList.add('visible');
-  openSpawnView(spRecoveryBuffer ? 'prompt' : step || (spHomeEmpty() ? 'project' : 'home'));
+  const view=spRecoveryBuffer ? 'prompt' : step || spResumeStep();
+  spResumeCheck=view === 'prompt' && !spRecoveryBuffer && !step;
+  openSpawnView(view);
   if(spRecoveryBuffer)spMessage('A chat was already created. Use the arrow below to open it; it will not start another chat.');
   persistSpawnDraft();loadSpawnPresets();loadSpawnProjects();loadSpawnCatalog();syncHistoryDock();
 }
@@ -6275,7 +6289,7 @@ async function refreshForkEntry(btn) {
 }
 
 function spawnAgent() { openSpawnSheet(null); }
-function spawnInProject(cwd) { openSpawnSheet(cwd); }
+function spawnInProject(cwd) { openSpawnSheet(cwd, 'preset'); }
 // --- Spawn sheet: end ---
 
 // --- Model picker ---

@@ -391,3 +391,32 @@ func TestNewChatStaleComboLandsOnPromptDisabled(t *testing.T) {
 		t.Fatalf("stale combo: %#v", state)
 	}
 }
+
+func TestNewChatEntryPointsAndResume(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1 && spawnProjects.length === 2`)
+	state := page.evalObject(t, `(()=>{
+  hideSpawnSheet();spawnInProject('/src/dotfiles');
+  const perProject={view:spView,cwd:spDraft.cwd};
+  document.querySelector('#sp-preset-list .sp-row').click();
+  hideSpawnSheet();openSpawnSheet();
+  return {perProject,resumed:spView};
+ })()`)
+	pp := state["perProject"].(map[string]interface{})
+	if pp["view"] != "preset" || pp["cwd"] != "/src/dotfiles" || state["resumed"] != "prompt" {
+		t.Fatalf("entry/resume: %#v", state)
+	}
+}
+
+func TestNewChatResumeFallsBackWhenSettingsGoStale(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1`)
+	page.eval(t, `openSpawnView('preset');document.querySelector('#sp-preset-list .sp-row').click();spDraft.settings.model='retired';persistSpawnDraft();hideSpawnSheet()`)
+	page.call(t, "Page.reload", map[string]interface{}{})
+	page.waitFor(t, `typeof openSpawnSheet === 'function'`)
+	page.eval(t, `openSpawnSheet()`)
+	page.waitFor(t, `spCatalog.agents.length === 3`)
+	if view := page.eval(t, `spView`); view != "preset" {
+		t.Fatalf("a stale resumed Prompt must fall back to Agent once the catalog loads, got %v", view)
+	}
+}
