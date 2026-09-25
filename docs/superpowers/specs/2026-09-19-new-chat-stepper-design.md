@@ -1,7 +1,7 @@
 # New chat stepper
 
 Date: 2026-09-19
-Status: approved in chat, pending spec review
+Status: implemented (branch syzygy, 2026-09-24)
 
 ## Problem
 

@@ -1,13 +1,11 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -132,28 +130,15 @@ func TestNewChatCustomPresetPinsAndPartialFailure(t *testing.T) {
 }
 
 func TestNewChatVisualReview(t *testing.T) {
-	dir := os.Getenv("SYZYGY_UI_SHOTS")
-	if dir == "" {
+	if os.Getenv("SYZYGY_UI_SHOTS") == "" {
 		t.Skip("Set SYZYGY_UI_SHOTS to capture mobile review images")
 	}
 	page := newChatTestPage(t)
 	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1 && spawnProjects.length === 2`)
-	page.eval(t, `openSpawnView('preset');document.querySelector('#sp-preset-list .sp-row').click()`)
-	for _, view := range []string{"project", "preset", "model", "prompt"} {
+	page.eval(t, `spCombos={pins:[{cwd:'/src/acp-mobile',preset:'s',settings:{agent:'codex',model:'sol',mode:'full',effort:'high'}}],recent:[{cwd:'/src/dotfiles',preset:'',settings:{agent:'claude',model:'sonnet',mode:'manual',effort:''}}]};spDraft.cwd='/src/acp-mobile';spDraft.settings={agent:'codex',model:'sol',mode:'full',effort:'high'}`)
+	for _, view := range []string{"home", "project", "preset", "prompt"} {
 		page.eval(t, fmt.Sprintf(`openSpawnView(%q)`, view))
-		var shot struct {
-			Data string `json:"data"`
-		}
-		if err := json.Unmarshal(page.call(t, "Page.captureScreenshot", map[string]interface{}{"format": "png"}), &shot); err != nil {
-			t.Fatal(err)
-		}
-		data, err := base64.StdEncoding.DecodeString(shot.Data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "new-chat-"+view+".png"), data, 0600); err != nil {
-			t.Fatal(err)
-		}
+		saveUIShot(t, page, "new-chat-"+view)
 	}
 }
 
