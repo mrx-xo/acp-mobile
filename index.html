@@ -6014,6 +6014,9 @@ function renderSpawnStep() {
   spEl('next').disabled=locked || (spView === 'preset' && !spComplete());
   spGo.disabled=spBusy || (!spRecoveryBuffer && (!spDraft.cwd || !spComplete()));
   spEl('release').hidden=!spRecoveryBuffer; spEl('release').disabled=spBusy;
+  // Back cannot leave Prompt while a created chat is pending, so offer close.
+  const back=!locked && spBackOf(spView);
+  spEl('close').hidden=!!back; spEl('back').hidden=!back;
   spGo.setAttribute('aria-busy',String(spBusy));
   spGo.setAttribute('aria-label',spRecoveryBuffer ? 'Open created chat' : 'Start chat');
   spGo.title=spGo.getAttribute('aria-label');
@@ -6121,7 +6124,7 @@ function openSpawnView(view) {
   renderSpawnStep();
   if (SP_PICKERS.includes(view)) renderSpawnPicker();
   if (view === 'preset' && spPickerOrigin?.isConnected && spEl('preset-step').contains(spPickerOrigin)) { spPickerOrigin.focus({preventScroll:true}); spPickerOrigin=null; }
-  else (back ? spEl('back') : spEl('close')).focus({preventScroll:true});
+  else (spEl('back').hidden ? spEl('close') : spEl('back')).focus({preventScroll:true});
 }
 // Reopening resumes the saved step; a Prompt draft is checked again once the
 // catalog arrives, because validity cannot be judged against an empty catalog.

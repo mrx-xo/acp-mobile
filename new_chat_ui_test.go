@@ -149,10 +149,15 @@ func TestNewChatMissingRecoveryCanReturnToDraft(t *testing.T) {
   openSpawnView('preset');document.querySelector('#sp-preset-list .sp-row').click();spTask.value='Unsent work';spTask.dispatchEvent(new Event('input'));
   spRecoveryBuffer='missing buffer';spRecoveryKeepsTask=true;persistSpawnDraft();renderSpawnStep();
   const locked=spEl('summary').disabled;
+  const nav={close:!spEl('close').hidden,back:!spEl('back').hidden};
   spEl('back').click();const stayed=spView;
   spEl('release').click();
-  return {locked,stayed,editable:!spEl('summary').disabled,task:spDraft.task,pending:spRecoveryBuffer,canLaunch:!spGo.disabled,stored:JSON.parse(localStorage.getItem('syzygy.launch.draft')).pendingBuffer};
+  const after={close:!spEl('close').hidden,back:!spEl('back').hidden};
+  return {nav,after,locked,stayed,editable:!spEl('summary').disabled,task:spDraft.task,pending:spRecoveryBuffer,canLaunch:!spGo.disabled,stored:JSON.parse(localStorage.getItem('syzygy.launch.draft')).pendingBuffer};
  })()`)
+	if nav, after := state["nav"].(map[string]interface{}), state["after"].(map[string]interface{}); nav["close"] != true || nav["back"] != false || after["close"] != false || after["back"] != true {
+		t.Fatalf("recovery shows close, not a dead back button; releasing restores back: %#v", state)
+	}
 	if state["stayed"] != "prompt" || state["locked"] != true || state["editable"] != true || state["task"] != "Unsent work" || state["pending"] != "" || state["stored"] != "" || state["canLaunch"] != true {
 		t.Fatalf("recovery must be dismissible without losing the draft: %#v", state)
 	}
