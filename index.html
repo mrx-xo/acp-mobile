@@ -5941,7 +5941,34 @@ function spPinButton(label, pinned, toggle) {
   pin.setAttribute('aria-label',(pinned ? 'Unpin ' : 'Pin ')+label); pin.title=pin.getAttribute('aria-label'); pin.setAttribute('aria-pressed',String(pinned));
   pin.innerHTML=SP_PIN_SVG; onTapPick(pin,toggle); return pin;
 }
-function renderSpawnHome() {}
+function renderSpawnHome() {
+  const list=spEl('home-list'); list.replaceChildren();
+  for (const [name,combos] of [['Pinned',spCombos.pins],['Recent',spCombos.recent]]) {
+    if (!combos.length) continue;
+    const head=document.createElement('div'); head.className='sp-label sp-group-label'; head.textContent=name; list.appendChild(head);
+    for (const c of combos) {
+      const item=document.createElement('div'); item.className='sp-project-item';
+      const row=document.createElement('button'); row.type='button'; row.className='sp-row sp-combo';
+      const title=spComboTitle(c), word=spModeWord(c.settings);
+      // Agents without a provider mark keep an empty slot so titles align.
+      row.innerHTML=providerIcon(c.settings.agent) || '<span class="provider-icon" aria-hidden="true"></span>';
+      const copy=document.createElement('span'); copy.className='sp-row-copy';
+      const t=document.createElement('span'); t.className='sp-row-title'; t.textContent=title; copy.appendChild(t);
+      const d=document.createElement('span'); d.className='sp-row-detail';
+      const mode=document.createElement('span'); mode.className='sp-mode-word'; mode.textContent=word; mode.style.color=modeColor(c.settings.mode); d.appendChild(mode);
+      const path=document.createElement('span'); path.textContent=shortPath(c.cwd); d.appendChild(path);
+      copy.appendChild(d); row.appendChild(copy);
+      row.setAttribute('aria-label',title+', '+word+', '+shortPath(c.cwd));
+      onTapPick(row,()=>pickSpawnCombo(c)); item.appendChild(row);
+      item.appendChild(spPinButton(title,name === 'Pinned',()=>{spToggleComboPin(c);renderSpawnHome();}));
+      list.appendChild(item);
+    }
+  }
+}
+function pickSpawnCombo(c) {
+  spDraft.cwd=c.cwd; spDraft.settings=spSettings(c.settings); spDraft.preset=spMatchingPreset(spDraft.settings)?.key || '';
+  spDir.value=c.cwd; persistSpawnDraft(); spMessage(''); openSpawnView('prompt');
+}
 function renderSpawnPresetStep() {
   const locked=spBusy || !!spRecoveryBuffer, match=spMatchingPreset(spDraft.settings), list=spEl('preset-list');
   list.replaceChildren();
@@ -6152,7 +6179,7 @@ spGo.addEventListener('click',async()=>{
   spBusy=true;renderSpawnStep();spMessage(spRecoveryBuffer?'Finding your chat…':'Starting chat…');
   try {
     const opened=spRecoveryBuffer ? await waitForSpawn(spRecoveryBuffer) : await spawnAndOpen({cwd:spDraft.cwd,name:spDraft.name.trim(),task:spDraft.task,settings:{...spDraft.settings}});
-    if(opened) { spRecent=[spDraft.cwd,...spRecent.filter(p=>p!==spDraft.cwd)].slice(0,12);spWrite('recent',spRecent);spRecoveryBuffer='';if(!spRecoveryKeepsTask)spDraft.task='';spRecoveryKeepsTask=false;spDraft.name='';spBusy=false;spMessage('');persistSpawnDraft();hideSpawnSheet(); }
+    if(opened) { spRecent=[spDraft.cwd,...spRecent.filter(p=>p!==spDraft.cwd)].slice(0,12);spWrite('recent',spRecent);spRecordCombo({cwd:spDraft.cwd,preset:spDraft.preset,settings:spDraft.settings});spDraft.step='';spRecoveryBuffer='';if(!spRecoveryKeepsTask)spDraft.task='';spRecoveryKeepsTask=false;spDraft.name='';spBusy=false;spMessage('');persistSpawnDraft();hideSpawnSheet(); }
     else spMessage('Chat created; waiting for it to appear. Use the arrow to check again without creating another.');
   } catch(err) { if(err.bufferName){spRecoveryBuffer=err.bufferName;spRecoveryKeepsTask=true;}persistSpawnDraft();spMessage(err.message+(spRecoveryBuffer?' The chat exists; use the arrow to open it. Your first message is still in this draft.':'')); }
   finally {spBusy=false;renderSpawnStep();}

@@ -306,3 +306,88 @@ func TestNewChatCustomizeGatesNextAndLaunchesExactSettings(t *testing.T) {
 		t.Fatalf("launch payload: %#v", state)
 	}
 }
+
+// launchDotfilesSol walks the stepper to a Sol · Full launch in dotfiles.
+const launchDotfilesSol = `(async()=>{
+  [...document.querySelectorAll('#sp-picker-list .sp-row')].find(b=>b.textContent.includes('dotfiles')).click();
+  document.querySelector('#sp-preset-list .sp-row').click();
+  SPAWN_POLL_MS=5;window.__selected=null;selectSession=s=>{window.__selected=s.sessionId};
+  spGo.click();
+  for(let i=0;i<100&&!window.__selected;i++)await new Promise(r=>setTimeout(r,20));
+  return {selected:window.__selected};
+ })()`
+
+func TestNewChatLaunchRemembersComboOnHome(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1 && spawnProjects.length === 2`)
+	if s := page.evalObject(t, launchDotfilesSol); s["selected"] != "intended" {
+		t.Fatalf("launch: %#v", s)
+	}
+	state := page.evalObject(t, `(()=>{
+  openSpawnSheet();
+  const rows=[...document.querySelectorAll('#sp-home-list .sp-combo')];
+  const r=rows[0];
+  const home={view:spView,title:spEl('title-text').textContent,close:!spEl('close').hidden,next:spEl('next').textContent,heads:[...document.querySelectorAll('#sp-home-list .sp-label')].map(h=>h.textContent),count:rows.length,
+    text:r.querySelector('.sp-row-title').textContent,mode:r.querySelector('.sp-mode-word').textContent,detail:r.querySelector('.sp-row-detail').textContent,icon:!!r.querySelector('.provider-icon.openai')};
+  r.click();
+  return {home,prompt:{view:spView,cwd:spDraft.cwd,settings:{...spDraft.settings},go:spGo.disabled,summary:spEl('summary').textContent}};
+ })()`)
+	home := state["home"].(map[string]interface{})
+	if home["view"] != "home" || home["title"] != "New chat" || home["close"] != true || home["next"] != "Start from scratch" || home["count"] != float64(1) {
+		t.Fatalf("home: %#v", home)
+	}
+	if heads := home["heads"].([]interface{}); len(heads) != 1 || heads[0] != "Recent" {
+		t.Fatalf("only Recent has entries: %#v", home)
+	}
+	if home["text"] != "Sol in dotfiles" || home["mode"] != "full" || !strings.Contains(home["detail"].(string), "/src/dotfiles") || home["icon"] != true {
+		t.Fatalf("row: %#v", home)
+	}
+	prompt := state["prompt"].(map[string]interface{})
+	settings := prompt["settings"].(map[string]interface{})
+	if prompt["view"] != "prompt" || prompt["cwd"] != "/src/dotfiles" || settings["model"] != "sol" || settings["mode"] != "full" || prompt["go"] != false || !strings.Contains(prompt["summary"].(string), "Sol · Full") {
+		t.Fatalf("tapping a combo lands on Prompt ready to start: %#v", prompt)
+	}
+}
+
+func TestNewChatPinnedComboSurvivesReload(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1 && spawnProjects.length === 2`)
+	page.evalObject(t, launchDotfilesSol)
+	state := page.evalObject(t, `(()=>{
+  openSpawnSheet();
+  document.querySelector('#sp-home-list button[aria-label="Pin Sol in dotfiles"]').click();
+  return {view:spView,heads:[...document.querySelectorAll('#sp-home-list .sp-label')].map(h=>h.textContent),pressed:document.querySelector('#sp-home-list button[aria-label="Unpin Sol in dotfiles"]')?.getAttribute('aria-pressed')};
+ })()`)
+	if state["view"] != "home" || state["pressed"] != "true" {
+		t.Fatalf("pin must not launch or leave Home: %#v", state)
+	}
+	if heads := state["heads"].([]interface{}); len(heads) != 1 || heads[0] != "Pinned" {
+		t.Fatalf("pinned combo leaves Recent: %#v", state)
+	}
+	page.call(t, "Page.reload", map[string]interface{}{})
+	page.waitFor(t, `typeof openSpawnSheet === 'function'`)
+	page.eval(t, `openSpawnSheet()`)
+	page.waitFor(t, `spawnProjects.length === 2`)
+	state = page.evalObject(t, `(()=>({view:spView,pinned:spCombos.pins.length,text:document.querySelector('#sp-home-list .sp-combo .sp-row-title')?.textContent}))()`)
+	if state["view"] != "home" || state["pinned"] != float64(1) || state["text"] != "Sol in dotfiles" {
+		t.Fatalf("pin survives reload: %#v", state)
+	}
+}
+
+func TestNewChatStaleComboLandsOnPromptDisabled(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1`)
+	state := page.evalObject(t, `(()=>{
+  spCombos.recent=[{cwd:'/src/dotfiles',preset:'s',settings:{agent:'codex',model:'retired',mode:'full',effort:'high'}},{cwd:'/src/atlas',preset:'',settings:{agent:'opencode',model:'google/gemini-a',mode:'build',effort:''}}];
+  openSpawnView('home');
+  const iconSlot=[...document.querySelectorAll('#sp-home-list .sp-combo')].map(r=>r.querySelector('.provider-icon')?.getBoundingClientRect().width || 0);
+  document.querySelector('#sp-home-list .sp-combo').click();
+  return {iconSlot,view:spView,go:spGo.disabled,summary:spEl('summary').textContent};
+ })()`)
+	if slots := state["iconSlot"].([]interface{}); len(slots) != 2 || slots[0] != float64(18) || slots[1] != float64(18) {
+		t.Fatalf("every row keeps an 18px icon slot: %#v", state)
+	}
+	if state["view"] != "prompt" || state["go"] != true || !strings.Contains(state["summary"].(string), "Codex / Custom") {
+		t.Fatalf("stale combo: %#v", state)
+	}
+}
