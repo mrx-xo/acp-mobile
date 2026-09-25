@@ -953,14 +953,12 @@ const presetsReply = presets => async (url, options) => {
   return {ok: true, json: async () => ({presets})};
 };
 
-const chipLabels = el => el.children.map(chip => chip.textContent);
-
 const launchPreset = {key:'s',label:'Sol',agent:'codex',model:'sol',mode:'agent',effort:'high'};
 
 test('presets retain rig order, reject malformed tuples, and fill all settings', async () => {
   const {context,elements,get}=loadSpawnSheet({fetch:presetsReply([null,{key:'bad'},launchPreset,{...launchPreset,key:'a',label:'Astra',model:'astra'}])});
   await context.loadSpawnPresets();
-  assert.deepEqual(chipLabels(elements.get('sp-presets')),['Sol','Astra']);
+  assert.deepEqual(JSON.parse(JSON.stringify(get('spawnPresets.map(p => p.label)'))),['Sol','Astra']);
   context.applySpawnPreset('a');
   assert.deepEqual(JSON.parse(JSON.stringify(get('spDraft.settings'))),{agent:'codex',model:'astra',mode:'agent',effort:'high'});
 });
@@ -969,7 +967,7 @@ test('preset refresh failure preserves the last good choices and draft', async (
   let fail=false;
   const {context,elements,get}=loadSpawnSheet({fetch:async(...args)=>{if(fail)throw Error('offline');return presetsReply([launchPreset])(...args);}});
   await context.loadSpawnPresets();context.applySpawnPreset('s');fail=true;await context.loadSpawnPresets();
-  assert.deepEqual(chipLabels(elements.get('sp-presets')),['Sol']);
+  assert.deepEqual(JSON.parse(JSON.stringify(get('spawnPresets.map(p => p.label)'))),['Sol']);
   assert.equal(get('spDraft.settings.model'),'sol');
 });
 

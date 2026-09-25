@@ -1747,7 +1747,8 @@ func TestStandaloneViewportRestoreAfterKeyboardDismiss(t *testing.T) {
 		openSpawnSheet('/tmp');
 		openSpawnView('path');
 		spDir.focus();
-		openSpawnView('options');
+		openSpawnView('prompt');
+		spEl('name-toggle').click();
 		spName.focus();
 		await new Promise(r => setTimeout(r, 100));
 		const duringTransfer = document.documentElement.style.height;
