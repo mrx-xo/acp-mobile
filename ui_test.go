@@ -1172,6 +1172,32 @@ func TestHistorySearchDockOpensSeparateHistoryAndRefines(t *testing.T) {
 	if state["dockVisible"] != true || state["highlighted"] != true || state["backVisible"] != true {
 		t.Fatalf("opened match state = %#v", state)
 	}
+	// Native selection must work inside both search marks and rendered
+	// Markdown, without enabling selection on the surrounding UI.
+	selectHistoryWord := func(selector, want string) {
+		t.Helper()
+		bounds := page.evalObject(t, fmt.Sprintf(`(() => {
+			getSelection().removeAllRanges();
+			const el = document.querySelector(%q);
+			el.scrollIntoView({block: 'center'});
+			const r = el.getBoundingClientRect();
+			return {x: r.left + r.width / 2, y: r.top + r.height / 2};
+		})()`, selector))
+		for _, kind := range []string{"mousePressed", "mouseReleased"} {
+			page.call(t, "Input.dispatchMouseEvent", map[string]interface{}{
+				"type": kind, "x": bounds["x"], "y": bounds["y"],
+				"button": "left", "clickCount": 2,
+			})
+		}
+		if got := page.eval(t, `getSelection().toString().trim()`); got != want {
+			t.Fatalf("native selection in %s = %q, want %q", selector, got, want)
+		}
+	}
+	selectHistoryWord("#history-body .pv-msg.user mark", "recall")
+	selectHistoryWord("#history-body .pv-msg.agent strong", "orbit")
+	if got := page.eval(t, `getComputedStyle(document.getElementById('history-title')).userSelect`); got != "none" {
+		t.Fatalf("history header selection = %q, want none", got)
+	}
 	page.eval(t, `document.getElementById('history-back').click()`)
 	page.waitFor(t, `document.querySelector('.hist-card') && document.querySelector('.hist-card').textContent.includes('Result recall')`)
 	state = page.evalObject(t, `(() => ({
@@ -2065,6 +2091,48 @@ func TestAgentInitiatedActivityDoesNotLookBusy(t *testing.T) {
 	}
 	if state["busyAfterFirstResponse"] != true || state["idleAfterSecondResponse"] != false {
 		t.Fatalf("own prompts must be tracked by id until each response lands, got %v", state)
+	}
+}
+
+// The agent publishes its command list whenever it likes, often just after
+// a new chat's first prompt. It must not flash Send in place of Stop, or
+// release a queued message while the turn is still running.
+func TestCommandListUpdateKeepsTurnBusy(t *testing.T) {
+	page := openComposerTestPage(t, 844, 844)
+	state := page.evalObject(t, `(() => {
+		const upd = (update) => ({jsonrpc: '2.0', method: 'session/update', params: {sessionId: 's1', update}});
+		const commands = upd({sessionUpdate: 'available_commands_update', availableCommands: []});
+		messagesEl.innerHTML = ''; showChat(); sessionId = null; pendingPermissions = []; setProcessing(false);
+		replayMode = true; resetReplayBuffer();
+		for (const r of [
+			{jsonrpc: '2.0', id: 0, result: {sessionId: 's1'}},
+			upd({sessionUpdate: 'user_message_chunk', content: {type: 'text', text: 'task'}}),
+			commands
+		]) bufferReplayMessage(r);
+		flushReplay();
+		const replayBusy = processing;
+		const replayStopShown = stopBtn.style.display === 'flex';
+
+		sessionId = 's1'; window.__sent = []; ws = {readyState: 1, send: raw => window.__sent.push(JSON.parse(raw))};
+		setProcessing(false); messageQueue.length = 0;
+		sendPromptText('first', []);
+		messageQueue.push({text: 'queued', refs: []});
+		handleMessage(commands);
+		const liveBusy = processing;
+		const liveStopShown = stopBtn.style.display === 'flex';
+		const sentAfterCommands = window.__sent.length;
+		handleMessage({jsonrpc: '2.0', id: window.__sent[0].id, result: {stopReason: 'end_turn'}});
+		const sentAfterTurn = window.__sent.length;
+		return {replayBusy, replayStopShown, liveBusy, liveStopShown, sentAfterCommands, sentAfterTurn};
+	})()`)
+	if state["replayBusy"] != true || state["replayStopShown"] != true {
+		t.Fatalf("replayed command list after a prompt must keep the turn busy, got %v", state)
+	}
+	if state["liveBusy"] != true || state["liveStopShown"] != true {
+		t.Fatalf("live command list mid-turn must keep Stop showing, got %v", state)
+	}
+	if state["sentAfterCommands"] != float64(1) || state["sentAfterTurn"] != float64(2) {
+		t.Fatalf("queued message must wait for the turn to end, got %v", state)
 	}
 }
 

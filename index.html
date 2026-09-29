@@ -1074,9 +1074,10 @@ html.vp-settling #history-dock, html.vp-settling #input-area { opacity: 0; point
    Selection stays disabled on the chrome (nav, headers, buttons) so a
    stray long-press never highlights the UI, but is ENABLED on message
    bubbles so you can long-press to select/copy text inline. Also on:
-   inputs, the reader, the file viewer. */
+   inputs, the reader, the file viewer, and History transcript bubbles. */
 html, body { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
-input, textarea, #fbv-content, .msg, .msg * {
+input, textarea, #fbv-content, .msg, .msg *,
+#history-body .pv-msg, #history-body .pv-msg * {
   -webkit-touch-callout: default;
   -webkit-user-select: text; user-select: text;
 }
@@ -1495,6 +1496,9 @@ input, textarea, #fbv-content, .msg, .msg * {
 #sp-summary { border:1px solid var(--bg2); border-radius:12px; padding:12px 14px; background:var(--bg1); min-height:64px; }
 #sp-prompt #sp-task { flex:1; min-height:160px; resize:none; }
 #sp-go { color:var(--bg0); font-size:15px; font-weight:700; }
+#sp-attach-row { display:flex; gap:10px; padding-top:6px; overflow-x:auto; -webkit-overflow-scrolling:touch; flex-shrink:0; }
+#sp-attach-row[hidden] { display:none; }
+#sp-attach .sp-attach-plus { width:20px; text-align:center; color:var(--orange); font-size:22px; line-height:1; }
 #sp-go[aria-busy=true] { animation:sp-pulse 1s ease-in-out infinite alternate; }
 @media(prefers-reduced-motion:reduce) { #sp-go[aria-busy=true] { animation:none; } #sp-customize img, #sp-name-toggle img { transition:none; } }
 #sp-next { width:100%; height:52px; border:1px solid var(--bg2); border-radius:12px; background:var(--bg1); color:var(--fg); font-size:15px; }
@@ -1976,6 +1980,9 @@ input, textarea, #fbv-content, .msg, .msg * {
     <div id="sp-prompt" hidden>
       <button id="sp-summary" class="sp-row" aria-label="Change agent and settings"></button>
       <textarea id="sp-task" aria-label="First message" placeholder="What are we working on?"></textarea>
+      <div id="sp-attach-row" hidden></div>
+      <button id="sp-attach" class="sp-row" aria-label="Attach photos"></button>
+      <input type="file" id="sp-attach-input" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden>
       <button id="sp-name-toggle" class="sp-row" aria-expanded="false" aria-controls="sp-name"></button>
       <input id="sp-name" aria-label="Chat name" placeholder="e.g. New chat redesign" autocapitalize="off" hidden>
     </div>
@@ -4714,7 +4721,8 @@ function flushReplay() {
         replayBusy = false; remoteTurnOpen = false;
         break;
       case 'available_commands_update':
-        replayBusy = false; // command list changed; not a turn boundary, the flag stays
+        // Command list changed. Not a turn boundary: the agent publishes it
+        // whenever it likes, often just after a new chat's first prompt.
         if (sessionId) sendBtn.disabled = false;
         break;
       case 'current_mode_update':
@@ -4962,12 +4970,10 @@ function handleMessage(msg) {
         break;
 
       case 'available_commands_update':
+        // Command list changed. Not a turn boundary: the agent publishes it
+        // whenever it likes, often just after a new chat's first prompt, so
+        // it neither ends the busy state nor releases queued messages.
         if (sessionId) sendBtn.disabled = false;
-        // Command list changed. Not a turn boundary: the visible state
-        // resets as before, but an open turn stays open so the next
-        // chunk shows busy again.
-        setProcessing(false);
-        flushMessageQueue();
         break;
 
       case 'current_mode_update':
@@ -5124,23 +5130,28 @@ async function loadImageFromFile(file) {
   });
 }
 
+// Canvas re-encode to a capped JPEG; shared by the composer and New chat.
+async function encodeAttachment(file) {
+  const { img, url, w, h } = await loadImageFromFile(file);
+  const MAX = 1568; // Claude vision sweet spot; bigger just burns tokens
+  const scale = Math.min(1, MAX / Math.max(w, h));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(w * scale);
+  canvas.height = Math.round(h * scale);
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  if (url) URL.revokeObjectURL(url);
+  if (img.close) img.close();
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+  return {
+    data: dataUrl.slice(dataUrl.indexOf(',') + 1),
+    mimeType: 'image/jpeg',
+    thumb: dataUrl
+  };
+}
+
 async function addAttachment(file) {
   try {
-    const { img, url, w, h } = await loadImageFromFile(file);
-    const MAX = 1568; // Claude vision sweet spot; bigger just burns tokens
-    const scale = Math.min(1, MAX / Math.max(w, h));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(w * scale);
-    canvas.height = Math.round(h * scale);
-    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-    if (url) URL.revokeObjectURL(url);
-    if (img.close) img.close();
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-    pendingImages.push({
-      data: dataUrl.slice(dataUrl.indexOf(',') + 1),
-      mimeType: 'image/jpeg',
-      thumb: dataUrl
-    });
+    pendingImages.push(await encodeAttachment(file));
     renderAttachRow();
   } catch (err) {
     addSystemMsg('Could not read image: ' + err.message);
@@ -5217,9 +5228,9 @@ function sendPrompt() {
   sendPromptText(text, refs);
 }
 
-function sendPromptText(text, refs) {
+function sendPromptText(text, refs, images = null) {
   currentAgentMsg = null;
-  const imgs = pendingImages.splice(0);
+  const imgs = images === null ? pendingImages.splice(0) : images;
   renderAttachRow();
   const payloadText = formatReferencedPrompt(text, refs || []);
   lastSentMsg = addUserMsg(formatReferencedPrompt(text, refs || []), 'sending', imgs);
@@ -5883,8 +5894,12 @@ let spView = 'home', spBusy = false, spReturnFocus = null, spPickerOrigin = null
 const spInertSiblings = new Map();
 // An accepted launch must never be posted again just because its socket is late.
 let spRecoveryBuffer = typeof spStoredDraft.pendingBuffer === 'string' ? spStoredDraft.pendingBuffer : '';
-let spRecoveryKeepsTask = spStoredDraft.pendingKeepsTask === true;
-function persistSpawnDraft() { spWrite('draft', {...spDraft, pendingBuffer:spRecoveryBuffer, pendingKeepsTask:spRecoveryKeepsTask}); }
+let spRecoveryKeepsTask = spStoredDraft.pendingKeepsTask === true || spStoredDraft.pendingPhotoPrompt === true;
+// Photos for the first message. The rig's spawn bridge carries text only, so
+// a launch with photos sends its first message over the chat socket instead.
+// Memory only: base64 photos would overflow localStorage.
+let spImages = [], spImagesLoading = 0, spFirstPrompt = null; // spFirstPrompt: {bufferName, text, images, timer}
+function persistSpawnDraft() { spWrite('draft', {...spDraft, pendingBuffer:spRecoveryBuffer, pendingKeepsTask:spRecoveryKeepsTask, pendingPhotoPrompt:!!spFirstPrompt}); }
 function spIcon(name) { const img = document.createElement('img'); img.src = basePath + '/assets/new-chat/' + name + '.svg'; img.alt = ''; img.width = 20; img.height = 20; return img; }
 function spButtonIcon(el, icon) { el.replaceChildren(spIcon(icon)); }
 for (const [id, icon] of Object.entries({close:'close',back:'back',release:'reset','picker-action':'confirm'})) spButtonIcon(spEl(id), icon);
@@ -6008,6 +6023,22 @@ function renderSpawnPrompt() {
   spRowContent(spEl('name-toggle'),'Chat name','optional','chevron');
   spEl('name-toggle').setAttribute('aria-expanded',String(open)); spEl('name-toggle').disabled=locked;
   spName.hidden=!open; spName.disabled=locked;
+  renderSpawnAttachments(locked);
+}
+function renderSpawnAttachments(locked) {
+  const row=spEl('attach-row'); row.replaceChildren(); row.hidden=!spImages.length;
+  spImages.forEach((img,i)=>{
+    const chip=document.createElement('div'); chip.className='attach-chip';
+    const im=document.createElement('img'); im.src=img.thumb; im.alt='Attached photo '+(i+1);
+    const x=document.createElement('button'); x.type='button'; x.className='chip-x'; x.textContent='\u00d7';
+    x.setAttribute('aria-label','Remove photo '+(i+1)); x.disabled=locked;
+    x.addEventListener('click',()=>{if(spBusy || spRecoveryBuffer)return;spImages.splice(i,1);renderSpawnStep();});
+    chip.append(im,x); row.appendChild(chip);
+  });
+  const attach=spEl('attach');
+  spRowContent(attach,'Attach photos',spImages.length ? spImages.length+' attached' : 'optional',null);
+  const plus=document.createElement('span'); plus.className='sp-attach-plus'; plus.setAttribute('aria-hidden','true'); plus.textContent='+';
+  attach.prepend(plus); attach.disabled=locked || spImagesLoading > 0;
 }
 function renderSpawnStep() {
   const locked=spBusy || !!spRecoveryBuffer;
@@ -6015,7 +6046,7 @@ function renderSpawnStep() {
   if (spView === 'preset') renderSpawnPresetStep();
   if (spView === 'prompt') renderSpawnPrompt();
   spEl('next').disabled=locked || (spView === 'preset' && !spComplete());
-  spGo.disabled=spBusy || (!spRecoveryBuffer && (!spDraft.cwd || !spComplete()));
+  spGo.disabled=spBusy || spImagesLoading > 0 || (!spRecoveryBuffer && (!spDraft.cwd || !spComplete()));
   spEl('release').hidden=!spRecoveryBuffer; spEl('release').disabled=spBusy;
   // Back cannot leave Prompt while a created chat is pending, so offer close.
   const back=!locked && spBackOf(spView);
@@ -6174,10 +6205,41 @@ spEl('customize').addEventListener('click',()=>{spCustomizeOpen=!spCustomizeOpen
 spEl('summary').addEventListener('click',()=>openSpawnView('preset'));
 spEl('name-toggle').addEventListener('click',()=>{spNameOpen=!(spNameOpen || !!spDraft.name);renderSpawnStep();if(spNameOpen)spName.focus({preventScroll:true});});
 spEl('next').addEventListener('click',()=>{if(spEl('next').disabled)return;openSpawnView(spView === 'home' ? 'project' : 'prompt');});
-spEl('release').addEventListener('click',()=>{if(spBusy)return;spRecoveryBuffer='';spRecoveryKeepsTask=false;persistSpawnDraft();spMessage('Draft restored. The previously created chat may still be in your chat list.');renderSpawnStep();});
+spEl('release').addEventListener('click',()=>{if(spBusy)return;spRecoveryBuffer='';spRecoveryKeepsTask=false;spFirstPrompt=null;persistSpawnDraft();spMessage('Draft restored. The previously created chat may still be in your chat list.');renderSpawnStep();});
 spEl('search').addEventListener('input',renderSpawnPicker);
 spTask.addEventListener('input',()=>{spDraft.task=spTask.value;persistSpawnDraft();});
 spName.addEventListener('input',()=>{spDraft.name=spName.value;persistSpawnDraft();});
+spEl('attach').addEventListener('click',()=>{if(!spBusy && !spRecoveryBuffer)spEl('attach-input').click();});
+spEl('attach-input').addEventListener('change',async e=>{
+  if(spBusy || spRecoveryBuffer)return;
+  const files=[...e.target.files];spImagesLoading++;renderSpawnStep();
+  try {
+    for(const f of files) {
+      try { spImages.push(await encodeAttachment(f)); } catch(err) { spMessage('Could not read image: '+err.message); }
+    }
+  } finally {
+    spImagesLoading--;e.target.value='';renderSpawnStep();
+  }
+});
+// Keep the draft and exact recovery target until its first message is sent.
+// A timeout or navigation away leaves New chat available for an explicit retry.
+function spDeliverFirstPrompt() {
+  const first=spFirstPrompt; if(!first || !first.bufferName)return;
+  clearTimeout(first.timer);
+  const deadline=Date.now()+60000;
+  const here=()=>currentBufferName === first.bufferName;
+  (function tick() {
+    if(spFirstPrompt !== first)return;
+    if(here() && sessionId && !replayMode && !processing && ws && ws.readyState === WebSocket.OPEN) {
+      try { sendPromptText(first.text,[],first.images); }
+      catch(err) { showToast('First message not sent; reopen New chat to retry');return; }
+      spFirstPrompt=null;spImages=[];spDraft.task='';spDraft.step='';spRecoveryBuffer='';spRecoveryKeepsTask=false;
+      persistSpawnDraft();renderSpawnStep();return;
+    }
+    if(Date.now() < deadline){first.timer=setTimeout(tick,250);return;}
+    showToast('First message not sent; reopen New chat to retry');
+  })();
+}
 spEl('picker-action').addEventListener('click',()=>{
   if(spView==='project'){openSpawnView('path');return;}
   if(spView==='path') { const path=spDir.value.trim();if(!path || !(path.startsWith('/') || path.startsWith('~/'))){spMessage('Enter an absolute path or a path starting with ~/.');spDir.focus();return;}spMessage('');pickSpawnProject(path);return; }
@@ -6198,19 +6260,42 @@ async function spawnAndOpen(body) {
   const resp=await fetch(basePath+'/api/spawn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const data=await resp.json();
   if(data.error || resp.ok===false) { const err=new Error(data.error || 'Launch failed');err.bufferName=data.bufferName;throw err; }
-  if(body.settings) { if(!data.bufferName)throw new Error('Launch returned no chat identifier. Check the chat list before retrying.');spRecoveryBuffer=data.bufferName;persistSpawnDraft(); }
+  if(body.settings) { if(!data.bufferName)throw new Error('Launch returned no chat identifier. Check the chat list before retrying.');spRecoveryBuffer=data.bufferName;if(spFirstPrompt && !spFirstPrompt.bufferName)spFirstPrompt.bufferName=data.bufferName;persistSpawnDraft(); }
   return waitForSpawn(data.bufferName,prevKeys);
 }
-spGo.addEventListener('click',async()=>{
-  if(spBusy || spGo.disabled)return;
+async function spStart() {
+  if(spBusy || spImagesLoading || spGo.disabled)return;
   spBusy=true;renderSpawnStep();spMessage(spRecoveryBuffer?'Finding your chat…':'Starting chat…');
+  if(!spRecoveryBuffer)spFirstPrompt=spImages.length ? {bufferName:'',text:spDraft.task,images:spImages.slice()} : null;
   try {
-    const opened=spRecoveryBuffer ? await waitForSpawn(spRecoveryBuffer) : await spawnAndOpen({cwd:spDraft.cwd,name:spDraft.name.trim(),task:spDraft.task,settings:{...spDraft.settings}});
-    if(opened) { spRecent=[spDraft.cwd,...spRecent.filter(p=>p!==spDraft.cwd)].slice(0,12);spWrite('recent',spRecent);spRecordCombo({cwd:spDraft.cwd,preset:spDraft.preset,settings:spDraft.settings});spDraft.step='';spRecoveryBuffer='';if(!spRecoveryKeepsTask)spDraft.task='';spRecoveryKeepsTask=false;spDraft.name='';spBusy=false;spMessage('');persistSpawnDraft();hideSpawnSheet(); }
+    const opened=spRecoveryBuffer ? await waitForSpawn(spRecoveryBuffer) : await spawnAndOpen({cwd:spDraft.cwd,name:spDraft.name.trim(),task:spFirstPrompt ? '' : spDraft.task,settings:{...spDraft.settings}});
+    if(opened) {
+      spRecent=[spDraft.cwd,...spRecent.filter(p=>p!==spDraft.cwd)].slice(0,12);spWrite('recent',spRecent);
+      spRecordCombo({cwd:spDraft.cwd,preset:spDraft.preset,settings:spDraft.settings});
+      if(spRecoveryKeepsTask)spFirstPrompt=null; // Failed settings must never submit the held message.
+      if(!spFirstPrompt) {
+        spDraft.step=spRecoveryKeepsTask ? 'prompt' : '';spRecoveryBuffer='';
+        if(!spRecoveryKeepsTask){spDraft.task='';spImages=[];}
+        spRecoveryKeepsTask=false;
+      }
+      spDraft.name='';spBusy=false;spMessage('');persistSpawnDraft();hideSpawnSheet();spDeliverFirstPrompt();
+    }
     else spMessage('Chat created; waiting for it to appear. Use the arrow to check again without creating another.');
-  } catch(err) { if(err.bufferName){spRecoveryBuffer=err.bufferName;spRecoveryKeepsTask=true;}persistSpawnDraft();spMessage(err.message+(spRecoveryBuffer?' The chat exists; use the arrow to open it. Your first message is still in this draft.':'')); }
+  } catch(err) { if(err.bufferName){spRecoveryBuffer=err.bufferName;spRecoveryKeepsTask=true;if(spFirstPrompt && !spFirstPrompt.bufferName)spFirstPrompt.bufferName=err.bufferName;}else spFirstPrompt=null;persistSpawnDraft();spMessage(err.message+(spRecoveryBuffer?' The chat exists; use the arrow to open it. Your first message is still in this draft.':'')); }
   finally {spBusy=false;renderSpawnStep();}
+}
+// iOS: with the keyboard up, the first tap on Start only dismissed the
+// keyboard; the footer moved before the click landed. Start on the touch
+// pointerdown instead, then drop the keyboard ourselves. Mouse and keyboard
+// activation still go through click.
+let spGoSuppressClickUntil=0;
+spGo.addEventListener('pointerdown',e=>{
+  if(e.pointerType !== 'touch' || spGo.disabled || spBusy)return;
+  e.preventDefault(); spGoSuppressClickUntil=Date.now()+600;
+  if(spSheet.contains(document.activeElement))document.activeElement.blur();
+  spStart();
 });
+spGo.addEventListener('click',()=>{if(Date.now() >= spGoSuppressClickUntil)spStart();});
 
 // Clone: a fresh convo with this chat's agent, model, permission mode
 // and directory, no history (the rig's SPC c n). The rig resolves the

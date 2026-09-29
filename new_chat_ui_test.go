@@ -63,6 +63,94 @@ func newChatTestPage(t *testing.T) *chromePage {
 	return page
 }
 
+func TestNewChatStartWaitsForPhotoDecoding(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1`)
+	state := page.evalObject(t, `(async()=>{
+  applySpawnPreset('s');openSpawnView('prompt');
+  const original=encodeAttachment;let release;
+  encodeAttachment=async f=>{await new Promise(r=>release=r);return original(f);};
+  const canvas=document.createElement('canvas');canvas.width=canvas.height=4;
+  const blob=await new Promise(r=>canvas.toBlob(r,'image/png'));
+  const dt=new DataTransfer();dt.items.add(new File([blob],'photo.png',{type:'image/png'}));
+  spEl('attach-input').files=dt.files;spEl('attach-input').dispatchEvent(new Event('change'));
+  const blocked=spGo.disabled;release();
+  for(let i=0;i<100&&!spImages.length;i++)await new Promise(r=>setTimeout(r,10));
+  return {blocked,ready:!spGo.disabled,images:spImages.length};
+ })()`)
+	if state["blocked"] != true || state["ready"] != true || state["images"] != float64(1) {
+		t.Fatalf("Start must wait for photo decoding: %#v", state)
+	}
+}
+
+func TestNewChatPhotoDeliveryTimeoutKeepsRecoverableDraft(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1`)
+	state := page.evalObject(t, `(async()=>{
+  applySpawnPreset('s');openSpawnView('prompt');
+  spDraft.task='Keep my photo';spImages=[{data:'photo',mimeType:'image/jpeg',thumb:''}];
+  SPAWN_POLL_MS=1;selectSession=s=>{currentBufferName=s.bufferName;sessionId=null;};
+  await spStart();
+  currentBufferName='another chat';
+  const now=Date.now;Date.now=()=>now()+61000;
+  await new Promise(r=>setTimeout(r,300));Date.now=now;
+  const stored=JSON.parse(localStorage.getItem('syzygy.launch.draft'));
+  openSpawnSheet();
+  return {task:spDraft.task,images:spImages.length,pending:spRecoveryBuffer,
+    storedTask:stored.task,view:spView,canChangeSettings:!spEl('summary').disabled};
+ })()`)
+	if state["task"] != "Keep my photo" || state["storedTask"] != "Keep my photo" || state["images"] != float64(1) || state["pending"] != "intended chat" || state["view"] != "prompt" || state["canChangeSettings"] != false {
+		t.Fatalf("a delayed photo launch must remain recoverable after leaving the chat: %#v", state)
+	}
+}
+
+func TestNewChatPhotoRecoveryDoesNotSendAfterSettingsFailure(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1`)
+	state := page.evalObject(t, `(async()=>{
+  applySpawnPreset('s');openSpawnView('prompt');spDraft.task='Do not send';
+  spImages=[{data:'photo',mimeType:'image/jpeg',thumb:''}];
+  const original=fetch;window.fetch=async(url,opts)=>{
+    if(url.endsWith('/api/spawn'))return {ok:false,json:async()=>({error:'Permissions rejected',bufferName:'intended chat'})};
+    if(url.endsWith('/api/sessions'))return {ok:true,json:async()=>({sessions:[{pid:2,sessionId:'intended',bufferName:'intended chat'}]})};
+    return original(url,opts);
+  };
+  SPAWN_POLL_MS=1;const sent=[];
+  selectSession=s=>{currentBufferName=s.bufferName;sessionId=s.sessionId;replayMode=false;processing=false;ws={readyState:1,send:raw=>sent.push(raw)};};
+  await spStart();await spStart();
+  return {sent:sent.length,task:spDraft.task,images:spImages.length};
+ })()`)
+	if state["sent"] != float64(0) || state["task"] != "Do not send" || state["images"] != float64(1) {
+		t.Fatalf("opening a partially configured chat must not submit the photo prompt: %#v", state)
+	}
+}
+
+func TestNewChatPhotoReloadKeepsTextForReview(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1`)
+	page.eval(t, `(async()=>{
+  applySpawnPreset('s');openSpawnView('prompt');spDraft.task='Text survives reload';
+  spImages=[{data:'photo',mimeType:'image/jpeg',thumb:''}];
+  SPAWN_POLL_MS=1;selectSession=s=>{currentBufferName=s.bufferName;sessionId=null;};
+  await spStart();return true;
+ })()`)
+	page.call(t, "Page.reload", map[string]interface{}{})
+	page.waitFor(t, `typeof openSpawnSheet === 'function'`)
+	page.eval(t, `openSpawnSheet()`)
+	page.waitFor(t, `spCatalog.agents.length === 3`)
+	state := page.evalObject(t, `(async()=>{
+  const before={task:spDraft.task,pending:spRecoveryBuffer,images:spImages.length};
+  const sent=[];SPAWN_POLL_MS=1;
+  selectSession=s=>{currentBufferName=s.bufferName;sessionId=s.sessionId;replayMode=false;processing=false;ws={readyState:1,send:raw=>sent.push(raw)};};
+  await spStart();
+  return {before,task:spDraft.task,sent:sent.length,stored:JSON.parse(localStorage.getItem('syzygy.launch.draft')).task};
+ })()`)
+	before := state["before"].(map[string]interface{})
+	if before["pending"] != "intended chat" || before["task"] != "Text survives reload" || before["images"] != float64(0) || state["sent"] != float64(0) || state["task"] != "Text survives reload" || state["stored"] != "Text survives reload" {
+		t.Fatalf("reload must retain text for review without sending an incomplete message: %#v", state)
+	}
+}
+
 func TestNewChatSearchCannotBecomePathAndDraftSurvives(t *testing.T) {
 	page := newChatTestPage(t)
 	page.waitFor(t, `spCatalog.agents.length === 3`)
@@ -140,6 +228,8 @@ func TestNewChatVisualReview(t *testing.T) {
 		page.eval(t, fmt.Sprintf(`openSpawnView(%q)`, view))
 		saveUIShot(t, page, "new-chat-"+view)
 	}
+	page.eval(t, `(()=>{const c=document.createElement('canvas');c.width=c.height=64;const x=c.getContext('2d');x.fillStyle='#d79921';x.fillRect(0,0,64,64);const u=c.toDataURL('image/jpeg');spImages=[{data:'',mimeType:'image/jpeg',thumb:u},{data:'',mimeType:'image/jpeg',thumb:u}];openSpawnView('prompt');})()`)
+	saveUIShot(t, page, "new-chat-prompt-photos")
 }
 
 func TestNewChatMissingRecoveryCanReturnToDraft(t *testing.T) {
@@ -481,5 +571,63 @@ func TestNewChatComboMatchingPresetButMissingFromCatalog(t *testing.T) {
  })()`)
 	if state["view"] != "prompt" || state["go"] != true || !strings.Contains(state["summary"].(string), "Codex / Custom") || strings.Contains(state["summary"].(string), "Ghost") {
 		t.Fatalf("a preset whose ids left the catalog reads Custom: %#v", state)
+	}
+}
+
+// Photos cannot ride the rig's text-only spawn bridge: the launch goes out
+// without the task, and text plus photos arrive as the new chat's first
+// prompt once it is connected. A touch on Start launches and drops the
+// keyboard in the same tap.
+func TestNewChatPhotosSendAsFirstPromptAndTouchStartLaunches(t *testing.T) {
+	page := newChatTestPage(t)
+	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1`)
+	state := page.evalObject(t, `(async()=>{
+  openSpawnView('preset');document.querySelector('#sp-preset-list .sp-row').click();
+  spTask.value='Look at this';spTask.dispatchEvent(new Event('input'));
+  const canvas=document.createElement('canvas');canvas.width=4;canvas.height=4;
+  const blob=await new Promise(r=>canvas.toBlob(r,'image/png'));
+  const dt=new DataTransfer();dt.items.add(new File([blob],'shot.png',{type:'image/png'}));
+  const input=spEl('attach-input');input.files=dt.files;input.dispatchEvent(new Event('change'));
+  for(let i=0;i<100&&!spImages.length;i++)await new Promise(r=>setTimeout(r,10));
+  const attached={chips:document.querySelectorAll('#sp-attach-row .attach-chip').length,row:!spEl('attach-row').hidden,label:spEl('attach').textContent};
+  pendingImages=[{data:'other-chat-photo',mimeType:'image/png',thumb:''}];
+  window.__spawn=null;window.__spawnCount=0;const orig=fetch;window.fetch=async(url,opts)=>{if(url.endsWith('/api/spawn')){window.__spawn=JSON.parse(opts.body);window.__spawnCount++;}return orig(url,opts)};
+  window.__ws=[];
+  SPAWN_POLL_MS=5;selectSession=s=>{currentBufferName=s.bufferName;replayMode=true;
+    setTimeout(()=>{sessionId='intended';replayMode=false;ws={readyState:WebSocket.OPEN,send:m=>window.__ws.push(JSON.parse(m))};},50);};
+  spTask.focus();
+  const focused=document.activeElement===spTask;
+  const down=new PointerEvent('pointerdown',{pointerType:'touch',bubbles:true,cancelable:true});
+  spGo.dispatchEvent(down);
+  const keyboardDown=document.activeElement!==spTask;
+  spGo.click(); // the synthetic click after a touch must not launch twice
+  for(let i=0;i<200&&!window.__ws.length;i++)await new Promise(r=>setTimeout(r,10));
+  const prompt=window.__ws.find(m=>m.method==='session/prompt');
+  return {attached,focused,keyboardDown,prevented:down.defaultPrevented,spawn:window.__spawn,spawnCount:window.__spawnCount,
+    blocks:prompt ? prompt.params.prompt.map(b=>b.type+':'+(b.text||b.mimeType)) : null,
+    unrelatedPhotos:pendingImages.map(i=>i.data),
+    left:{images:spImages.length,task:spDraft.task,pending:spFirstPrompt,open:spSheet.classList.contains('visible')}};
+ })()`)
+	attached := state["attached"].(map[string]interface{})
+	if attached["chips"] != float64(1) || attached["row"] != true || !strings.Contains(attached["label"].(string), "1 attached") {
+		t.Fatalf("photo shows in the Prompt step: %#v", attached)
+	}
+	if state["focused"] != true || state["keyboardDown"] != true || state["prevented"] != true {
+		t.Fatalf("touch Start drops the keyboard itself: %#v", state)
+	}
+	spawn := state["spawn"].(map[string]interface{})
+	if spawn["task"] != "" || spawn["cwd"] != "/src/acp-mobile" {
+		t.Fatalf("spawn carries no task when photos go separately: %#v", spawn)
+	}
+	blocks := fmt.Sprint(state["blocks"])
+	if blocks != "[image:image/jpeg text:Look at this]" {
+		t.Fatalf("first prompt blocks: %s", blocks)
+	}
+	if fmt.Sprint(state["unrelatedPhotos"]) != "[other-chat-photo]" || state["spawnCount"] != float64(1) {
+		t.Fatalf("launch must happen once and must not consume another composer's photos: %#v", state)
+	}
+	left := state["left"].(map[string]interface{})
+	if left["images"] != float64(0) || left["task"] != "" || left["pending"] != nil || left["open"] != false {
+		t.Fatalf("draft cleared after delivery: %#v", left)
 	}
 }

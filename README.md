@@ -30,6 +30,21 @@ and may omit a final newline at a block boundary. Rich-text copying is not
 provided. Whitespace already stripped from older sent messages cannot be
 recovered.
 
+History transcripts support native text selection and copying inside user
+and agent messages, including highlighted search matches and rendered Markdown.
+
+## New chat
+
+New chat opens a Home, Project, Agent, Prompt stepper. Home remembers pinned
+and recent launch combinations; reopening an unfinished draft resumes its step.
+On Prompt, use `Attach photos` to add or remove images before starting. A
+single touch on `Start` dismisses the keyboard and launches the chat.
+Photos are sent with the first message once the new chat connects. Photos
+are held in page memory, so reloading before delivery loses the attachments
+but preserves the text draft. If delivery times out, reopen New chat and use
+`Open chat` to retry the existing chat. Failed launch settings leave the
+message unsent for review.
+
 ## Diff review
 
 A read-only diff reader with two scopes, opened from inside a chat. It
