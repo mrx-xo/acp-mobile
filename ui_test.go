@@ -2201,11 +2201,11 @@ func TestToolbarCloneSpawnsFromCurrentBufferAndOpensIt(t *testing.T) {
 		window.fetch = async (url, opts) => {
 			if (!url.endsWith('/api/spawn')) return realFetch(url, opts);
 			window.__posts.push({url, body: JSON.parse(opts.body)});
-			return {json: async () => ({ok: true})};
+			return {json: async () => ({ok: true, bufferName: 'exact clone'})};
 		};
 		let loads = 0;
 		loadSessions = async () => {
-			if (++loads >= 2) lastSessions = [{pid: 1, sessionId: 'old', cwd: '/p'}, {pid: 2, sessionId: 'fresh', cwd: '/p'}];
+			if (++loads >= 2) lastSessions = [{pid: 1, sessionId: 'old', cwd: '/p'}, {pid: 3, sessionId: 'concurrent', bufferName: 'other chat', cwd: '/p'}, {pid: 2, sessionId: 'fresh', bufferName: 'exact clone', cwd: '/p'}];
 		};
 		window.__selected = null;
 		selectSession = (s) => { window.__selected = s.sessionId; };

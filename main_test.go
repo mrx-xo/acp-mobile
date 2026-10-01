@@ -1756,9 +1756,6 @@ func TestHandleSpawnAcceptsCloneOfWithoutCwd(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("cloneOf without cwd: status = %d, want 500 (bridge missing), body %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "agent-shell-spawn") {
-		t.Fatalf("error should name the bridge, got %s", w.Body.String())
-	}
 }
 
 // The History list is decoded into transcriptInfo before it reaches the

@@ -917,17 +917,7 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 		handleExplicitLaunch(w, r, req)
 		return
 	}
-	out, err := evalEmacs("agent-shell-spawn", spawnArgs(req)...)
-	if err != nil {
-		log.Printf("spawn: %v: %s", err, out)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("%v: %s", err, strings.TrimSpace(string(out)))})
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	handleLaunchBridge(w, r, req, "syzygy-launch-legacy-json")
 }
 
 // handlePreview returns the tail of a session's conversation — the

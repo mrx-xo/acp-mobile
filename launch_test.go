@@ -79,3 +79,23 @@ func TestLaunchOptionsMethodsAndShape(t *testing.T) {
 		t.Fatalf("GET: %d", rec.Code)
 	}
 }
+
+func TestLegacyLaunchReturnsExactBufferIncludingPartialFailure(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		reply := `{"ok":true,"bufferName":"exact new chat"}`
+		status := http.StatusOK
+		if partial {
+			reply = `{"ok":false,"error":"Model rejected","bufferName":"exact new chat"}`
+			status = http.StatusConflict
+		}
+		argsFile := installFakeEmacsclient(t, elispB64Output(reply))
+		rec := postJSON(t, handleSpawn, `{"cloneOf":"source chat"}`)
+		if rec.Code != status || !strings.Contains(rec.Body.String(), `"bufferName":"exact new chat"`) {
+			t.Fatalf("partial=%v: %d %s", partial, rec.Code, rec.Body.String())
+		}
+		args, _ := os.ReadFile(argsFile)
+		if !strings.Contains(string(args), "syzygy-launch-legacy-json") {
+			t.Fatalf("wrong bridge: %s", args)
+		}
+	}
+}

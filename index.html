@@ -2042,7 +2042,7 @@ const CANONICAL_MODEL_NAMES = {
   'claude-fable-5-1[1m]': 'Fable 5.1',
   'claude-fable-5[1m]': 'Fable 5',
   'opus[1m]': 'Opus 5.5',
-  sonnet: 'Sonnet 5',
+  sonnet: 'Sonnet 5.5',
   haiku: 'Haiku 4.5',
   'gpt-6-astra': 'Astra 6',
   'gpt-6-sol': 'Sol 6',
@@ -6260,6 +6260,7 @@ async function spawnAndOpen(body) {
   const resp=await fetch(basePath+'/api/spawn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const data=await resp.json();
   if(data.error || resp.ok===false) { const err=new Error(data.error || 'Launch failed');err.bufferName=data.bufferName;throw err; }
+  if(body.cloneOf) { if(!data.bufferName)throw new Error('Launch returned no chat identifier. Check the chat list before retrying.');cloneRecoveryBuffer=data.bufferName; }
   if(body.settings) { if(!data.bufferName)throw new Error('Launch returned no chat identifier. Check the chat list before retrying.');spRecoveryBuffer=data.bufferName;if(spFirstPrompt && !spFirstPrompt.bufferName)spFirstPrompt.bufferName=data.bufferName;persistSpawnDraft(); }
   return waitForSpawn(data.bufferName,prevKeys);
 }
@@ -6300,19 +6301,27 @@ spGo.addEventListener('click',()=>{if(Date.now() >= spGoSuppressClickUntil)spSta
 // Clone: a fresh convo with this chat's agent, model, permission mode
 // and directory, no history (the rig's SPC c n). The rig resolves the
 // buffer name; nothing else about the session needs to travel.
+let cloneRecoveryBuffer = '';
 async function cloneSession() {
   if (!currentBufferName) {
     alert('No buffer name available for this session');
     return;
   }
   const btn = document.getElementById('tb-clone');
+  if (btn.disabled) return;
   btn.disabled = true; setToolLabel(btn, 'Cloning\u2026');
   try {
-    await spawnAndOpen({ cloneOf: currentBufferName });
+    const opened = cloneRecoveryBuffer ? await waitForSpawn(cloneRecoveryBuffer) : await spawnAndOpen({ cloneOf: currentBufferName });
+    if (opened) cloneRecoveryBuffer = '';
+    else alert('Clone created; still waiting for it to appear. Use Open clone to check again without creating another.');
   } catch (err) {
-    alert('Clone failed: ' + err.message);
+    if (err.bufferName) {
+      cloneRecoveryBuffer = err.bufferName;
+      if (await waitForSpawn(cloneRecoveryBuffer).catch(() => false)) cloneRecoveryBuffer = '';
+      alert('Clone created, but settings failed: ' + err.message);
+    } else alert('Clone failed: ' + err.message);
   } finally {
-    btn.disabled = false; setToolLabel(btn, 'Clone');
+    btn.disabled = false; setToolLabel(btn, cloneRecoveryBuffer ? 'Open clone' : 'Clone');
   }
 }
 

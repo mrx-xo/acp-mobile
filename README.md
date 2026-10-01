@@ -45,6 +45,20 @@ but preserves the text draft. If delivery times out, reopen New chat and use
 `Open chat` to retry the existing chat. Failed launch settings leave the
 message unsent for review.
 
+Explicit settings, preset/default launches and clones all return the exact
+created buffer, including when model, permissions or effort confirmation
+fails. Clone opens that existing chat after a settings error; if discovery
+is delayed, `Open clone` retries discovery without creating a second chat.
+This recovery target stays in page memory. New chat's draft recovery is
+persisted separately and is not overwritten by cloning.
+
+Launch-fix verification (2026-10-01): the full Go/browser suite has two
+unchanged baseline failures with the local headless Brave screen dimensions:
+`TestStandaloneViewportRestoreAfterKeyboardDismiss` and
+`TestStandaloneViewportNudgeOnPageshow` expect `874px` but observe `1440px`.
+Both reproduce on the previous commit. Launch, clone and draft-recovery
+checks pass; these viewport fixtures remain a separate test-harness issue.
+
 ## Diff review
 
 A read-only diff reader with two scopes, opened from inside a chat. It

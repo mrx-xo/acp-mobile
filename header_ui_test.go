@@ -165,7 +165,7 @@ func TestHeaderCanonicalVocabulary(t *testing.T) {
 		const modes = ['bypassPermissions','agent-full-access','bypass','acceptEdits','agent','auto','read-only','default','build','plan'].map(modeShortName);
 		return {models:models.join('|'), modes:modes.join('|')};
 	})()`)
-	if got["models"] != "Fable 5.1|Opus 5.5|Sonnet 5|Opus 5.5|DeepSeek Chat|Astra 6|Sol 5.6|Luna 5.6|GLM 5.3 Flash" {
+	if got["models"] != "Fable 5.1|Opus 5.5|Sonnet 5.5|Opus 5.5|DeepSeek Chat|Astra 6|Sol 5.6|Luna 5.6|GLM 5.3 Flash" {
 		t.Fatalf("canonical models = %v", got)
 	}
 	if got["modes"] != "full|full|full|accept edits|auto|auto|ask|manual|build|plan" {

@@ -44,12 +44,18 @@ func handleExplicitLaunch(w http.ResponseWriter, r *http.Request, req spawnReque
 		http.Error(w, "Invalid launch settings", 400)
 		return
 	}
+	handleLaunchBridge(w, r, req, "syzygy-launch-json")
+}
+
+// Both explicit settings and legacy preset/clone launches return the exact
+// created buffer, including on a partial failure after creation.
+func handleLaunchBridge(w http.ResponseWriter, r *http.Request, req spawnRequest, bridge string) {
 	encoded, err := json.Marshal(req)
 	if err != nil {
 		http.Error(w, "Invalid launch request", 400)
 		return
 	}
-	raw, err := callElispJSON(r.Context(), "syzygy-launch-json", elispB64(string(encoded)))
+	raw, err := callElispJSON(r.Context(), bridge, elispB64(string(encoded)))
 	if writeElispError(w, "launch", err, "Agent launch is unavailable") {
 		return
 	}

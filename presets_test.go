@@ -104,13 +104,13 @@ func TestPresetsHandlerRejectsGet(t *testing.T) {
 }
 
 func TestSpawnAcceptsUppercasePresetKeys(t *testing.T) {
-	argsFile := installFakeSpawnScript(t)
+	argsFile := installFakeEmacsclient(t, elispB64Output(`{"ok":true,"bufferName":"new chat"}`))
 	rec := postJSON(t, handleSpawn, `{"cwd":"/tmp/x","preset":"F"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
 	args, _ := os.ReadFile(argsFile)
-	if string(args) != "\n/tmp/x\n\nF\n" {
+	if !strings.Contains(string(args), elispExpr("syzygy-launch-legacy-json", elispB64(`{"cwd":"/tmp/x","name":"","task":"","preset":"F","cloneOf":""}`))) {
 		t.Fatalf("spawn args = %q", args)
 	}
 	for _, bad := range []string{"ff", "1", "-", "é"} {

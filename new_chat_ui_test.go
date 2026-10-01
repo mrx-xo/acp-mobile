@@ -63,6 +63,24 @@ func newChatTestPage(t *testing.T) *chromePage {
 	return page
 }
 
+func TestCloneSettingsFailureRetainsExactChatForRetry(t *testing.T) {
+	page := newChatTestPage(t)
+	state := page.evalObject(t, `(async()=>{
+  currentBufferName='source';let posts=0;const targets=[],alerts=[];
+  window.alert=msg=>alerts.push(msg);
+  const original=fetch;window.fetch=async(url,opts)=>{
+    if(url.endsWith('/api/spawn')){posts++;return {ok:false,json:async()=>({error:'Model refused',bufferName:'partial clone'})};}
+    return original(url,opts);
+  };
+  waitForSpawn=async name=>{targets.push(name);return targets.length>1;};
+  await cloneSession();await cloneSession();
+  return {posts,targets,alerts,draft:spDraft.task};
+ })()`)
+	if state["posts"] != float64(1) || fmt.Sprint(state["targets"]) != "[partial clone partial clone]" || !strings.Contains(fmt.Sprint(state["alerts"]), "Model refused") {
+		t.Fatalf("clone recovery must reopen its existing buffer without spawning again: %#v", state)
+	}
+}
+
 func TestNewChatStartWaitsForPhotoDecoding(t *testing.T) {
 	page := newChatTestPage(t)
 	page.waitFor(t, `spCatalog.agents.length === 3 && spawnPresets.length === 1`)
