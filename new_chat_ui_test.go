@@ -480,13 +480,20 @@ func TestNewChatStaleComboLandsOnPromptDisabled(t *testing.T) {
   openSpawnView('home');
   const iconSlot=[...document.querySelectorAll('#sp-home-list .sp-combo')].map(r=>r.querySelector('.provider-icon')?.getBoundingClientRect().width || 0);
   document.querySelector('#sp-home-list .sp-combo').click();
-  return {iconSlot,view:spView,go:spGo.disabled,summary:spEl('summary').textContent};
+  return {iconSlot,view:spView,go:spGo.disabled,summary:spEl('summary').textContent,reason:spEl('blocked-reason')?.textContent};
  })()`)
 	if slots := state["iconSlot"].([]interface{}); len(slots) != 2 || slots[0] != float64(18) || slots[1] != float64(18) {
 		t.Fatalf("every row keeps an 18px icon slot: %#v", state)
 	}
 	if state["view"] != "prompt" || state["go"] != true || !strings.Contains(state["summary"].(string), "Codex / Custom") {
 		t.Fatalf("stale combo: %#v", state)
+	}
+	if reason, _ := state["reason"].(string); !strings.Contains(reason, "Model") || !strings.Contains(reason, "summary") {
+		t.Fatalf("disabled Start must explain which setting to repair: %#v", state)
+	}
+	page.eval(t, `spDraft.settings.model='sol';renderSpawnStep()`)
+	if hidden := page.eval(t, `spEl('blocked-reason').hidden && !spGo.disabled`); hidden != true {
+		t.Fatal("correcting the model must clear the explanation and enable Start")
 	}
 }
 

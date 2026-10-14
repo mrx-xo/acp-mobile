@@ -1979,6 +1979,7 @@ input, textarea, #fbv-content, .msg, .msg *,
     </div>
     <div id="sp-prompt" hidden>
       <button id="sp-summary" class="sp-row" aria-label="Change agent and settings"></button>
+      <p id="sp-blocked-reason" class="sp-note" role="status" hidden></p>
       <textarea id="sp-task" aria-label="First message" placeholder="What are we working on?"></textarea>
       <div id="sp-attach-row" hidden></div>
       <button id="sp-attach" class="sp-row" aria-label="Attach photos"></button>
@@ -6019,6 +6020,13 @@ function renderSpawnPrompt() {
   const label=!spCatalog.agents.length ? 'Loading agents…' : spComplete() ? spSummaryLabel(spDraft.settings) : (spAgentFor(spDraft.settings)?.name || spDraft.settings.agent || 'Agent')+' / Custom';
   spRowContent(spEl('summary'),label,spDraft.cwd ? spProjectName(spDraft.cwd)+'  '+shortPath(spDraft.cwd) : 'Choose a project','chevron');
   spEl('summary').disabled=locked; spTask.disabled=locked;
+  const invalid=spFields.find(field => (field !== 'effort' || spDraft.settings.effort) &&
+    !spChoices(field).some(choice => choice.id === spDraft.settings[field]));
+  const fieldNames={agent:'Agent',model:'Model',mode:'Permissions',effort:'Effort'};
+  const reason=locked ? '' : !spCatalog.agents.length ? 'Waiting for agent choices to load.' :
+    !spDraft.cwd ? 'Choose a project before starting.' : invalid ?
+    fieldNames[invalid]+' selection is missing or no longer available. Tap the summary above to update it.' : '';
+  spEl('blocked-reason').textContent=reason; spEl('blocked-reason').hidden=!reason;
   const open=spNameOpen || !!spDraft.name;
   spRowContent(spEl('name-toggle'),'Chat name','optional','chevron');
   spEl('name-toggle').setAttribute('aria-expanded',String(open)); spEl('name-toggle').disabled=locked;
