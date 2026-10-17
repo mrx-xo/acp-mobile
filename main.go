@@ -26,7 +26,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode"
 
@@ -101,11 +100,11 @@ func commandContext(ctx context.Context, name string, args ...string) *exec.Cmd 
 func configureCommandEnv(cmd *exec.Cmd) {
 	if len(appConfig.ExtraPath) > 0 {
 		env := os.Environ()
-		extra := strings.Join(appConfig.ExtraPath, ":")
+		extra := strings.Join(appConfig.ExtraPath, string(os.PathListSeparator))
 		found := false
 		for i, e := range env {
 			if strings.HasPrefix(e, "PATH=") {
-				env[i] = "PATH=" + extra + ":" + e[5:]
+				env[i] = "PATH=" + extra + string(os.PathListSeparator) + e[5:]
 				found = true
 				break
 			}
@@ -535,7 +534,7 @@ func discoverSockets() []socketEntry {
 			if err != nil {
 				continue
 			}
-			if syscall.Kill(pid, 0) != nil {
+			if !processAlive(pid) {
 				os.Remove(filepath.Join(dir, name))
 				continue
 			}
@@ -561,7 +560,7 @@ func discoverSockets() []socketEntry {
 			if err != nil || seen[pid] {
 				continue
 			}
-			if syscall.Kill(pid, 0) != nil {
+			if !processAlive(pid) {
 				os.Remove(filepath.Join(tmpdir, name))
 				continue
 			}
