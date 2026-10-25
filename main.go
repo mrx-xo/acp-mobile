@@ -273,27 +273,7 @@ func main() {
 	})
 
 	mux.Handle("/ws", &websocket.Server{
-		Handler: func(ws *websocket.Conn) {
-			pid := ws.Request().URL.Query().Get("sock")
-			if pid == "" {
-				log.Printf("ws: missing sock param")
-				ws.Close()
-				return
-			}
-			if _, err := strconv.Atoi(pid); err != nil {
-				log.Printf("ws: invalid sock param %q", pid)
-				ws.Close()
-				return
-			}
-			sockPath := findSocket(pid)
-			if sockPath == "" {
-				log.Printf("ws: no socket for pid %s", pid)
-				websocket.Message.Send(ws, `{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"Session not found","data":{"details":"No socket for pid `+pid+`"}}}`)
-				ws.Close()
-				return
-			}
-			bridgeWebSocket(ws, sockPath)
-		},
+		Handler:   handleWS,
 		Handshake: wsHandshake,
 	})
 
@@ -356,6 +336,11 @@ func main() {
 		"localhost": true,
 	}
 	ts, tsErr := tailscaleSelf()
+	if ts.IP != "" {
+		hubOrigin = "http://" + net.JoinHostPort(ts.IP, port)
+	} else {
+		hubOrigin = "http://127.0.0.1:" + port
+	}
 	if tsErr == nil {
 		allowedHosts[ts.Hostname] = true
 		if ts.IP != "" {

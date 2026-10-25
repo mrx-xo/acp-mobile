@@ -76,13 +76,17 @@ func refreshPeerIP(id string) {
 	}
 }
 
+// peerHostPort is the host:port of a peer's hub (addr overrides it in tests).
+func peerHostPort(m machine) string {
+	if m.addr != "" {
+		return m.addr
+	}
+	return net.JoinHostPort(m.IP, peerPort)
+}
+
 // fetchPeerOnce makes one POST to the peer's /api/sessions.
 func fetchPeerOnce(ctx context.Context, m machine) ([]sessionInfo, error) {
-	addr := m.addr
-	if addr == "" {
-		addr = net.JoinHostPort(m.IP, peerPort)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/api/sessions", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+peerHostPort(m)+"/api/sessions", nil)
 	if err != nil {
 		return nil, err
 	}
