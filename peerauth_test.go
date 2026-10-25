@@ -7,14 +7,26 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/net/websocket"
 )
 
+// testHubs lists the hub every stub whois answers with.
+var testHubs = []string{"mrx.example.ts.net"}
+
+// stubWhois swaps whoisPeer and the peer clock for one test.
+func stubWhois(t *testing.T, fn func(ip string) (string, string, error)) {
+	t.Helper()
+	oldWhois, oldNow := whoisPeer, peerNow
+	whoisPeer = fn
+	t.Cleanup(func() { whoisPeer, peerNow = oldWhois, oldNow })
+}
+
 func TestPeerAuthAllowsSameLogin(t *testing.T) {
 	calls := 0
-	whoisLogin = func(ip string) (string, error) { calls++; return "me@example.com", nil }
-	p := newPeerAuth("me@example.com", "100.100.0.1")
+	whoisPeer = func(ip string) (string, string, error) { calls++; return "me@example.com", "mrx.example.ts.net.", nil }
+	p := newPeerAuth("me@example.com", "100.100.0.1", testHubs)
 	if !p.allow("100.100.0.3") {
 		t.Fatal("same login must be allowed")
 	}
@@ -27,16 +39,19 @@ func TestPeerAuthAllowsSameLogin(t *testing.T) {
 }
 
 func TestPeerAuthRejectsForeignLogin(t *testing.T) {
-	whoisLogin = func(ip string) (string, error) { return "stranger@example.com", nil }
-	p := newPeerAuth("me@example.com", "100.100.0.1")
+	whoisPeer = func(ip string) (string, string, error) { return "stranger@example.com", "mrx.example.ts.net.", nil }
+	p := newPeerAuth("me@example.com", "100.100.0.1", testHubs)
 	if p.allow("100.100.0.9") {
 		t.Fatal("foreign login must be rejected")
 	}
 }
 
 func TestPeerAuthSkipsNonTailnetAddresses(t *testing.T) {
-	whoisLogin = func(ip string) (string, error) { t.Fatal("whois must not run for non-tailnet"); return "", nil }
-	p := newPeerAuth("me@example.com", "100.100.0.1")
+	whoisPeer = func(ip string) (string, string, error) {
+		t.Fatal("whois must not run for non-tailnet")
+		return "", "", nil
+	}
+	p := newPeerAuth("me@example.com", "100.100.0.1", testHubs)
 	for _, ip := range []string{"127.0.0.1", "192.168.1.20", "::1", "garbage", ""} {
 		if p.allow(ip) {
 			t.Fatalf("%s must not be allowed", ip)
@@ -45,16 +60,16 @@ func TestPeerAuthSkipsNonTailnetAddresses(t *testing.T) {
 }
 
 func TestPeerAuthEmptySelfLoginNeverAllows(t *testing.T) {
-	whoisLogin = func(ip string) (string, error) { return "", nil }
-	p := newPeerAuth("", "")
+	whoisPeer = func(ip string) (string, string, error) { return "", "", nil }
+	p := newPeerAuth("", "", testHubs)
 	if p.allow("100.100.0.3") {
 		t.Fatal("no login known must fail closed")
 	}
 }
 
 func TestPeerAuthWhoisErrorFailsClosed(t *testing.T) {
-	whoisLogin = func(ip string) (string, error) { return "", fmt.Errorf("tailscale absent") }
-	p := newPeerAuth("me@example.com", "100.100.0.1")
+	whoisPeer = func(ip string) (string, string, error) { return "", "", fmt.Errorf("tailscale absent") }
+	p := newPeerAuth("me@example.com", "100.100.0.1", testHubs)
 	if p.allow("100.100.0.3") {
 		t.Fatal("whois error must fail closed")
 	}
@@ -73,10 +88,10 @@ func TestIsTailnetAddr(t *testing.T) {
 }
 
 func TestAuthMiddlewarePeerBypassesCookie(t *testing.T) {
-	whoisLogin = func(ip string) (string, error) { return "me@example.com", nil }
+	whoisPeer = func(ip string) (string, string, error) { return "me@example.com", "mrx.example.ts.net.", nil }
 	h := buildAuthHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, isPeerRequest(r))
-	}), "secret", newRateLimiter(), map[string]bool{"100.100.0.1": true, "127.0.0.1": true}, newPeerAuth("me@example.com", "100.100.0.1"))
+	}), "secret", newRateLimiter(), map[string]bool{"100.100.0.1": true, "127.0.0.1": true}, newPeerAuth("me@example.com", "100.100.0.1", testHubs))
 	req := httptest.NewRequest("POST", "http://100.100.0.1:8090/api/sessions", nil)
 	req.Header.Set(peerHeader, "1")
 	req.RemoteAddr = "100.100.0.3:5555"
@@ -99,7 +114,7 @@ func peerTestHandler(t *testing.T, login string) http.Handler {
 	t.Helper()
 	return buildAuthHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, isPeerRequest(r))
-	}), "secret", newRateLimiter(), map[string]bool{"100.100.0.1": true, "127.0.0.1": true}, newPeerAuth(login, "100.100.0.1"))
+	}), "secret", newRateLimiter(), map[string]bool{"100.100.0.1": true, "127.0.0.1": true}, newPeerAuth(login, "100.100.0.1", testHubs))
 }
 
 func peerReq(hdr map[string]string) *http.Request {
@@ -112,7 +127,10 @@ func peerReq(hdr map[string]string) *http.Request {
 }
 
 func TestAuthMiddlewarePeerRequiresHeader(t *testing.T) {
-	whoisLogin = func(ip string) (string, error) { t.Fatal("whois must not run without the peer header"); return "", nil }
+	whoisPeer = func(ip string) (string, string, error) {
+		t.Fatal("whois must not run without the peer header")
+		return "", "", nil
+	}
 	rec := httptest.NewRecorder()
 	peerTestHandler(t, "me@example.com").ServeHTTP(rec, peerReq(nil))
 	if rec.Code != 401 {
@@ -121,7 +139,10 @@ func TestAuthMiddlewarePeerRequiresHeader(t *testing.T) {
 }
 
 func TestAuthMiddlewarePeerRejectsBrowserFetchMetadata(t *testing.T) {
-	whoisLogin = func(ip string) (string, error) { t.Fatal("whois must not run for browser requests"); return "", nil }
+	whoisPeer = func(ip string) (string, string, error) {
+		t.Fatal("whois must not run for browser requests")
+		return "", "", nil
+	}
 	rec := httptest.NewRecorder()
 	peerTestHandler(t, "me@example.com").ServeHTTP(rec, peerReq(map[string]string{peerHeader: "1", "Sec-Fetch-Site": "cross-site"}))
 	if rec.Code != 401 {
@@ -130,7 +151,7 @@ func TestAuthMiddlewarePeerRejectsBrowserFetchMetadata(t *testing.T) {
 }
 
 func TestAuthMiddlewareForeignLoginGets403(t *testing.T) {
-	whoisLogin = func(ip string) (string, error) { return "stranger@example.com", nil }
+	whoisPeer = func(ip string) (string, string, error) { return "stranger@example.com", "mrx.example.ts.net.", nil }
 	rec := httptest.NewRecorder()
 	peerTestHandler(t, "me@example.com").ServeHTTP(rec, peerReq(map[string]string{peerHeader: "1"}))
 	if rec.Code != 403 {
@@ -140,13 +161,110 @@ func TestAuthMiddlewareForeignLoginGets403(t *testing.T) {
 
 func TestPeerAuthCachesErrorAsDeny(t *testing.T) {
 	calls := 0
-	whoisLogin = func(ip string) (string, error) { calls++; return "", fmt.Errorf("timeout") }
-	p := newPeerAuth("me@example.com", "100.100.0.1")
+	now := time.Unix(1000, 0)
+	stubWhois(t, func(ip string) (string, string, error) { calls++; return "", "", fmt.Errorf("timeout") })
+	peerNow = func() time.Time { return now }
+	p := newPeerAuth("me@example.com", "100.100.0.1", testHubs)
 	if p.allow("100.100.0.3") || p.allow("100.100.0.3") {
 		t.Fatal("error must deny")
 	}
+	now = now.Add(4 * time.Second)
+	p.allow("100.100.0.3")
 	if calls != 1 {
-		t.Fatalf("whois calls = %d, want 1 (error cached)", calls)
+		t.Fatalf("whois calls = %d, want 1 (error cached within 5s)", calls)
+	}
+	now = now.Add(2 * time.Second)
+	p.allow("100.100.0.3")
+	if calls != 2 {
+		t.Fatalf("whois calls = %d, want 2 (error expires after 5s)", calls)
+	}
+}
+
+func TestPeerAuthCachesVerdictForAMinute(t *testing.T) {
+	calls := 0
+	now := time.Unix(1000, 0)
+	stubWhois(t, func(ip string) (string, string, error) { calls++; return "me@example.com", "mrx.example.ts.net.", nil })
+	peerNow = func() time.Time { return now }
+	p := newPeerAuth("me@example.com", "100.100.0.1", testHubs)
+	p.allow("100.100.0.3")
+	now = now.Add(59 * time.Second)
+	p.allow("100.100.0.3")
+	if calls != 1 {
+		t.Fatalf("whois calls = %d, want 1 within 60s", calls)
+	}
+	now = now.Add(2 * time.Second)
+	p.allow("100.100.0.3")
+	if calls != 2 {
+		t.Fatalf("whois calls = %d, want 2 after 60s", calls)
+	}
+}
+
+func TestPeerAuthRequiresListedHub(t *testing.T) {
+	stubWhois(t, func(ip string) (string, string, error) { return "me@example.com", "kids-ipad.example.ts.net.", nil })
+	p := newPeerAuth("me@example.com", "100.100.0.1", testHubs)
+	if p.allow("100.100.0.3") {
+		t.Fatal("same login on an unlisted node must be rejected")
+	}
+}
+
+func TestPeerAuthHubMatchIgnoresCaseAndTrailingDot(t *testing.T) {
+	stubWhois(t, func(ip string) (string, string, error) { return "me@example.com", "MrX.Example.TS.net.", nil })
+	p := newPeerAuth("me@example.com", "100.100.0.1", []string{"mrx.example.ts.net."})
+	if !p.allow("100.100.0.3") {
+		t.Fatal("hub match must ignore case and trailing dots")
+	}
+}
+
+func TestPeerAuthEmptyHubsNeverAllows(t *testing.T) {
+	stubWhois(t, func(ip string) (string, string, error) { return "me@example.com", "mrx.example.ts.net.", nil })
+	for _, hubs := range [][]string{nil, {}} {
+		if newPeerAuth("me@example.com", "100.100.0.1", hubs).allow("100.100.0.3") {
+			t.Fatalf("hubs=%v must fail closed", hubs)
+		}
+	}
+}
+
+func TestPeerAuthRejectsSelfIP(t *testing.T) {
+	stubWhois(t, func(ip string) (string, string, error) { return "me@example.com", "mrx.example.ts.net.", nil })
+	p := newPeerAuth("me@example.com", "100.100.0.1", testHubs)
+	if p.allow("100.100.0.1") {
+		t.Fatal("this node's own IP must be rejected")
+	}
+}
+
+func TestPeerAuthResolvesSelfLoginLazily(t *testing.T) {
+	selfCalls := 0
+	ready := false
+	now := time.Unix(1000, 0)
+	stubWhois(t, func(ip string) (string, string, error) {
+		if ip == "100.100.0.1" {
+			selfCalls++
+			if !ready {
+				return "", "", fmt.Errorf("tailscaled not up")
+			}
+			return "me@example.com", "node.example.ts.net.", nil
+		}
+		return "me@example.com", "mrx.example.ts.net.", nil
+	})
+	peerNow = func() time.Time { return now }
+	p := newPeerAuth("", "100.100.0.1", testHubs)
+	if p.allow("100.100.0.3") {
+		t.Fatal("unknown self login must deny")
+	}
+	ready = true
+	now = now.Add(10 * time.Second)
+	if p.allow("100.100.0.3") {
+		t.Fatal("self whois must not retry within 30s")
+	}
+	if selfCalls != 1 {
+		t.Fatalf("self whois calls = %d, want 1", selfCalls)
+	}
+	now = now.Add(25 * time.Second)
+	if !p.allow("100.100.0.3") {
+		t.Fatal("allow must succeed once self whois answers")
+	}
+	if !p.allow("100.100.0.4") || selfCalls != 2 {
+		t.Fatalf("self login must stick; self calls = %d", selfCalls)
 	}
 }
 

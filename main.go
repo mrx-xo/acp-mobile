@@ -66,6 +66,9 @@ var validBufferName = regexp.MustCompile(`^[\w\s.\-@<>/()]+$`)
 type config struct {
 	ExtraPath []string `json:"extraPath"`
 	Registry  string   `json:"registry"`
+	// Hubs lists the Tailscale node names (MagicDNS, e.g.
+	// mrx.<tailnet>.ts.net) allowed to call this node as a peer.
+	Hubs []string `json:"hubs"`
 }
 
 var appConfig config
@@ -150,7 +153,7 @@ func tailscaleSelf() (tailscaleInfo, error) {
 	}
 	info := tailscaleInfo{Hostname: name, IP: ip}
 	if ip != "" {
-		if login, err := whoisLogin(ip); err == nil {
+		if login, _, err := whoisPeer(ip); err == nil {
 			info.Login = login
 		}
 	}
@@ -348,7 +351,12 @@ func main() {
 		}
 	}
 
-	peers := newPeerAuth(ts.Login, ts.IP)
+	if len(appConfig.Hubs) == 0 {
+		log.Printf("peer auth: no hubs configured, hub calls will be refused")
+	} else {
+		log.Printf("peer auth: admitting hubs %v", appConfig.Hubs)
+	}
+	peers := newPeerAuth(ts.Login, ts.IP, appConfig.Hubs)
 	handler := buildAuthHandler(mux, authKey, authRL, allowedHosts, peers)
 
 	// Write link file.  Prefer the `tailscale serve` https origin: Web
