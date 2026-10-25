@@ -108,6 +108,8 @@ var fleet struct {
 	mu   sync.RWMutex
 	reg  registry
 	self string
+	// lastSeen is the unix time of each peer's last good fetch, by id.
+	lastSeen map[string]int64
 }
 
 // reloadFleet re-reads the registry.  A malformed file keeps the previous

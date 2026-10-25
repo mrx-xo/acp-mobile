@@ -514,6 +514,7 @@ type sessionInfo struct {
 	Status       string `json:"status,omitempty"`  // busy/permission/idle from status.json sidecar
 	Push         bool   `json:"push"`              // phone push armed, from push.json sidecar
 	LastActivity int64  `json:"lastActivity"`      // unix timestamp
+	Machine      string `json:"machine"`           // owning machine id (fleet)
 }
 
 // loadSidecar reads a sessionId→value JSON sidecar written by Emacs.
@@ -631,12 +632,9 @@ var probeCache = struct {
 	m  map[int]sessionInfo
 }{m: map[int]sessionInfo{}}
 
-func handleSessions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+// localSessions probes this machine's acp-multiplex sockets and returns
+// the deduped, sidecar-merged session list, each tagged with this machine.
+func localSessions(parent context.Context) []sessionInfo {
 	socks := discoverSockets()
 
 	// Prune cache entries for sockets that no longer exist.
@@ -657,7 +655,7 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 		ok   bool
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -751,9 +749,40 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	mergePush(sessions, loadPush())
 
+	fleet.mu.RLock()
+	self := fleet.self
+	fleet.mu.RUnlock()
+	for i := range sessions {
+		sessions[i].Machine = self
+	}
+	return sessions
+}
+
+func handleSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	fleet.mu.RLock()
+	self := fleet.self
+	hasPeers := len(fleet.reg.peers(self)) > 0
+	fleet.mu.RUnlock()
+
+	// A peer's call gets local sessions only, so two hubs never recurse
+	// into each other (spec section 8).
+	body := map[string]interface{}{"machine": self, "version": buildID}
+	if isPeerRequest(r) || !hasPeers {
+		body["sessions"] = localSessions(r.Context())
+	} else {
+		sessions, states := mergedSessions(r.Context())
+		body["sessions"] = sessions
+		body["machines"] = states
+	}
+
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"sessions": sessions, "version": buildID})
+	json.NewEncoder(w).Encode(body)
 }
 
 // spawnRequest is the body of /api/spawn. Cwd names the project to start
