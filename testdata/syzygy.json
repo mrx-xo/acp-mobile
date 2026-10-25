@@ -1,0 +1,9 @@
+{
+  "machines": [
+    {"id": "mrx", "name": "POLLUX", "host": "mrx.example.ts.net", "ip": "100.100.0.1", "os": "macos", "role": "hub"},
+    {"id": "mrx2", "name": "CASTOR", "host": "mrx2.example.ts.net", "ip": "100.100.0.2", "os": "macos", "role": "node"},
+    {"id": "vengeance", "name": "NEMESIS", "host": "vengeance.example.ts.net", "ip": "100.100.0.3", "os": "windows", "role": "node",
+     "wake": {"mac": "00:11:22:33:44:55", "relay": "homelab", "from": "S5 only"},
+     "gaps": ["screenshot-to-chat", "handoff"]}
+  ]
+}

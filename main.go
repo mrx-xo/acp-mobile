@@ -65,6 +65,7 @@ var validBufferName = regexp.MustCompile(`^[\w\s.\-@<>/()]+$`)
 
 type config struct {
 	ExtraPath []string `json:"extraPath"`
+	Registry  string   `json:"registry"`
 }
 
 var appConfig config
@@ -220,6 +221,9 @@ var testMode bool
 
 func main() {
 	appConfig = loadConfig()
+	fleet.self = localMachineID()
+	reloadFleet()
+	installFleetReload()
 
 	port := "8090"
 	for _, arg := range os.Args[1:] {
