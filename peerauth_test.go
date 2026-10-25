@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"golang.org/x/net/websocket"
 )
 
 func TestPeerAuthAllowsSameLogin(t *testing.T) {
@@ -74,6 +78,7 @@ func TestAuthMiddlewarePeerBypassesCookie(t *testing.T) {
 		fmt.Fprint(w, isPeerRequest(r))
 	}), "secret", newRateLimiter(), map[string]bool{"100.100.0.1": true, "127.0.0.1": true}, newPeerAuth("me@example.com", "100.100.0.1"))
 	req := httptest.NewRequest("POST", "http://100.100.0.1:8090/api/sessions", nil)
+	req.Header.Set(peerHeader, "1")
 	req.RemoteAddr = "100.100.0.3:5555"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -87,5 +92,93 @@ func TestAuthMiddlewarePeerBypassesCookie(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 401 {
 		t.Fatalf("loopback without cookie: code=%d, want 401", rec.Code)
+	}
+}
+
+func peerTestHandler(t *testing.T, login string) http.Handler {
+	t.Helper()
+	return buildAuthHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, isPeerRequest(r))
+	}), "secret", newRateLimiter(), map[string]bool{"100.100.0.1": true, "127.0.0.1": true}, newPeerAuth(login, "100.100.0.1"))
+}
+
+func peerReq(hdr map[string]string) *http.Request {
+	req := httptest.NewRequest("POST", "http://100.100.0.1:8090/api/sessions", nil)
+	req.RemoteAddr = "100.100.0.3:5555"
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	return req
+}
+
+func TestAuthMiddlewarePeerRequiresHeader(t *testing.T) {
+	whoisLogin = func(ip string) (string, error) { t.Fatal("whois must not run without the peer header"); return "", nil }
+	rec := httptest.NewRecorder()
+	peerTestHandler(t, "me@example.com").ServeHTTP(rec, peerReq(nil))
+	if rec.Code != 401 {
+		t.Fatalf("code=%d, want 401", rec.Code)
+	}
+}
+
+func TestAuthMiddlewarePeerRejectsBrowserFetchMetadata(t *testing.T) {
+	whoisLogin = func(ip string) (string, error) { t.Fatal("whois must not run for browser requests"); return "", nil }
+	rec := httptest.NewRecorder()
+	peerTestHandler(t, "me@example.com").ServeHTTP(rec, peerReq(map[string]string{peerHeader: "1", "Sec-Fetch-Site": "cross-site"}))
+	if rec.Code != 401 {
+		t.Fatalf("code=%d, want 401", rec.Code)
+	}
+}
+
+func TestAuthMiddlewareForeignLoginGets403(t *testing.T) {
+	whoisLogin = func(ip string) (string, error) { return "stranger@example.com", nil }
+	rec := httptest.NewRecorder()
+	peerTestHandler(t, "me@example.com").ServeHTTP(rec, peerReq(map[string]string{peerHeader: "1"}))
+	if rec.Code != 403 {
+		t.Fatalf("code=%d, want 403", rec.Code)
+	}
+}
+
+func TestPeerAuthCachesErrorAsDeny(t *testing.T) {
+	calls := 0
+	whoisLogin = func(ip string) (string, error) { calls++; return "", fmt.Errorf("timeout") }
+	p := newPeerAuth("me@example.com", "100.100.0.1")
+	if p.allow("100.100.0.3") || p.allow("100.100.0.3") {
+		t.Fatal("error must deny")
+	}
+	if calls != 1 {
+		t.Fatalf("whois calls = %d, want 1 (error cached)", calls)
+	}
+}
+
+func TestWSHandshakePeerFlag(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Test-Peer") == "1" {
+			r = withPeerFlag(r)
+		}
+		websocket.Server{
+			Handshake: wsHandshake,
+			Handler:   func(ws *websocket.Conn) { ws.Close() },
+		}.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	dial := func(peer bool) error {
+		cfg, err := websocket.NewConfig("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws", "http://evil.example")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if peer {
+			cfg.Header = http.Header{"X-Test-Peer": {"1"}}
+		}
+		ws, err := cfg.DialContext(context.Background())
+		if err == nil {
+			ws.Close()
+		}
+		return err
+	}
+	if dial(false) == nil {
+		t.Fatal("foreign Origin without peer flag must be rejected")
+	}
+	if err := dial(true); err != nil {
+		t.Fatalf("peer-flagged upgrade must be accepted: %v", err)
 	}
 }

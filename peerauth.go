@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/netip"
+	"os/exec"
 	"sync"
 	"time"
 )
@@ -13,14 +14,27 @@ import (
 // without the phone's authkey cookie. The node admits the call when
 // `tailscale whois` reports the same Tailscale login as the node itself.
 
-const peerCacheTTL = 60 * time.Second
+const (
+	peerCacheTTL = 60 * time.Second
+	whoisTimeout = 5 * time.Second
+
+	// peerHeader marks a hub-to-node call. Browsers cannot set custom
+	// headers on a WebSocket upgrade, and a custom header on a cross-origin
+	// fetch forces a CORS preflight this server never answers, so only a
+	// non-browser client can send it.
+	peerHeader = "X-Acp-Peer"
+)
 
 var tailnetPrefix = netip.MustParsePrefix("100.64.0.0/10")
 
 // whoisLogin returns the Tailscale login name owning ip. A package var so
 // tests can swap it.
 var whoisLogin = func(ip string) (string, error) {
-	out, err := command("tailscale", "whois", "--json", ip).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), whoisTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tailscale", "whois", "--json", ip)
+	configureCommandEnv(cmd)
+	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
@@ -68,15 +82,24 @@ func (p *peerAuth) allow(remoteIP string) bool {
 		return false
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	now := time.Now()
-	if e, ok := p.cache[remoteIP]; ok && now.Before(e.expires) {
+	e, ok := p.cache[remoteIP]
+	p.mu.Unlock()
+	if ok && time.Now().Before(e.expires) {
 		return e.ok
 	}
+	// Run whois outside the mutex so a slow lookup never blocks other peers.
 	login, err := whoisLogin(remoteIP)
-	ok := err == nil && login != "" && login == p.selfLogin
-	p.cache[remoteIP] = cacheEntry{ok: ok, expires: now.Add(peerCacheTTL)}
-	return ok
+	allowed := err == nil && login != "" && login == p.selfLogin
+	p.mu.Lock()
+	p.cache[remoteIP] = cacheEntry{ok: allowed, expires: time.Now().Add(peerCacheTTL)}
+	p.mu.Unlock()
+	return allowed
+}
+
+// peerEligible reports whether r carries the peer marker and no browser
+// fetch metadata, i.e. it can only have come from a non-browser client.
+func peerEligible(r *http.Request) bool {
+	return r.Header.Get(peerHeader) == "1" && r.Header.Get("Sec-Fetch-Site") == ""
 }
 
 type ctxKey int

@@ -294,26 +294,7 @@ func main() {
 			}
 			bridgeWebSocket(ws, sockPath)
 		},
-		Handshake: func(config *websocket.Config, r *http.Request) error {
-			// Hub-to-node dials come from golang.org/x/net/websocket, which
-			// always sends the hub's own Origin; peers are admitted already.
-			if isPeerRequest(r) {
-				return nil
-			}
-			origin := r.Header.Get("Origin")
-			if origin == "" {
-				if testMode {
-					return nil
-				}
-				return fmt.Errorf("missing Origin header")
-			}
-			u, err := url.Parse(origin)
-			if err != nil || u.Host != r.Host {
-				return fmt.Errorf("origin %q not allowed", origin)
-			}
-			config.Origin, _ = websocket.Origin(config, r)
-			return nil
-		},
+		Handshake: wsHandshake,
 	})
 
 	mux.Handle("/fonts/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2670,8 +2651,12 @@ func buildAuthHandler(next http.Handler, authKey string, authRL *rateLimiter, al
 
 		// Auth: a tailnet peer sharing our Tailscale login needs no cookie.
 		// Never consult the rate limiter for peer decisions.
-		if _, cerr := r.Cookie("authkey"); cerr != nil && peers.allow(clientIP) {
-			next.ServeHTTP(w, withPeerFlag(r))
+		if _, cerr := r.Cookie("authkey"); cerr != nil && peerEligible(r) && isTailnetAddr(clientIP) {
+			if peers.allow(clientIP) {
+				next.ServeHTTP(w, withPeerFlag(r))
+				return
+			}
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 
@@ -2696,4 +2681,25 @@ func buildAuthHandler(next http.Handler, authKey string, authRL *rateLimiter, al
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func wsHandshake(config *websocket.Config, r *http.Request) error {
+	// Hub-to-node dials come from golang.org/x/net/websocket, which
+	// always sends the hub's own Origin; peers are admitted already.
+	if isPeerRequest(r) {
+		return nil
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		if testMode {
+			return nil
+		}
+		return fmt.Errorf("missing Origin header")
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host != r.Host {
+		return fmt.Errorf("origin %q not allowed", origin)
+	}
+	config.Origin, _ = websocket.Origin(config, r)
+	return nil
 }
