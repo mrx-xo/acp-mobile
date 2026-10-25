@@ -24,6 +24,9 @@ type pinRequest struct {
 }
 
 func handlePin(w http.ResponseWriter, r *http.Request) {
+	if refuseRemoteMachine(w, r) {
+		return
+	}
 	var body []byte
 	var err error
 	switch r.Method {

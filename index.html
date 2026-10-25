@@ -2090,7 +2090,9 @@ function updateChatHeader() {
     headerTitleMain.textContent = currentBufferName;
     headerTitleOrd.textContent = '';
   }
-  bellBtn.classList.toggle('visible', !!currentBufferName);
+  const remote = isRemoteChat();
+  bellBtn.classList.toggle('visible', !!currentBufferName && !remote);
+  headerTitle.title = remote ? REMOTE_ACTION_TITLE : '';
   setBell(!!s.push);
   renderHeaderSub();
 }
@@ -5466,6 +5468,29 @@ function sKey(s) {
   if (!s.machine || !HUB_MACHINE || s.machine === HUB_MACHINE) return bare;
   return s.machine + '/' + bare;
 }
+// Fleet step 1: a peer machine's session is view and reply only.  Every
+// Lisp-backed action (kill, fork, clone, label, push, pin, model) would
+// run on the hub's Emacs, which does not own the chat, so the UI hides or
+// disables them until step 3 routes actions to the owning machine.
+const REMOTE_ACTION_TITLE = 'Not available for remote sessions yet';
+function isRemoteSession(s) {
+  return !!(s && s.machine && HUB_MACHINE && s.machine !== HUB_MACHINE);
+}
+function isRemoteChat() {
+  return !!(currentSockMachine && HUB_MACHINE && currentSockMachine !== HUB_MACHINE);
+}
+// Kill, clone and model have no other disabled state worth keeping, so a
+// local chat simply gets back what a remote one took.  Fork and pin
+// render their own state (refreshForkEntry, renderPinEntry).
+function applyRemoteChatGuards() {
+  const remote = isRemoteChat();
+  for (const id of ['tb-kill', 'tb-clone', 'tb-model']) {
+    const b = document.getElementById(id);
+    if (!b) continue;
+    if (remote) { b.disabled = true; b.title = REMOTE_ACTION_TITLE; }
+    else if (b.title === REMOTE_ACTION_TITLE) { b.disabled = false; b.title = ''; }
+  }
+}
 function getLastViewed(session) {
   const v = parseInt(localStorage.getItem('acp-viewed-' + sKey(session)) || '0', 10);
   // Entries written before session-keying were keyed by bare pid —
@@ -5780,8 +5805,11 @@ function makeSessionCard(s, name) {
       '</div>' +
       (metaParts.length ? '<div class="sc-path">' + metaParts.join('  &middot;  ') + '</div>' : '') +
     '</div>';
-  attachPeekSwipe(d, s, name);
-  if (s.bufferName) {
+  // A remote card peeks through /api/preview?pid=, which only knows the
+  // hub's own sockets, and deletes through the hub's Emacs: neither yet.
+  const remote = isRemoteSession(s);
+  if (!remote) attachPeekSwipe(d, s, name);
+  if (s.bufferName && !remote) {
     const del = document.createElement('button');
     del.className = 'sc-delete';
     del.textContent = '\u00d7';
@@ -6343,6 +6371,7 @@ spGo.addEventListener('click',()=>{if(Date.now() >= spGoSuppressClickUntil)spSta
 // buffer name; nothing else about the session needs to travel.
 let cloneRecoveryBuffer = '';
 async function cloneSession() {
+  if (isRemoteChat()) return;
   if (!currentBufferName) {
     alert('No buffer name available for this session');
     return;
@@ -6372,6 +6401,7 @@ async function cloneSession() {
 // socket to surface it.
 const forkPending = new Set();
 async function forkSession() {
+  if (isRemoteChat()) return;
   if (!currentBufferName) {
     alert('No buffer name available for this session');
     return;
@@ -6414,6 +6444,8 @@ async function forkSession() {
 const forkSupport = new Map();
 async function refreshForkEntry(btn) {
   const name = currentBufferName;
+  if (isRemoteChat()) { btn.disabled = true; btn.title = REMOTE_ACTION_TITLE; setToolLabel(btn, 'Fork'); return; }
+  if (btn.title === REMOTE_ACTION_TITLE) btn.title = '';
   if (!name) { btn.disabled = true; setToolLabel(btn, 'Fork'); return; }
   // A fork already in flight for this chat keeps the entry busy, so
   // reopening the menu cannot start a second one.
@@ -6423,7 +6455,7 @@ async function refreshForkEntry(btn) {
   try {
     const resp = await fetch(basePath + '/api/fork?bufferName=' + encodeURIComponent(name));
     const data = await resp.json();
-    if (name !== currentBufferName) return;
+    if (name !== currentBufferName || isRemoteChat()) return;
     if (data.supported) {
       forkSupport.set(name, true);
       btn.disabled = false;
@@ -6537,6 +6569,7 @@ function closeModelPicker() {
 }
 
 async function openModelPicker() {
+  if (isRemoteChat()) return;
   const token = ++modelPickerToken;
   const bufferName = currentBufferName;
   modelPickerBuffer = bufferName;
@@ -6621,6 +6654,7 @@ if (typeof ResizeObserver !== 'undefined') {
 // --- Model picker: end ---
 
 async function killSession() {
+  if (isRemoteChat()) return;
   if (!currentBufferName) {
     alert('No buffer name available for this session');
     return;
@@ -7121,6 +7155,7 @@ document.getElementById('files-btn').addEventListener('click', openFileBrowser);
 // Tap the chat title → label this convo. Goes through Emacs (single
 // source of truth), which mirrors to labels.json for the cards.
 headerTitle.addEventListener('click', async () => {
+  if (isRemoteChat()) return;
   if (!currentBufferName) { alert('No buffer name for this session yet (old session — reload it on the rig first).'); return; }
   const current = (lastSessions.find(s => s.bufferName === currentBufferName) || {}).label || '';
   const label = window.prompt('Label this convo (empty clears):', current);
@@ -7339,7 +7374,7 @@ async function openSessionByName(name) {
 // arms the rig.  Optimistic flip; the server answers with the rig's
 // actual state.
 bellBtn.addEventListener('click', async () => {
-  if (!currentBufferName || bellBtn.classList.contains('pending')) return;
+  if (!currentBufferName || isRemoteChat() || bellBtn.classList.contains('pending')) return;
   const entry = lastSessions.find(s => s.bufferName === currentBufferName);
   const was = !!(entry && entry.push);
   setBell(!was);
@@ -7383,10 +7418,11 @@ const catalogueMenu = document.getElementById('catalogue-menu');
 function setToolLabel(btn, text) { btn.querySelector('.tb-label').textContent = text; }
 function renderPinEntry() {
   const pinned = isChatPinned(currentBufferName);
-  tbPin.disabled = !currentBufferName;
+  const remote = isRemoteChat();
+  tbPin.disabled = !currentBufferName || remote;
   tbPin.classList.toggle('pinned', pinned);
   setToolLabel(tbPin, pinned ? 'Unpin' : 'Pin chat');
-  tbPin.title = pinned ? 'Unpin this chat' : 'Pin this chat';
+  tbPin.title = remote ? REMOTE_ACTION_TITLE : pinned ? 'Unpin this chat' : 'Pin this chat';
 }
 function renderTurnNavEntry() {
   const enabled = !!window.turnNav && turnNav.isEnabled();
@@ -7412,6 +7448,7 @@ function renderToolbar() {
   renderTurnNavEntry();
   refreshForkEntry(document.getElementById('tb-fork'));
   refreshCatalogueEntry();
+  applyRemoteChatGuards();
 }
 headerGrabber.addEventListener('click', () => setToolbarOpen(chatToolbar.hidden));
 // Drag: down past 24px opens, up past 24px closes. Tap still toggles.
@@ -7448,7 +7485,7 @@ tbCatalogue.addEventListener('click', async () => {
   catch (err) { if (stillHere()) alert('Catalogue failed: ' + err.message); }
 });
 tbPin.addEventListener('click', async () => {
-  if (!currentBufferName || tbPin.disabled) return;
+  if (!currentBufferName || isRemoteChat() || tbPin.disabled) return;
   tbPin.disabled = true;
   try { await toggleChatPin(currentBufferName); }
   catch (err) { alert('Pin failed: ' + err.message); }

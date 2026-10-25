@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"sort"
@@ -211,4 +213,44 @@ func mergedSessions(ctx context.Context) ([]sessionInfo, []machineState) {
 	}
 	fleet.mu.Unlock()
 	return sessions, states
+}
+
+// remoteActionPeekLimit bounds how much of a JSON body the remote-machine
+// guard reads; every guarded route's body is far smaller.
+const remoteActionPeekLimit = 1 << 20
+
+// refuseRemoteMachine answers 501 when r names a machine (query or JSON
+// body field "machine") other than this one, and reports whether it did.
+// Kill, spawn, fork, label, push, pin and preview run on this machine's
+// Emacs and sockets, which do not own a peer's chat; routing them to the
+// owning node arrives in fleet step 3.  A request without a machine is
+// untouched, and the body is restored for the handler.
+func refuseRemoteMachine(w http.ResponseWriter, r *http.Request) bool {
+	target := r.URL.Query().Get("machine")
+	if target == "" && r.Body != nil && r.Body != http.NoBody {
+		peek, err := io.ReadAll(io.LimitReader(r.Body, remoteActionPeekLimit))
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(peek), r.Body), r.Body}
+		if err == nil {
+			var body struct {
+				Machine string `json:"machine"`
+			}
+			if json.Unmarshal(peek, &body) == nil {
+				target = body.Machine
+			}
+		}
+	}
+	if target == "" {
+		return false
+	}
+	fleet.mu.RLock()
+	self := fleet.self
+	fleet.mu.RUnlock()
+	if target == self {
+		return false
+	}
+	http.Error(w, "remote machine actions arrive in a later step", http.StatusNotImplemented)
+	return true
 }

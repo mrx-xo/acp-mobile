@@ -819,6 +819,9 @@ func validPresetKey(key string) bool {
 }
 
 func handleSpawn(w http.ResponseWriter, r *http.Request) {
+	if refuseRemoteMachine(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -858,6 +861,9 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 // multiplex socket replays full history to any connection, so we dial,
 // drain the replay, and keep the last few user/agent messages.
 func handlePreview(w http.ResponseWriter, r *http.Request) {
+	if refuseRemoteMachine(w, r) {
+		return
+	}
 	pid := r.URL.Query().Get("pid")
 	if _, err := strconv.Atoi(pid); err != nil {
 		http.Error(w, "invalid pid", http.StatusBadRequest)
@@ -1752,6 +1758,9 @@ func handleResumeTranscript(w http.ResponseWriter, r *http.Request) {
 // bridge as handleKill.  Emacs owns the label hash and mirrors it to
 // labels.json, so rig and phone always agree.
 func handleLabel(w http.ResponseWriter, r *http.Request) {
+	if refuseRemoteMachine(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1788,6 +1797,9 @@ func handleLabel(w http.ResponseWriter, r *http.Request) {
 // same bridge as handleLabel.  Emacs owns the buffer-local minor mode and
 // mirrors armed session ids to push.json, so rig and phone always agree.
 func handlePush(w http.ResponseWriter, r *http.Request) {
+	if refuseRemoteMachine(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1824,6 +1836,9 @@ func handlePush(w http.ResponseWriter, r *http.Request) {
 // fork failed to start), which becomes 409 so the phone explains
 // instead of retrying.
 func handleFork(w http.ResponseWriter, r *http.Request) {
+	if refuseRemoteMachine(w, r) {
+		return
+	}
 	var bufferName string
 	probe := false
 	switch r.Method {
@@ -1903,6 +1918,9 @@ func evalEmacsContext(ctx context.Context, name string, args ...string) ([]byte,
 }
 
 func handleKill(w http.ResponseWriter, r *http.Request) {
+	if refuseRemoteMachine(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

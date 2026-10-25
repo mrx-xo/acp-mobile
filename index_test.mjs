@@ -735,6 +735,7 @@ function loadModelPicker(overrides = {}) {
     },
     basePath: '/phone',
     currentBufferName: '*Agent @ demo*',
+    isRemoteChat: () => false,
     canonicalModelName: (id, models) => models.find(model => model.id === id)?.name || id,
     renderHeaderSub: () => {},
     fetch: async () => { throw new Error('unexpected fetch'); },
@@ -752,6 +753,12 @@ const modelData = () => ({current: 'first', models: [
   {id: 'second', name: 'Second', description: ''},
 ]});
 const modelReply = data => ({ok: true, json: async () => data});
+
+test('model picker stays closed for a remote chat', async () => {
+  const {context, elements} = loadModelPicker({isRemoteChat: () => true});
+  await context.openModelPicker();
+  assert.equal(elements.has('model-sheet') && elements.get('model-sheet').classList.contains('visible'), false);
+});
 
 test('model picker lists models in rig order with the current model marked', async () => {
   const {context, elements} = loadModelPicker({
