@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -40,7 +41,10 @@ var tailscaleStatusJSON = func() ([]byte, error) {
 }
 
 // refreshPeerIP re-resolves a peer's tailnet IPv4 from Tailscale and
-// updates the registry in place.
+// updates the registry in place.  A peer matches when its DNSName equals
+// the registry Host (several devices can share a HostName); HostName == id
+// is only a fallback for entries without a Host.  Online peers win, and
+// candidates are visited in sorted key order so the pick is deterministic.
 func refreshPeerIP(id string) {
 	out, err := tailscaleStatusJSON()
 	if err != nil {
@@ -50,18 +54,41 @@ func refreshPeerIP(id string) {
 		Peer map[string]struct {
 			HostName     string
 			DNSName      string
+			Online       bool
 			TailscaleIPs []string
 		}
 	}
 	if json.Unmarshal(out, &status) != nil {
 		return
 	}
-	for _, p := range status.Peer {
-		label, _, _ := strings.Cut(p.DNSName, ".")
-		if !strings.EqualFold(p.HostName, id) && !strings.EqualFold(label, id) {
+	fleet.mu.RLock()
+	reg, _ := fleet.reg.byID(id)
+	fleet.mu.RUnlock()
+	host := strings.TrimSuffix(reg.Host, ".")
+
+	keys := make([]string, 0, len(status.Peer))
+	for k := range status.Peer {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var candidates []string
+	for _, k := range keys {
+		p := status.Peer[k]
+		if host != "" {
+			if !strings.EqualFold(strings.TrimSuffix(p.DNSName, "."), host) {
+				continue
+			}
+		} else if !strings.EqualFold(p.HostName, id) {
 			continue
 		}
-		for _, s := range p.TailscaleIPs {
+		candidates = append(candidates, k)
+	}
+	// Stable sort keeps key order within the online and offline groups.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return status.Peer[candidates[i]].Online && !status.Peer[candidates[j]].Online
+	})
+	for _, k := range candidates {
+		for _, s := range status.Peer[k].TailscaleIPs {
 			if ip := net.ParseIP(s); ip != nil && ip.To4() != nil {
 				fleet.mu.Lock()
 				for i := range fleet.reg.Machines {

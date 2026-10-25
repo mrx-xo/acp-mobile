@@ -184,13 +184,62 @@ func TestRefreshPeerIPFromTailscaleStatus(t *testing.T) {
 	old := tailscaleStatusJSON
 	defer func() { tailscaleStatusJSON = old }()
 	tailscaleStatusJSON = func() ([]byte, error) {
-		return []byte(`{"Peer":{"k":{"HostName":"vengeance","DNSName":"vengeance.example.ts.net.","TailscaleIPs":["fd7a::1","100.100.0.33"]}}}`), nil
+		return []byte(`{"Peer":{"k":{"HostName":"vengeance","DNSName":"Vengeance.example.ts.net.","Online":true,"TailscaleIPs":["fd7a::1","100.100.0.33"]}}}`), nil
 	}
-	withFleetFixture(t, "mrx", machine{ID: "vengeance", IP: "100.100.0.3"})
+	withFleetFixture(t, "mrx", machine{ID: "vengeance", Host: "vengeance.example.ts.net", IP: "100.100.0.3"})
 	refreshPeerIP("vengeance")
 	m, _ := fleet.reg.byID("vengeance")
 	if m.IP != "100.100.0.33" {
 		t.Fatalf("ip = %s", m.IP)
+	}
+}
+
+func TestRefreshPeerIPMatchesDNSNameNotHostName(t *testing.T) {
+	old := tailscaleStatusJSON
+	defer func() { tailscaleStatusJSON = old }()
+	// Two devices report HostName "vengeance"; only one owns the
+	// registry's DNS name.  Run several times: map order must not matter.
+	tailscaleStatusJSON = func() ([]byte, error) {
+		return []byte(`{"Peer":{
+			"a":{"HostName":"vengeance","DNSName":"vengeance.example.ts.net.","Online":true,"TailscaleIPs":["100.100.0.10"]},
+			"b":{"HostName":"vengeance","DNSName":"vengeance-1.example.ts.net.","Online":true,"TailscaleIPs":["100.100.0.11"]}}}`), nil
+	}
+	for i := 0; i < 20; i++ {
+		withFleetFixture(t, "mrx", machine{ID: "vengeance", Host: "vengeance-1.example.ts.net", IP: "100.100.0.3"})
+		refreshPeerIP("vengeance")
+		if m, _ := fleet.reg.byID("vengeance"); m.IP != "100.100.0.11" {
+			t.Fatalf("run %d: ip = %s, want the DNSName match", i, m.IP)
+		}
+	}
+}
+
+func TestRefreshPeerIPHostNameFallbackPrefersOnline(t *testing.T) {
+	old := tailscaleStatusJSON
+	defer func() { tailscaleStatusJSON = old }()
+	tailscaleStatusJSON = func() ([]byte, error) {
+		return []byte(`{"Peer":{
+			"a":{"HostName":"vengeance","DNSName":"vengeance.example.ts.net.","Online":false,"TailscaleIPs":["100.100.0.10"]},
+			"b":{"HostName":"vengeance","DNSName":"vengeance-1.example.ts.net.","Online":true,"TailscaleIPs":["100.100.0.11"]}}}`), nil
+	}
+	for i := 0; i < 20; i++ {
+		withFleetFixture(t, "mrx", machine{ID: "vengeance", IP: "100.100.0.3"})
+		refreshPeerIP("vengeance")
+		if m, _ := fleet.reg.byID("vengeance"); m.IP != "100.100.0.11" {
+			t.Fatalf("run %d: ip = %s, want the online peer", i, m.IP)
+		}
+	}
+}
+
+func TestRefreshPeerIPIgnoresHostNameWhenHostSet(t *testing.T) {
+	old := tailscaleStatusJSON
+	defer func() { tailscaleStatusJSON = old }()
+	tailscaleStatusJSON = func() ([]byte, error) {
+		return []byte(`{"Peer":{"a":{"HostName":"vengeance","DNSName":"other.example.ts.net.","Online":true,"TailscaleIPs":["100.100.0.10"]}}}`), nil
+	}
+	withFleetFixture(t, "mrx", machine{ID: "vengeance", Host: "vengeance.example.ts.net", IP: "100.100.0.3"})
+	refreshPeerIP("vengeance")
+	if m, _ := fleet.reg.byID("vengeance"); m.IP != "100.100.0.3" {
+		t.Fatalf("ip = %s, want unchanged", m.IP)
 	}
 }
 
