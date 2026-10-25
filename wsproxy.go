@@ -3,10 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
+	"time"
 
 	"golang.org/x/net/websocket"
 )
@@ -20,12 +21,32 @@ func peerWSURL(m machine, pid string) string {
 	return "ws://" + peerHostPort(m) + "/ws?sock=" + pid
 }
 
+// rawMsg is one websocket message with its frame type preserved.
+type rawMsg struct {
+	data []byte
+	typ  byte
+}
+
+// rawFrame relays whole messages: io.Copy would split anything over its
+// 32 KiB buffer into several websocket messages and break JSON-RPC framing.
+var rawFrame = websocket.Codec{
+	Marshal: func(v interface{}) ([]byte, byte, error) {
+		m := v.(rawMsg)
+		return m.data, m.typ, nil
+	},
+	Unmarshal: func(data []byte, typ byte, v interface{}) error {
+		*(v.(*rawMsg)) = rawMsg{append([]byte(nil), data...), typ}
+		return nil
+	},
+}
+
 // proxyWebSocket dials target as a fleet peer and pipes frames between the
 // phone and the node until either side ends, then closes both.
 func proxyWebSocket(phone *websocket.Conn, target, origin string) error {
 	config, err := websocket.NewConfig(target, origin)
 	if err == nil {
 		config.Header = http.Header{peerHeader: {"1"}}
+		config.Dialer = &net.Dialer{Timeout: 5 * time.Second}
 	}
 	var node *websocket.Conn
 	if err == nil {
@@ -36,12 +57,14 @@ func proxyWebSocket(phone *websocket.Conn, target, origin string) error {
 		phone.Close()
 		return err
 	}
-	phone.PayloadType = websocket.TextFrame
-	node.PayloadType = websocket.TextFrame
-
 	done := make(chan struct{}, 2)
 	pipe := func(dst, src *websocket.Conn) {
-		io.Copy(dst, src)
+		for {
+			var f rawMsg
+			if rawFrame.Receive(src, &f) != nil || rawFrame.Send(dst, f) != nil {
+				break
+			}
+		}
 		done <- struct{}{}
 	}
 	go pipe(node, phone)

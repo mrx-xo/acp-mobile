@@ -84,7 +84,7 @@ func TestProxyWebSocketClosesBothSidesOnPeerClose(t *testing.T) {
 func TestProxyWebSocketSendsPeerHeader(t *testing.T) {
 	got := make(chan string, 1)
 	node := httptest.NewServer(websocket.Handler(func(ws *websocket.Conn) {
-		got <- ws.Request().Header.Get(peerHeader)
+		got <- ws.Request().Header.Get(peerHeader) + "|" + ws.Request().Header.Get("Origin")
 	}))
 	defer node.Close()
 	hub := openHub(t, func(ws *websocket.Conn) {
@@ -97,8 +97,8 @@ func TestProxyWebSocketSendsPeerHeader(t *testing.T) {
 	defer c.Close()
 	select {
 	case v := <-got:
-		if v != "1" {
-			t.Fatalf("%s = %q, want 1", peerHeader, v)
+		if v != "1|http://hub.test" {
+			t.Fatalf("peer header|origin = %q, want 1|http://hub.test", v)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("node never saw the dial")
@@ -182,5 +182,36 @@ func TestWSHandlerProxiesToKnownMachine(t *testing.T) {
 	}
 	if s != "node:42" {
 		t.Fatalf("got %q", s)
+	}
+}
+
+func TestProxyWebSocketKeepsLargeMessagesWhole(t *testing.T) {
+	big := `{"x":"` + strings.Repeat("a", 200*1024) + `"}`
+	nodeGot := make(chan string, 1)
+	node := httptest.NewServer(websocket.Handler(func(ws *websocket.Conn) {
+		var in string
+		websocket.Message.Receive(ws, &in)
+		nodeGot <- in
+		websocket.Message.Send(ws, big)
+	}))
+	defer node.Close()
+	hub := openHub(t, func(ws *websocket.Conn) {
+		proxyWebSocket(ws, wsURL(node.URL, "/ws?sock=1"), "http://hub.test")
+	})
+	c, err := websocket.Dial(wsURL(hub.URL, "/ws"), "", "http://phone.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	websocket.Message.Send(c, big)
+	var out string
+	if err := websocket.Message.Receive(c, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out != big {
+		t.Fatalf("node->phone: got %d bytes in first message, want %d", len(out), len(big))
+	}
+	if in := <-nodeGot; in != big {
+		t.Fatalf("phone->node: got %d bytes in first message, want %d", len(in), len(big))
 	}
 }
