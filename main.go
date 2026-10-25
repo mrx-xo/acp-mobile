@@ -120,6 +120,7 @@ func configureCommandEnv(cmd *exec.Cmd) {
 type tailscaleInfo struct {
 	Hostname string
 	IP       string
+	Login    string
 }
 
 func tailscaleSelf() (tailscaleInfo, error) {
@@ -147,7 +148,13 @@ func tailscaleSelf() (tailscaleInfo, error) {
 			break
 		}
 	}
-	return tailscaleInfo{Hostname: name, IP: ip}, nil
+	info := tailscaleInfo{Hostname: name, IP: ip}
+	if ip != "" {
+		if login, err := whoisLogin(ip); err == nil {
+			info.Login = login
+		}
+	}
+	return info, nil
 }
 
 func authKeyPath() string {
@@ -288,6 +295,11 @@ func main() {
 			bridgeWebSocket(ws, sockPath)
 		},
 		Handshake: func(config *websocket.Config, r *http.Request) error {
+			// Hub-to-node dials come from golang.org/x/net/websocket, which
+			// always sends the hub's own Origin; peers are admitted already.
+			if isPeerRequest(r) {
+				return nil
+			}
 			origin := r.Header.Get("Origin")
 			if origin == "" {
 				if testMode {
@@ -370,92 +382,8 @@ func main() {
 		}
 	}
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// DNS rebinding protection
-		host := r.Host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		if !allowedHosts[host] {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-
-		// Extract client IP for rate limiting
-		clientIP := r.RemoteAddr
-		if h, _, err := net.SplitHostPort(clientIP); err == nil {
-			clientIP = h
-		}
-
-		// The icon must be public: iOS fetches apple-touch-icon WITHOUT
-		// cookies during Add to Home Screen; a 401 silently falls back
-		// to a page-screenshot icon. It's just a glyph — no secrets.
-		if r.URL.Path == "/apple-touch-icon.png" {
-			mux.ServeHTTP(w, r)
-			return
-		}
-		// Same for the manifest and service worker: iOS fetches the
-		// manifest without credentials, and a 401 on either one silently
-		// disables Web Push.  Both are static and secret-free.
-		if r.URL.Path == "/manifest.webmanifest" || r.URL.Path == "/sw.js" {
-			mux.ServeHTTP(w, r)
-			return
-		}
-
-		// Auth: if authkey query param is present and valid, set cookie and redirect
-		if qk := r.URL.Query().Get("authkey"); qk != "" {
-			if subtle.ConstantTimeCompare([]byte(qk), []byte(authKey)) != 1 {
-				if authRL.check(clientIP) {
-					http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
-					return
-				}
-				authRL.record(clientIP)
-				http.Error(w, "invalid authkey", http.StatusForbidden)
-				return
-			}
-			authRL.reset(clientIP)
-			http.SetCookie(w, &http.Cookie{
-				Name:     "authkey",
-				Value:    authKey,
-				Path:     "/",
-				HttpOnly: true,
-				SameSite: http.SameSiteStrictMode,
-				// Persistent: iOS home-screen web clips keep their own
-				// cookie jar; a session cookie dies every time the clip
-				// closes, forcing re-auth the clip can't perform.
-				MaxAge: 365 * 24 * 60 * 60,
-			})
-			// Serve directly — do NOT redirect-strip the authkey from the
-			// URL. "Add to Home Screen" snapshots the post-redirect URL,
-			// so stripping produced key-less web clips that landed on
-			// "unauthorized" once the session cookie was gone. Keeping
-			// the key in the URL makes bookmarks/clips self-authenticating
-			// (tailnet-only service; the link file already holds the key).
-			mux.ServeHTTP(w, r)
-			return
-		}
-
-		// Auth: check cookie
-		cookie, err := r.Cookie("authkey")
-		if err != nil {
-			// No cookie at all: a stale bookmark/web clip, not an attack.
-			// Don't feed the rate limiter — that was locking users out of
-			// the GOOD link after a few opens of a key-less icon.
-			http.Error(w, "unauthorized — open the full link (with authkey) from ~/.acp-mobile/link or the Telegram message, then re-add to Home Screen", http.StatusUnauthorized)
-			return
-		}
-		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(authKey)) != 1 {
-			if authRL.check(clientIP) {
-				http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
-				return
-			}
-			authRL.record(clientIP)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		mux.ServeHTTP(w, r)
-	})
+	peers := newPeerAuth(ts.Login, ts.IP)
+	handler := buildAuthHandler(mux, authKey, authRL, allowedHosts, peers)
 
 	// Write link file.  Prefer the `tailscale serve` https origin: Web
 	// Push only works from a secure origin, and the home-screen app has
@@ -2671,5 +2599,101 @@ func handleFileRead(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"path":    absPath,
 		"content": string(data),
+	})
+}
+
+func buildAuthHandler(next http.Handler, authKey string, authRL *rateLimiter, allowedHosts map[string]bool, peers *peerAuth) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// DNS rebinding protection
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if !allowedHosts[host] {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		// Extract client IP for rate limiting
+		clientIP := r.RemoteAddr
+		if h, _, err := net.SplitHostPort(clientIP); err == nil {
+			clientIP = h
+		}
+
+		// The icon must be public: iOS fetches apple-touch-icon WITHOUT
+		// cookies during Add to Home Screen; a 401 silently falls back
+		// to a page-screenshot icon. It's just a glyph — no secrets.
+		if r.URL.Path == "/apple-touch-icon.png" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Same for the manifest and service worker: iOS fetches the
+		// manifest without credentials, and a 401 on either one silently
+		// disables Web Push.  Both are static and secret-free.
+		if r.URL.Path == "/manifest.webmanifest" || r.URL.Path == "/sw.js" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Auth: if authkey query param is present and valid, set cookie and redirect
+		if qk := r.URL.Query().Get("authkey"); qk != "" {
+			if subtle.ConstantTimeCompare([]byte(qk), []byte(authKey)) != 1 {
+				if authRL.check(clientIP) {
+					http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
+					return
+				}
+				authRL.record(clientIP)
+				http.Error(w, "invalid authkey", http.StatusForbidden)
+				return
+			}
+			authRL.reset(clientIP)
+			http.SetCookie(w, &http.Cookie{
+				Name:     "authkey",
+				Value:    authKey,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+				// Persistent: iOS home-screen web clips keep their own
+				// cookie jar; a session cookie dies every time the clip
+				// closes, forcing re-auth the clip can't perform.
+				MaxAge: 365 * 24 * 60 * 60,
+			})
+			// Serve directly — do NOT redirect-strip the authkey from the
+			// URL. "Add to Home Screen" snapshots the post-redirect URL,
+			// so stripping produced key-less web clips that landed on
+			// "unauthorized" once the session cookie was gone. Keeping
+			// the key in the URL makes bookmarks/clips self-authenticating
+			// (tailnet-only service; the link file already holds the key).
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Auth: a tailnet peer sharing our Tailscale login needs no cookie.
+		// Never consult the rate limiter for peer decisions.
+		if _, cerr := r.Cookie("authkey"); cerr != nil && peers.allow(clientIP) {
+			next.ServeHTTP(w, withPeerFlag(r))
+			return
+		}
+
+		// Auth: check cookie
+		cookie, err := r.Cookie("authkey")
+		if err != nil {
+			// No cookie at all: a stale bookmark/web clip, not an attack.
+			// Don't feed the rate limiter — that was locking users out of
+			// the GOOD link after a few opens of a key-less icon.
+			http.Error(w, "unauthorized — open the full link (with authkey) from ~/.acp-mobile/link or the Telegram message, then re-add to Home Screen", http.StatusUnauthorized)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(authKey)) != 1 {
+			if authRL.check(clientIP) {
+				http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
+				return
+			}
+			authRL.record(clientIP)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }
