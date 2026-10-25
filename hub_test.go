@@ -193,3 +193,50 @@ func TestRefreshPeerIPFromTailscaleStatus(t *testing.T) {
 		t.Fatalf("ip = %s", m.IP)
 	}
 }
+
+func TestFetchPeerSessionsRefreshesIPAndRetries(t *testing.T) {
+	hits := 0
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		fmt.Fprint(w, `{"sessions":[{"pid":5,"bufferName":"x"}]}`)
+	}))
+	defer peer.Close()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(peer.URL, "http://"))
+	oldPort, oldTS := peerPort, tailscaleStatusJSON
+	peerPort = port
+	t.Cleanup(func() { peerPort, tailscaleStatusJSON = oldPort, oldTS })
+	tailscaleStatusJSON = func() ([]byte, error) {
+		return []byte(`{"Peer":{"k":{"HostName":"vengeance","TailscaleIPs":["127.0.0.1"]}}}`), nil
+	}
+	// 0.0.0.1 is not routable; the first dial must fail before the retry.
+	withFleetFixture(t, "mrx", machine{ID: "vengeance", IP: "0.0.0.1"})
+	sessions, err := fetchPeerSessions(context.Background(), machine{ID: "vengeance", IP: "0.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].Machine != "vengeance" || hits != 1 {
+		t.Fatalf("sessions = %+v hits = %d", sessions, hits)
+	}
+	if m, _ := fleet.reg.byID("vengeance"); m.IP != "127.0.0.1" {
+		t.Fatalf("ip = %s", m.IP)
+	}
+}
+
+func TestFetchPeerSessionsNon200DoesNotRefresh(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", 500)
+	}))
+	defer peer.Close()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(peer.URL, "http://"))
+	oldPort, oldTS := peerPort, tailscaleStatusJSON
+	peerPort = port
+	t.Cleanup(func() { peerPort, tailscaleStatusJSON = oldPort, oldTS })
+	tailscaleStatusJSON = func() ([]byte, error) {
+		t.Fatal("tailscale status called for a peer that answered")
+		return nil, nil
+	}
+	withFleetFixture(t, "mrx", machine{ID: "vengeance", IP: "127.0.0.1"})
+	if _, err := fetchPeerSessions(context.Background(), machine{ID: "vengeance", IP: "127.0.0.1"}); err == nil {
+		t.Fatal("want error on 500")
+	}
+}

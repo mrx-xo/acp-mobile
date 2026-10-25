@@ -20,11 +20,23 @@ type machineState struct {
 	LastSeen int64  `json:"lastSeen"`
 }
 
+// peerPort is the port every node serves on.  A var so tests can point
+// the hub at an httptest port.
+var peerPort = "8090"
+
+// doError marks a failure of the HTTP round trip itself (dial, timeout),
+// as opposed to a peer that answered badly.
+type doError struct{ error }
+
+func (e doError) Unwrap() error { return e.error }
+
 var peerHTTP = &http.Client{Timeout: 2 * time.Second}
 
 // tailscaleStatusJSON returns `tailscale status --json`.  A var for tests.
 var tailscaleStatusJSON = func() ([]byte, error) {
-	return command("tailscale", "status", "--json").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return commandContext(ctx, "tailscale", "status", "--json").Output()
 }
 
 // refreshPeerIP re-resolves a peer's tailnet IPv4 from Tailscale and
@@ -68,7 +80,7 @@ func refreshPeerIP(id string) {
 func fetchPeerOnce(ctx context.Context, m machine) ([]sessionInfo, error) {
 	addr := m.addr
 	if addr == "" {
-		addr = m.IP + ":8090"
+		addr = net.JoinHostPort(m.IP, peerPort)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/api/sessions", nil)
 	if err != nil {
@@ -77,7 +89,7 @@ func fetchPeerOnce(ctx context.Context, m machine) ([]sessionInfo, error) {
 	req.Header.Set(peerHeader, "1")
 	resp, err := peerHTTP.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, doError{err}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -95,15 +107,17 @@ func fetchPeerOnce(ctx context.Context, m machine) ([]sessionInfo, error) {
 	return body.Sessions, nil
 }
 
-// fetchPeerSessions fetches a peer's local sessions.  A dial error (the
-// peer's tailnet IP may have changed) refreshes the IP once and retries.
+// fetchPeerSessions fetches a peer's local sessions.  Any round-trip error,
+// timeouts included (a peer whose tailnet IP changed usually just drops
+// packets), refreshes the IP once and retries if it changed.  A peer that
+// answered (non-200, bad body) has the right IP, so no refresh.
 func fetchPeerSessions(ctx context.Context, m machine) ([]sessionInfo, error) {
 	sessions, err := fetchPeerOnce(ctx, m)
 	if err == nil || m.addr != "" {
 		return sessions, err
 	}
-	var opErr *net.OpError
-	if !errors.As(err, &opErr) || opErr.Op != "dial" {
+	var de doError
+	if !errors.As(err, &de) {
 		return nil, err
 	}
 	refreshPeerIP(m.ID)
