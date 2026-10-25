@@ -147,6 +147,8 @@ function loadSocketClient(overrides = {}) {
     pendingPermissions: [],
     currentSessionKey: null,
     currentSockPid: '1',
+    currentSockMachine: null,
+    HUB_MACHINE: '',
     basePath: '',
     location: {protocol: 'http:', host: 'x'},
     document: {

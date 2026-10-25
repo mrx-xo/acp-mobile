@@ -1400,6 +1400,7 @@ input, textarea, #fbv-content, .msg, .msg *,
 .hc-agent.claude { color: var(--orange); }
 .hc-agent.codex { color: var(--aqua); }
 .hc-agent.other { color: var(--blue); }
+.machine-badge { font-family: var(--mono); font-weight: 600; }
 /* Catalogue on a History row: the note under the preview, tags as chips. */
 .hist-card .hc-note {
   font-size: 12px; color: var(--fg); margin: 5px 0 0 24px; line-height: 1.4;
@@ -2351,6 +2352,7 @@ let isAtBottom = true;
 let msgIdCounter = 0;
 let projectCwd = null;
 let currentSockPid = null;
+let currentSockMachine = null; // fleet machine of currentSockPid; hub-local when empty
 let currentSessionKey = null;
 let currentBufferName = null;
 
@@ -4157,7 +4159,7 @@ function clearMessages() {
   renderedTurnStart = 0;
 }
 
-function connect(pid) {
+function connect(pid, machine) {
   resetThoughtState();
   currentUserMsg = null;
   replayMode = true;
@@ -4168,6 +4170,11 @@ function connect(pid) {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   let url = proto + '//' + location.host + basePath + '/ws';
   if (pid) url += '?sock=' + pid;
+  // A peer's session goes through the hub's proxy; the hub's own
+  // sessions keep the plain local dial.
+  if (machine && machine !== HUB_MACHINE) {
+    url += (pid ? '&' : '?') + 'machine=' + encodeURIComponent(machine);
+  }
 
   // One live socket at a time. If a previous dial is still connecting or
   // open, drop it silently so two sockets never share the handlers,
@@ -4344,6 +4351,7 @@ async function redial() {
         // earlier failed attempts' backoff delay the reunion.
         if (same.pid !== currentSockPid) reconnectAttempts = 1;
         currentSockPid = same.pid;
+        currentSockMachine = same.machine || null;
       } else if (!sessions.some(s => s.pid === currentSockPid)) {
         // Our socket is gone and the session hasn't resurfaced yet
         // (mid-reload on the rig, or killed, or its probe timed out).
@@ -4372,7 +4380,7 @@ async function redial() {
     } catch (err) { /* offline — fall through to the old pid */ }
   }
   if (currentSockPid) {
-    connect(String(currentSockPid));
+    connect(String(currentSockPid), currentSockMachine);
   } else {
     connect();
   }
@@ -5433,13 +5441,30 @@ async function fbOpenFile(filePath) {
 let discoverMode = false;
 let sortMode = localStorage.getItem('acp-sort') || 'project'; // 'project' or 'recent'
 let lastSessions = [];
+// Fleet hub: our own machine id and the registry from /api/sessions.
+// MACHINES is empty on a node or a hub with no peers.
+let HUB_MACHINE = '';
+let MACHINES = [];
+const MACHINE_COLORS = { mrx: '#d79921', mrx2: '#83a598', vengeance: '#fb4934' };
+function machineName(id) {
+  const m = MACHINES.find(m => m.id === id);
+  return (m && m.name) || String(id).toUpperCase();
+}
+function machineColor(id) {
+  return MACHINE_COLORS[id] || '#928374';
+}
 
 // Card identity: buffer name first — it's the only thing that survives
 // the rig's reload (SPC c y), which respawns the client with a new pid
 // AND a new session id (claude resume forks).  Session id covers
 // non-rig sessions; pid covers sockets still mid-handshake.
+// Fleet: a peer machine's session is prefixed with its machine id so it
+// never collides with a same-named hub chat; the hub's own sessions (and
+// any response without machines) keep the bare key they always had.
 function sKey(s) {
-  return s.bufferName || s.sessionId || ('pid:' + s.pid);
+  const bare = s.bufferName || s.sessionId || ('pid:' + s.pid);
+  if (!s.machine || !HUB_MACHINE || s.machine === HUB_MACHINE) return bare;
+  return s.machine + '/' + bare;
 }
 function getLastViewed(session) {
   const v = parseInt(localStorage.getItem('acp-viewed-' + sKey(session)) || '0', 10);
@@ -5512,6 +5537,8 @@ async function loadSessions(silent) {
       location.reload();
       return;
     }
+    MACHINES = data.machines || [];
+    HUB_MACHINE = data.machine || (MACHINES[0] && MACHINES[0].id) || '';
     let sessions = data.sessions || [];
     const snapshot = {};
     for (const s of sessions) {
@@ -5739,6 +5766,10 @@ function makeSessionCard(s, name) {
                      statusWord,
                      s.lastActivity ? escHtml(timeAgo(s.lastActivity)) : '']
     .filter(Boolean);
+  if (s.machine && HUB_MACHINE && s.machine !== HUB_MACHINE) {
+    metaParts.unshift('<span class="machine-badge" style="color:' + machineColor(s.machine) + '">' +
+                      escHtml(machineName(s.machine)) + '</span>');
+  }
   d.innerHTML =
     '<div class="' + dotClass + '"></div>' +
     '<div class="sc-info">' +
@@ -5765,6 +5796,7 @@ function selectSession(session) {
   markViewed(session);
   stashDraft(); // the chat being left keeps its own half-typed text
   currentSockPid = session.pid;
+  currentSockMachine = session.machine || null;
   headerGit = null;
   headerModel = '';
   fetchGitStatus();
@@ -5795,7 +5827,7 @@ function selectSession(session) {
   }
 
   showChat();
-  connect(String(session.pid));
+  connect(String(session.pid), session.machine);
 }
 
 function showChat() {
