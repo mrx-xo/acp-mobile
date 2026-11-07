@@ -39,7 +39,7 @@ var peerHTTP = &http.Client{Timeout: 2 * time.Second}
 var tailscaleStatusJSON = func() ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return commandContext(ctx, "tailscale", "status", "--json").Output()
+	return tailscaleOutput(ctx, "status", "--json")
 }
 
 // refreshPeerIP re-resolves a peer's tailnet IPv4 from Tailscale and

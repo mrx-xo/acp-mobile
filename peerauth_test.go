@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -298,5 +300,31 @@ func TestWSHandshakePeerFlag(t *testing.T) {
 	}
 	if err := dial(true); err != nil {
 		t.Fatalf("peer-flagged upgrade must be accepted: %v", err)
+	}
+}
+
+// Eight hub requests from the same peer arriving before the first whois
+// answers must share one lookup, not fan out into eight CLI runs.
+func TestPeerAuthConcurrentMissesShareOneWhois(t *testing.T) {
+	var calls int32
+	whoisPeer = func(ip string) (string, string, error) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(10 * time.Millisecond)
+		return "me@example.com", "mrx.example.ts.net.", nil
+	}
+	p := newPeerAuth("me@example.com", "100.100.0.1", testHubs)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if !p.allow("100.100.0.3") {
+				t.Error("same login must be allowed")
+			}
+		}()
+	}
+	wg.Wait()
+	if calls != 1 {
+		t.Fatalf("whois calls = %d, want 1", calls)
 	}
 }

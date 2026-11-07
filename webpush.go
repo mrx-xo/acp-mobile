@@ -420,7 +420,9 @@ func serveURLFromStatus(status []byte, port string) string {
 // port exists.  Web Push needs a secure origin, and the home-screen app
 // must be installed from it, so the link file hands out that URL.
 func tailscaleServeURL(port string) string {
-	out, err := command("tailscale", "serve", "status", "--json").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := tailscaleOutput(ctx, "serve", "status", "--json")
 	if err != nil {
 		return ""
 	}

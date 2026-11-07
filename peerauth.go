@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"net/netip"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -39,9 +38,7 @@ var tailnetPrefix = netip.MustParsePrefix("100.64.0.0/10")
 var whoisPeer = func(ip string) (login, nodeName string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), whoisTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tailscale", "whois", "--json", ip)
-	configureCommandEnv(cmd)
-	out, err := cmd.Output()
+	out, err := tailscaleOutput(ctx, "whois", "--json", ip)
 	if err != nil {
 		return "", "", err
 	}
@@ -90,6 +87,9 @@ type peerAuth struct {
 	// selfRetry is the earliest time a lazy self-login whois may run again.
 	selfRetry time.Time
 	mu        sync.Mutex
+	// lookup is held across a cache miss (re-check, whois, store) so that
+	// a burst of requests from one peer costs one CLI run, not one each.
+	lookup sync.Mutex
 }
 
 func newPeerAuth(selfLogin, selfIP string, hubs []string) *peerAuth {
@@ -139,13 +139,17 @@ func (p *peerAuth) allow(remoteIP string) bool {
 	if self == "" {
 		return false
 	}
-	p.mu.Lock()
-	e, ok := p.cache[remoteIP]
-	p.mu.Unlock()
-	if ok && peerNow().Before(e.expires) {
-		return e.ok
+	if e, ok := p.cached(remoteIP); ok {
+		return e
 	}
-	// Run whois outside the mutex so a slow lookup never blocks other peers.
+	// One miss at a time: the first caller runs whois, the rest find the
+	// verdict in the cache when the lock frees.  p.mu stays free so cached
+	// peers are never blocked behind a slow lookup.
+	p.lookup.Lock()
+	defer p.lookup.Unlock()
+	if e, ok := p.cached(remoteIP); ok {
+		return e
+	}
 	login, node, err := whoisPeer(remoteIP)
 	allowed := err == nil && login != "" && login == self && p.hubs[normNode(node)]
 	ttl := peerCacheTTL
@@ -176,4 +180,15 @@ func withPeerFlag(r *http.Request) *http.Request {
 func isPeerRequest(r *http.Request) bool {
 	v, _ := r.Context().Value(ctxPeer).(bool)
 	return v
+}
+
+// cached returns the unexpired verdict for remoteIP, if any.
+func (p *peerAuth) cached(remoteIP string) (bool, bool) {
+	p.mu.Lock()
+	e, ok := p.cache[remoteIP]
+	p.mu.Unlock()
+	if ok && peerNow().Before(e.expires) {
+		return e.ok, true
+	}
+	return false, false
 }

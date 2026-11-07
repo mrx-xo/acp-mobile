@@ -101,6 +101,29 @@ func commandContext(ctx context.Context, name string, args ...string) *exec.Cmd 
 	return cmd
 }
 
+// tailscaleMu serializes every run of the tailscale CLI.  On macOS the CLI
+// is the app binary: each run loads the system VPN profiles and re-saves
+// Tailscale's when it looks stale.  Concurrent runs collide on that save;
+// the slow symptom is duplicate "Tailscale 2" profiles, the loud one
+// (2026-11-06, three runs within 10 ms) is the tunnel being torn down and
+// restarted with WantRunning=false, which leaves Tailscale stopped until a
+// human clicks Connect.  Never call the CLI except through tailscaleOutput.
+var tailscaleMu sync.Mutex
+
+// tailscaleExec runs one tailscale CLI command.  A var for tests.
+var tailscaleExec = func(ctx context.Context, args ...string) ([]byte, error) {
+	return commandContext(ctx, "tailscale", args...).Output()
+}
+
+// tailscaleOutput is the only entry point to the tailscale CLI; see
+// tailscaleMu.  Callers pass a context with a deadline so a wedged CLI
+// cannot hold the lock forever.
+func tailscaleOutput(ctx context.Context, args ...string) ([]byte, error) {
+	tailscaleMu.Lock()
+	defer tailscaleMu.Unlock()
+	return tailscaleExec(ctx, args...)
+}
+
 func configureCommandEnv(cmd *exec.Cmd) {
 	if len(appConfig.ExtraPath) > 0 {
 		env := os.Environ()
@@ -127,7 +150,9 @@ type tailscaleInfo struct {
 }
 
 func tailscaleSelf() (tailscaleInfo, error) {
-	out, err := command("tailscale", "status", "--self", "--json").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := tailscaleOutput(ctx, "status", "--self", "--json")
 	if err != nil {
 		return tailscaleInfo{}, err
 	}
