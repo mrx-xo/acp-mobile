@@ -143,6 +143,38 @@ func configureCommandEnv(cmd *exec.Cmd) {
 	}
 }
 
+// At boot the service can start before Tailscale does.  Startup asks again
+// every tailscaleWaitInterval for up to tailscaleWaitLimit before settling
+// for localhost only.
+const (
+	tailscaleWaitInterval = 3 * time.Second
+	tailscaleWaitLimit    = 2 * time.Minute
+)
+
+// waitForTailscale calls self until it succeeds or limit has passed, and
+// returns the last result.  A missing tailscale CLI will not appear by
+// waiting, so that returns at once.  Every failure is logged: a silent
+// localhost-only start hid NEMESIS from the hub for four days (2026-11-05).
+func waitForTailscale(self func() (tailscaleInfo, error), interval, limit time.Duration) (tailscaleInfo, error) {
+	deadline := time.Now().Add(limit)
+	for {
+		ts, err := self()
+		if err == nil {
+			return ts, nil
+		}
+		if errors.Is(err, exec.ErrNotFound) {
+			log.Printf("tailscale: CLI not found, serving localhost only: %v", err)
+			return ts, err
+		}
+		if time.Now().Add(interval).After(deadline) {
+			log.Printf("tailscale: no answer after %v, serving localhost only: %v", limit, err)
+			return ts, err
+		}
+		log.Printf("tailscale: not up yet, retrying in %v: %v", interval, err)
+		time.Sleep(interval)
+	}
+}
+
 type tailscaleInfo struct {
 	Hostname string
 	IP       string
@@ -363,7 +395,7 @@ func main() {
 		"127.0.0.1": true,
 		"localhost": true,
 	}
-	ts, tsErr := tailscaleSelf()
+	ts, tsErr := waitForTailscale(tailscaleSelf, tailscaleWaitInterval, tailscaleWaitLimit)
 	if ts.IP != "" {
 		hubOrigin = "http://" + net.JoinHostPort(ts.IP, port)
 	} else {
