@@ -5468,8 +5468,8 @@ function sKey(s) {
   if (!s.machine || !HUB_MACHINE || s.machine === HUB_MACHINE) return bare;
   return s.machine + '/' + bare;
 }
-// Fleet step 1: a peer machine's session is view and reply only.  Every
-// Lisp-backed action (kill, fork, clone, label, push, pin, model) would
+// Fleet step 1: a peer machine's session is view, reply and kill.  Every
+// other Lisp-backed action (fork, clone, label, push, pin, model) would
 // run on the hub's Emacs, which does not own the chat, so the UI hides or
 // disables them until step 3 routes actions to the owning machine.
 const REMOTE_ACTION_TITLE = 'Not available for remote sessions yet';
@@ -5479,12 +5479,13 @@ function isRemoteSession(s) {
 function isRemoteChat() {
   return !!(currentSockMachine && HUB_MACHINE && currentSockMachine !== HUB_MACHINE);
 }
-// Kill, clone and model have no other disabled state worth keeping, so a
+// Clone and model have no other disabled state worth keeping, so a
 // local chat simply gets back what a remote one took.  Fork and pin
-// render their own state (refreshForkEntry, renderPinEntry).
+// render their own state (refreshForkEntry, renderPinEntry).  Kill is
+// not guarded: the hub forwards it to the owning machine.
 function applyRemoteChatGuards() {
   const remote = isRemoteChat();
-  for (const id of ['tb-kill', 'tb-clone', 'tb-model']) {
+  for (const id of ['tb-clone', 'tb-model']) {
     const b = document.getElementById(id);
     if (!b) continue;
     if (remote) { b.disabled = true; b.title = REMOTE_ACTION_TITLE; }
@@ -5806,14 +5807,15 @@ function makeSessionCard(s, name) {
       (metaParts.length ? '<div class="sc-path">' + metaParts.join('  &middot;  ') + '</div>' : '') +
     '</div>';
   // A remote card peeks through /api/preview?pid=, which only knows the
-  // hub's own sockets, and deletes through the hub's Emacs: neither yet.
+  // hub's own sockets: not yet.  Delete works: the hub forwards the kill
+  // to the machine named in the request.
   const remote = isRemoteSession(s);
   if (!remote) attachPeekSwipe(d, s, name);
-  if (s.bufferName && !remote) {
+  if (s.bufferName) {
     const del = document.createElement('button');
     del.className = 'sc-delete';
     del.textContent = '\u00d7';
-    del.onclick = (e) => { e.stopPropagation(); killSessionByName(s.bufferName); };
+    del.onclick = (e) => { e.stopPropagation(); killSessionByName(s.bufferName, remote ? s.machine : undefined); };
     d.appendChild(del);
   }
   d.onclick = () => selectSession(s);
@@ -6654,7 +6656,6 @@ if (typeof ResizeObserver !== 'undefined') {
 // --- Model picker: end ---
 
 async function killSession() {
-  if (isRemoteChat()) return;
   if (!currentBufferName) {
     alert('No buffer name available for this session');
     return;
@@ -6665,7 +6666,7 @@ async function killSession() {
     const resp = await fetch(basePath + '/api/kill', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ bufferName: currentBufferName })
+      body: JSON.stringify({ bufferName: currentBufferName, machine: isRemoteChat() ? currentSockMachine : undefined })
     });
     const data = await resp.json();
     if (data.error) {
@@ -6690,13 +6691,14 @@ function pollForNewSession() {
   setTimeout(poll, 1000);
 }
 
-async function killSessionByName(bufferName) {
+// MACHINE is set for a peer's chat only; the hub forwards the kill there.
+async function killSessionByName(bufferName, machine) {
   if (!window.confirm('Kill "' + bufferName + '"?')) return;
   try {
     const resp = await fetch(basePath + '/api/kill', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ bufferName })
+      body: JSON.stringify({ bufferName, machine })
     });
     const data = await resp.json();
     if (data.error) { alert('Kill failed: ' + data.error); return; }

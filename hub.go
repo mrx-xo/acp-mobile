@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -219,13 +221,10 @@ func mergedSessions(ctx context.Context) ([]sessionInfo, []machineState) {
 // guard reads; every guarded route's body is far smaller.
 const remoteActionPeekLimit = 1 << 20
 
-// refuseRemoteMachine answers 501 when r names a machine (query or JSON
-// body field "machine") other than this one, and reports whether it did.
-// Kill, spawn, fork, label, push, pin and preview run on this machine's
-// Emacs and sockets, which do not own a peer's chat; routing them to the
-// owning node arrives in fleet step 3.  A request without a machine is
-// untouched, and the body is restored for the handler.
-func refuseRemoteMachine(w http.ResponseWriter, r *http.Request) bool {
+// remoteTarget returns the machine r names (query or JSON body field
+// "machine") when it is not this one, else "".  The body is restored for
+// the handler.
+func remoteTarget(r *http.Request) string {
 	target := r.URL.Query().Get("machine")
 	if target == "" && r.Body != nil && r.Body != http.NoBody {
 		peek, err := io.ReadAll(io.LimitReader(r.Body, remoteActionPeekLimit))
@@ -243,14 +242,81 @@ func refuseRemoteMachine(w http.ResponseWriter, r *http.Request) bool {
 		}
 	}
 	if target == "" {
-		return false
+		return ""
 	}
 	fleet.mu.RLock()
 	self := fleet.self
 	fleet.mu.RUnlock()
 	if target == self {
+		return ""
+	}
+	return target
+}
+
+// refuseRemoteMachine answers 501 when r names another machine, and
+// reports whether it did.  Spawn, fork, label, push, pin and preview run
+// on this machine's Emacs and sockets, which do not own a peer's chat;
+// routing them to the owning node arrives in fleet step 3.  Kill already
+// routes (forwardToMachine).  A request without a machine is untouched.
+func refuseRemoteMachine(w http.ResponseWriter, r *http.Request) bool {
+	if remoteTarget(r) == "" {
 		return false
 	}
 	http.Error(w, "remote machine actions arrive in a later step", http.StatusNotImplemented)
 	return true
+}
+
+// peerActionHTTP carries a forwarded action.  The node runs emacsclient
+// before it answers, so this waits longer than the session poll does.
+var peerActionHTTP = &http.Client{Timeout: 15 * time.Second}
+
+// forwardToMachine replays r's method, path and body on the machine with
+// id target, as a peer call, and relays that machine's status and body.
+// The node sees its own id in ?machine= and runs the action locally.  A
+// failure of the forward itself is answered as a JSON error object,
+// because the phone parses every action reply as JSON.
+func forwardToMachine(w http.ResponseWriter, r *http.Request, target string) {
+	jsonError := func(code int, msg string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	}
+	fleet.mu.RLock()
+	m, ok := fleet.reg.byID(target)
+	fleet.mu.RUnlock()
+	if !ok {
+		jsonError(http.StatusNotFound, "unknown machine "+target)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, remoteActionPeekLimit))
+	if err != nil {
+		jsonError(http.StatusBadRequest, "unreadable request body")
+		return
+	}
+	u := "http://" + peerHostPort(m) + r.URL.Path + "?machine=" + url.QueryEscape(target)
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, u, bytes.NewReader(body))
+	if err != nil {
+		jsonError(http.StatusInternalServerError, err.Error())
+		return
+	}
+	req.Header.Set(peerHeader, "1")
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		req.Header.Set("Content-Type", ct)
+	}
+	resp, err := peerActionHTTP.Do(req)
+	if err != nil {
+		name := m.Name
+		if name == "" {
+			name = m.ID
+		}
+		log.Printf("forward %s to %s: %v", r.URL.Path, m.ID, err)
+		jsonError(http.StatusBadGateway, name+" did not answer")
+		return
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }

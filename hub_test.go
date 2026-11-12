@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -287,5 +288,118 @@ func TestFetchPeerSessionsNon200DoesNotRefresh(t *testing.T) {
 	withFleetFixture(t, "mrx", machine{ID: "vengeance", IP: "127.0.0.1"})
 	if _, err := fetchPeerSessions(context.Background(), machine{ID: "vengeance", IP: "127.0.0.1"}); err == nil {
 		t.Fatal("want error on 500")
+	}
+}
+
+// Fleet step 3, kill only: the hub's Emacs does not own a peer's chat, so
+// the hub hands /api/kill to the machine that does and relays its answer.
+func TestKillForwardsToOwningMachine(t *testing.T) {
+	argsFile := installFakeEmacsclient(t, "t")
+	var gotMethod, gotPath, gotHeader, gotMachine, gotBody string
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotHeader = r.Method, r.URL.Path, r.Header.Get(peerHeader)
+		gotMachine = r.URL.Query().Get("machine")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+
+	rec := httptest.NewRecorder()
+	handleKill(rec, httptest.NewRequest("POST", "/api/kill",
+		strings.NewReader(`{"bufferName":"Claude Agent @ skate","machine":"vengeance"}`)))
+
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"ok":true}` {
+		t.Fatalf("hub answered %d %q, want the peer's 200", rec.Code, rec.Body.String())
+	}
+	if gotMethod != "POST" || gotPath != "/api/kill" || gotHeader != "1" || gotMachine != "vengeance" {
+		t.Fatalf("peer saw %s %s header=%q machine=%q", gotMethod, gotPath, gotHeader, gotMachine)
+	}
+	var body struct{ BufferName string }
+	if json.Unmarshal([]byte(gotBody), &body) != nil || body.BufferName != "Claude Agent @ skate" {
+		t.Fatalf("peer body = %q, want the buffer name", gotBody)
+	}
+	if _, err := os.Stat(argsFile); err == nil {
+		t.Fatal("a remote kill still ran the hub's emacsclient")
+	}
+}
+
+func TestKillRelaysThePeersRefusal(t *testing.T) {
+	installFakeEmacsclient(t, "t")
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"error":"session not found or already closed"}`)
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+
+	rec := httptest.NewRecorder()
+	handleKill(rec, httptest.NewRequest("POST", "/api/kill",
+		strings.NewReader(`{"bufferName":"Claude Agent @ skate","machine":"vengeance"}`)))
+
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "session not found or already closed") {
+		t.Fatalf("hub answered %d %q, want the peer's 404 and message", rec.Code, rec.Body.String())
+	}
+}
+
+// The phone reads every kill reply as JSON, so an unreachable or unknown
+// machine must still answer with an error object.
+func TestKillOnUnreachableOrUnknownMachineAnswersJSON(t *testing.T) {
+	installFakeEmacsclient(t, "t")
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", deadURL))
+	for _, tc := range []struct {
+		machine string
+		code    int
+		want    string
+	}{
+		{"vengeance", http.StatusBadGateway, "NEMESIS"},
+		{"nowhere", http.StatusNotFound, "nowhere"},
+	} {
+		rec := httptest.NewRecorder()
+		handleKill(rec, httptest.NewRequest("POST", "/api/kill",
+			strings.NewReader(`{"bufferName":"x","machine":"`+tc.machine+`"}`)))
+		var reply struct{ Error string }
+		if rec.Code != tc.code || json.Unmarshal(rec.Body.Bytes(), &reply) != nil || !strings.Contains(reply.Error, tc.want) {
+			t.Errorf("machine %s: %d %q, want %d and a JSON error naming %s", tc.machine, rec.Code, rec.Body.String(), tc.code, tc.want)
+		}
+	}
+}
+
+// Windows has no lsof or /proc, so a NEMESIS card has no cwd to name its
+// project from; the buffer name carries it.
+func TestProjectFromBufferName(t *testing.T) {
+	for name, want := range map[string]string{
+		"Claude Agent @ studio-bridge<2>": "studio-bridge",
+		"Codex B Agent @ .dotfiles":       ".dotfiles",
+		"Claude Agent":                    "",
+		"":                                "",
+	} {
+		if got := projectFromBufferName(name); got != want {
+			t.Errorf("projectFromBufferName(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// A kill that already arrived as a hub-to-node call is never passed on:
+// two hubs must not bounce an action between each other (spec section 8).
+func TestKillFromAPeerIsNotForwardedAgain(t *testing.T) {
+	installFakeEmacsclient(t, "t")
+	hits := 0
+	peer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+
+	rec := httptest.NewRecorder()
+	handleKill(rec, withPeerFlag(httptest.NewRequest("POST", "/api/kill",
+		strings.NewReader(`{"bufferName":"x","machine":"vengeance"}`))))
+
+	if hits != 0 || rec.Code != http.StatusNotImplemented {
+		t.Fatalf("peer-origin kill: forwarded %d times, code %d; want 0 and 501", hits, rec.Code)
 	}
 }

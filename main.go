@@ -804,6 +804,9 @@ func localSessions(parent context.Context) []sessionInfo {
 	fleet.mu.RUnlock()
 	for i := range sessions {
 		sessions[i].Machine = self
+		if sessions[i].Project == "" {
+			sessions[i].Project = projectFromBufferName(sessions[i].BufferName)
+		}
 	}
 	return sessions
 }
@@ -1975,7 +1978,12 @@ func evalEmacsContext(ctx context.Context, name string, args ...string) ([]byte,
 }
 
 func handleKill(w http.ResponseWriter, r *http.Request) {
-	if refuseRemoteMachine(w, r) {
+	if target := remoteTarget(r); target != "" {
+		if isPeerRequest(r) {
+			http.Error(w, "a forwarded action is not forwarded again", http.StatusNotImplemented)
+			return
+		}
+		forwardToMachine(w, r, target)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -2157,6 +2165,19 @@ func probeSocket(sockPath string, pid int) sessionInfo {
 	}
 
 	return info
+}
+
+// bufferNameProject matches agent-shell's "<agent> @ <project><N>" names.
+var bufferNameProject = regexp.MustCompile(`^.*? @ (.+?)(?:<\d+>)?$`)
+
+// projectFromBufferName returns the project part of an agent-shell buffer
+// name, or "".  It is the fallback where processCwd finds nothing (Windows
+// has neither /proc nor lsof); index.html's parseBufferName is the mirror.
+func projectFromBufferName(name string) string {
+	if m := bufferNameProject.FindStringSubmatch(name); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 func processCwd(pid int) string {

@@ -48,7 +48,8 @@ func TestLoadRegistryRejectsMalformed(t *testing.T) {
 }
 
 // Until fleet step 3 the hub answers Lisp-backed actions aimed at another
-// machine with 501 instead of running them on its own Emacs.
+// machine with 501 instead of running them on its own Emacs.  Kill is the
+// exception: it is forwarded to the owner (see hub_test.go).
 func TestRemoteMachineActionsReturn501(t *testing.T) {
 	// Fakes first: a guard that lets a request through must never reach
 	// the real daemon from a test.
@@ -60,8 +61,6 @@ func TestRemoteMachineActionsReturn501(t *testing.T) {
 		h    http.HandlerFunc
 		req  *http.Request
 	}{
-		{"kill body", handleKill, httptest.NewRequest("POST", "/api/kill", strings.NewReader(`{"bufferName":"x","machine":"vengeance"}`))},
-		{"kill query", handleKill, httptest.NewRequest("POST", "/api/kill?machine=vengeance", strings.NewReader(`{"bufferName":"x"}`))},
 		{"spawn", handleSpawn, httptest.NewRequest("POST", "/api/spawn", strings.NewReader(`{"cwd":"/tmp","machine":"vengeance"}`))},
 		{"fork probe", handleFork, httptest.NewRequest("GET", "/api/fork?bufferName=x&machine=vengeance", nil)},
 		{"label", handleLabel, httptest.NewRequest("POST", "/api/label", strings.NewReader(`{"bufferName":"x","machine":"vengeance"}`))},
