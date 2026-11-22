@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -254,10 +253,10 @@ func remoteTarget(r *http.Request) string {
 }
 
 // refuseRemoteMachine answers 501 when r names another machine, and
-// reports whether it did.  Spawn, fork, label, push, pin and preview run
-// on this machine's Emacs and sockets, which do not own a peer's chat;
-// routing them to the owning node arrives in fleet step 3.  Kill already
-// routes (forwardToMachine).  A request without a machine is untouched.
+// reports whether it did.  Spawn, label, push, pin and preview run on this
+// machine's Emacs and sockets, which do not own a peer's chat; routing
+// them to the owning node arrives in fleet step 3.  Kill and fork already
+// route (forwardToMachine).  A request without a machine is untouched.
 func refuseRemoteMachine(w http.ResponseWriter, r *http.Request) bool {
 	if remoteTarget(r) == "" {
 		return false
@@ -293,7 +292,11 @@ func forwardToMachine(w http.ResponseWriter, r *http.Request, target string) {
 		jsonError(http.StatusBadRequest, "unreadable request body")
 		return
 	}
-	u := "http://" + peerHostPort(m) + r.URL.Path + "?machine=" + url.QueryEscape(target)
+	// Keep the caller's query (a GET probe names its chat there) and make
+	// sure the machine rides in it, wherever the caller put it.
+	query := r.URL.Query()
+	query.Set("machine", target)
+	u := "http://" + peerHostPort(m) + r.URL.Path + "?" + query.Encode()
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, u, bytes.NewReader(body))
 	if err != nil {
 		jsonError(http.StatusInternalServerError, err.Error())

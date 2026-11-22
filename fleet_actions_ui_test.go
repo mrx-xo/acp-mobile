@@ -11,14 +11,14 @@ import (
 )
 
 // Until fleet step 3, a remote session must not drive the hub's Emacs:
-// the chat's Lisp-backed actions are disabled.  Kill is the exception: the
-// hub forwards it to the owning machine, so the card keeps its delete
-// button and the request names that machine.  The hub's own session keeps
-// every action.
+// the chat's Lisp-backed actions are disabled.  Kill and fork are the
+// exceptions: the hub forwards them to the owning machine, so the card
+// keeps its delete button, Fork stays live, and both requests name that
+// machine.  The hub's own session keeps every action.
 func TestFleetRemoteSessionHidesHubActions(t *testing.T) {
 	var lispHits atomic.Int32
 	var killMu sync.Mutex
-	var kills []string
+	var kills, forks []string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -44,7 +44,22 @@ func TestFleetRemoteSessionHidesHubActions(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"ok":true}`)
 	})
-	for _, p := range []string{"/api/fork", "/api/label", "/api/push", "/api/spawn"} {
+	mux.HandleFunc("/api/fork", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			killMu.Lock()
+			forks = append(forks, "probe "+r.URL.Query().Get("machine")+" "+r.URL.Query().Get("bufferName"))
+			killMu.Unlock()
+			_, _ = fmt.Fprint(w, `{"ok":true,"supported":true}`)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		killMu.Lock()
+		forks = append(forks, string(b))
+		killMu.Unlock()
+		_, _ = fmt.Fprint(w, `{"ok":true,"bufferName":"Claude Agent @ skate<2>"}`)
+	})
+	for _, p := range []string{"/api/label", "/api/push", "/api/spawn"} {
 		mux.HandleFunc(p, func(w http.ResponseWriter, _ *http.Request) {
 			lispHits.Add(1)
 			http.Error(w, "test", http.StatusBadRequest)
@@ -86,8 +101,9 @@ func TestFleetRemoteSessionHidesHubActions(t *testing.T) {
 
 	page.eval(t, `setToolbarOpen(true); selectSession(lastSessions.find(s => s.machine === 'vengeance'))`)
 	page.waitFor(t, `currentBufferName === 'Claude Agent @ skate'`)
+	page.waitFor(t, `!document.getElementById('tb-fork').disabled`)
 	got, _ := page.eval(t, controls).(string)
-	want := `["tb-kill:false:","tb-fork:true:` + remoteTitle + `","tb-clone:true:` + remoteTitle +
+	want := `["tb-kill:false:","tb-fork:false:","tb-clone:true:` + remoteTitle +
 		`","tb-pin:true:` + remoteTitle + `","tb-model:true:` + remoteTitle + `","bell:false","label:` + remoteTitle + `"]`
 	if got != want {
 		t.Fatalf("remote chat controls =\n%s\nwant\n%s", got, want)
@@ -99,6 +115,20 @@ func TestFleetRemoteSessionHidesHubActions(t *testing.T) {
 	page.eval(t, `new Promise(r => setTimeout(() => r(0), 300))`)
 	if n := lispHits.Load(); n != 0 {
 		t.Fatalf("remote chat reached %d hub Lisp routes", n)
+	}
+	// Fork is forwarded: the probe and the fork both name the owning machine.
+	killMu.Lock()
+	gotForks := append([]string(nil), forks...)
+	killMu.Unlock()
+	// The toolbar may probe more than once; exactly one fork follows.
+	const wantProbe, wantFork = "probe vengeance Claude Agent @ skate", `{"bufferName":"Claude Agent @ skate","machine":"vengeance"}`
+	if n := len(gotForks); n < 2 || gotForks[n-1] != wantFork {
+		t.Fatalf("remote fork sent %q, want probes then %s", gotForks, wantFork)
+	}
+	for _, f := range gotForks[:len(gotForks)-1] {
+		if f != wantProbe {
+			t.Fatalf("remote fork sent %q, want only %q before the fork", gotForks, wantProbe)
+		}
 	}
 	// The in-chat kill names the owning machine too.
 	page.eval(t, `killSession(); 0`)

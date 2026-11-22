@@ -62,7 +62,6 @@ func TestRemoteMachineActionsReturn501(t *testing.T) {
 		req  *http.Request
 	}{
 		{"spawn", handleSpawn, httptest.NewRequest("POST", "/api/spawn", strings.NewReader(`{"cwd":"/tmp","machine":"vengeance"}`))},
-		{"fork probe", handleFork, httptest.NewRequest("GET", "/api/fork?bufferName=x&machine=vengeance", nil)},
 		{"label", handleLabel, httptest.NewRequest("POST", "/api/label", strings.NewReader(`{"bufferName":"x","machine":"vengeance"}`))},
 		{"push", handlePush, httptest.NewRequest("POST", "/api/push", strings.NewReader(`{"bufferName":"x","machine":"vengeance"}`))},
 		{"pin", handlePin, httptest.NewRequest("POST", "/api/pin", strings.NewReader(`{"bufferName":"x","machine":"vengeance"}`))},

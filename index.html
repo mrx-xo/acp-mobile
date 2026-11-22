@@ -5468,8 +5468,8 @@ function sKey(s) {
   if (!s.machine || !HUB_MACHINE || s.machine === HUB_MACHINE) return bare;
   return s.machine + '/' + bare;
 }
-// Fleet step 1: a peer machine's session is view, reply and kill.  Every
-// other Lisp-backed action (fork, clone, label, push, pin, model) would
+// Fleet step 1: a peer machine's session is view, reply, kill and fork.
+// Every other Lisp-backed action (clone, label, push, pin, model) would
 // run on the hub's Emacs, which does not own the chat, so the UI hides or
 // disables them until step 3 routes actions to the owning machine.
 const REMOTE_ACTION_TITLE = 'Not available for remote sessions yet';
@@ -5480,9 +5480,9 @@ function isRemoteChat() {
   return !!(currentSockMachine && HUB_MACHINE && currentSockMachine !== HUB_MACHINE);
 }
 // Clone and model have no other disabled state worth keeping, so a
-// local chat simply gets back what a remote one took.  Fork and pin
-// render their own state (refreshForkEntry, renderPinEntry).  Kill is
-// not guarded: the hub forwards it to the owning machine.
+// local chat simply gets back what a remote one took.  Pin renders its
+// own state (renderPinEntry).  Kill and fork are not guarded: the hub
+// forwards them to the owning machine.
 function applyRemoteChatGuards() {
   const remote = isRemoteChat();
   for (const id of ['tb-clone', 'tb-model']) {
@@ -6401,23 +6401,28 @@ async function cloneSession() {
 // answers with the new buffer's name, so the open is by name, not by
 // "whatever session is new"; the poll only waits for the multiplex
 // socket to surface it.
+// A remote chat forks on the machine that owns it: the request names that
+// machine and the hub forwards it.  Buffer names repeat across machines,
+// so the pending and support caches key on machine plus name.
 const forkPending = new Set();
+function forkKey(machine, name) { return (machine || '') + '\n' + name; }
 async function forkSession() {
-  if (isRemoteChat()) return;
   if (!currentBufferName) {
     alert('No buffer name available for this session');
     return;
   }
   const source = currentBufferName;
-  if (forkPending.has(source)) return;
-  forkPending.add(source);
+  const machine = isRemoteChat() ? currentSockMachine : undefined;
+  const key = forkKey(machine, source);
+  if (forkPending.has(key)) return;
+  forkPending.add(key);
   const btn = document.getElementById('tb-fork');
   btn.disabled = true; setToolLabel(btn, 'Forking\u2026');
   try {
     const resp = await fetch(basePath + '/api/fork', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ bufferName: source })
+      body: JSON.stringify({ bufferName: source, machine })
     });
     const data = await resp.json();
     if (data.error) throw new Error(data.error);
@@ -6425,8 +6430,10 @@ async function forkSession() {
     for (let i = 0; i < 15 && !opened; i++) {
       await new Promise(r => setTimeout(r, SPAWN_POLL_MS));
       await loadSessions(true);
-      if (lastSessions.some(x => x.bufferName === data.bufferName)) {
-        await openSessionByName(data.bufferName);
+      const fork = lastSessions.find(x => x.bufferName === data.bufferName
+        && (machine ? x.machine === machine : !isRemoteSession(x)));
+      if (fork) {
+        selectSession(fork);
         opened = true;
       }
     }
@@ -6434,7 +6441,7 @@ async function forkSession() {
   } catch (err) {
     alert('Fork failed: ' + err.message);
   } finally {
-    forkPending.delete(source);
+    forkPending.delete(key);
     btn.disabled = false; setToolLabel(btn, 'Fork');
   }
 }
@@ -6446,26 +6453,29 @@ async function forkSession() {
 const forkSupport = new Map();
 async function refreshForkEntry(btn) {
   const name = currentBufferName;
-  if (isRemoteChat()) { btn.disabled = true; btn.title = REMOTE_ACTION_TITLE; setToolLabel(btn, 'Fork'); return; }
+  const machine = isRemoteChat() ? currentSockMachine : '';
+  const key = forkKey(machine, name);
   if (btn.title === REMOTE_ACTION_TITLE) btn.title = '';
   if (!name) { btn.disabled = true; setToolLabel(btn, 'Fork'); return; }
   // A fork already in flight for this chat keeps the entry busy, so
   // reopening the menu cannot start a second one.
-  if (forkPending.has(name)) { btn.disabled = true; setToolLabel(btn, 'Forking\u2026'); return; }
-  if (forkSupport.get(name)) { btn.disabled = false; setToolLabel(btn, 'Fork'); return; }
+  if (forkPending.has(key)) { btn.disabled = true; setToolLabel(btn, 'Forking\u2026'); return; }
+  if (forkSupport.get(key)) { btn.disabled = false; setToolLabel(btn, 'Fork'); return; }
   btn.disabled = true; setToolLabel(btn, 'Fork');
+  const current = () => name === currentBufferName && machine === (isRemoteChat() ? currentSockMachine : '');
   try {
-    const resp = await fetch(basePath + '/api/fork?bufferName=' + encodeURIComponent(name));
+    const resp = await fetch(basePath + '/api/fork?bufferName=' + encodeURIComponent(name)
+      + (machine ? '&machine=' + encodeURIComponent(machine) : ''));
     const data = await resp.json();
-    if (name !== currentBufferName || isRemoteChat()) return;
+    if (!current()) return;
     if (data.supported) {
-      forkSupport.set(name, true);
+      forkSupport.set(key, true);
       btn.disabled = false;
     } else {
       setToolLabel(btn, 'Fork (not supported by this agent)');
     }
   } catch (err) {
-    if (name === currentBufferName) setToolLabel(btn, 'Fork (unavailable)');
+    if (current()) setToolLabel(btn, 'Fork (unavailable)');
   }
 }
 

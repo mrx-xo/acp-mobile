@@ -1911,7 +1911,13 @@ func handlePush(w http.ResponseWriter, r *http.Request) {
 // fork failed to start), which becomes 409 so the phone explains
 // instead of retrying.
 func handleFork(w http.ResponseWriter, r *http.Request) {
-	if refuseRemoteMachine(w, r) {
+	// A peer's chat forks on the machine that owns it, probe included.
+	if target := remoteTarget(r); target != "" {
+		if isPeerRequest(r) {
+			http.Error(w, "a forwarded action is not forwarded again", http.StatusNotImplemented)
+			return
+		}
+		forwardToMachine(w, r, target)
 		return
 	}
 	var bufferName string

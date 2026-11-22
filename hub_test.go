@@ -497,3 +497,54 @@ func TestHandleStatusesBacksOffAFailingPeer(t *testing.T) {
 		t.Fatalf("peer polled %d times, want 1 inside the backoff window", calls)
 	}
 }
+
+// Fork routes like kill: the hub's Emacs does not own a peer's chat, so the
+// probe and the fork both go to the machine that does.
+func TestForkForwardsToOwningMachine(t *testing.T) {
+	argsFile := installFakeEmacsclient(t, "t")
+	var seen []string
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		seen = append(seen, fmt.Sprintf("%s %s peer=%s machine=%s buffer=%s body=%s", r.Method, r.URL.Path,
+			r.Header.Get(peerHeader), r.URL.Query().Get("machine"), r.URL.Query().Get("bufferName"), b))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true,"bufferName":"Claude Agent @ skate<2>","supported":true}`)
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+
+	for _, req := range []*http.Request{
+		httptest.NewRequest("GET", "/api/fork?bufferName=Claude+Agent+%40+skate&machine=vengeance", nil),
+		httptest.NewRequest("POST", "/api/fork", strings.NewReader(`{"bufferName":"Claude Agent @ skate","machine":"vengeance"}`)),
+	} {
+		rec := httptest.NewRecorder()
+		handleFork(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"supported":true`) {
+			t.Fatalf("%s: hub answered %d %q, want the peer's 200", req.Method, rec.Code, rec.Body.String())
+		}
+	}
+	want := []string{
+		"GET /api/fork peer=1 machine=vengeance buffer=Claude Agent @ skate body=",
+		`POST /api/fork peer=1 machine=vengeance buffer= body={"bufferName":"Claude Agent @ skate","machine":"vengeance"}`,
+	}
+	if len(seen) != 2 || seen[0] != want[0] || seen[1] != want[1] {
+		t.Fatalf("peer saw\n%q\nwant\n%q", seen, want)
+	}
+	if _, err := os.Stat(argsFile); err == nil {
+		t.Fatal("a forwarded fork still ran the hub's emacsclient")
+	}
+}
+
+func TestForkFromAPeerIsNotForwardedAgain(t *testing.T) {
+	installFakeEmacsclient(t, "t")
+	called := false
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	rec := httptest.NewRecorder()
+	handleFork(rec, withPeerFlag(httptest.NewRequest("POST", "/api/fork",
+		strings.NewReader(`{"bufferName":"Claude Agent @ skate","machine":"vengeance"}`))))
+	if rec.Code != http.StatusNotImplemented || called {
+		t.Fatalf("code=%d forwarded=%v, want 501 and no second hop", rec.Code, called)
+	}
+}
