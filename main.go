@@ -656,6 +656,18 @@ func handleStatuses(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	// A hub's call gets this machine's statuses and nothing else: it is not
+	// the phone looking at this machine's page, so it is no presence
+	// heartbeat and collects no pushes, and it never fans out again.
+	if isPeerRequest(r) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"statuses": currentStatuses(),
+			"version":  buildID,
+		})
+		return
+	}
 	// The Orrery polls only while visible: that is a presence heartbeat.
 	setPresence(true, "")
 	var req struct {
@@ -664,10 +676,13 @@ func handleStatuses(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&req)
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "application/json")
+	// Local statuses win a (never expected) session id clash.
+	statuses := peerStatuses(r.Context())
+	for id, status := range currentStatuses() {
+		statuses[id] = status
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"statuses": currentStatuses(),
+		"statuses": statuses,
 		"version":  buildID,
 		"now":      nowFunc().UnixMilli(),
 		"pushes":   pushesSince(req.PushSince),

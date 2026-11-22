@@ -403,3 +403,97 @@ func TestKillFromAPeerIsNotForwardedAgain(t *testing.T) {
 		t.Fatalf("peer-origin kill: forwarded %d times, code %d; want 0 and 501", hits, rec.Code)
 	}
 }
+
+// statusesReply runs handleStatuses for r and returns the statuses map.
+func statusesReply(t *testing.T, r *http.Request) map[string]string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	handleStatuses(rec, r)
+	var body struct {
+		Statuses map[string]string `json:"statuses"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body.String(), err)
+	}
+	return body.Statuses
+}
+
+// withLocalStatuses points the sidecar at a temp home holding status.json
+// and clears the peer-status backoff left by other tests.
+func withLocalStatuses(t *testing.T, statusJSON string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, ".acp-mobile"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".acp-mobile", "status.json"), []byte(statusJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resetPeerStatusBackoff()
+	t.Cleanup(resetPeerStatusBackoff)
+}
+
+func TestHandleStatusesMergesPeerStatuses(t *testing.T) {
+	withLocalStatuses(t, `{"l1":"idle"}`)
+	var gotPath, gotHeader string
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotHeader = r.URL.Path, r.Header.Get(peerHeader)
+		fmt.Fprint(w, `{"statuses":{"n1":"busy"}}`)
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+
+	got := statusesReply(t, httptest.NewRequest("POST", "/api/statuses", nil))
+	if got["l1"] != "idle" || got["n1"] != "busy" {
+		t.Fatalf("statuses = %v, want local l1 and the peer's n1", got)
+	}
+	if gotPath != "/api/statuses" || gotHeader != "1" {
+		t.Fatalf("peer call path %q header %q", gotPath, gotHeader)
+	}
+}
+
+func TestHandleStatusesServesLocalOnlyToPeers(t *testing.T) {
+	withLocalStatuses(t, `{"l1":"busy"}`)
+	called := false
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	setPresence(false, "")
+
+	got := statusesReply(t, withPeerFlag(httptest.NewRequest("POST", "/api/statuses", nil)))
+	if got["l1"] != "busy" {
+		t.Fatalf("statuses = %v", got)
+	}
+	if called {
+		t.Fatal("fanned out on a peer request")
+	}
+	// A hub's poll is not the phone looking at this machine's page: it must
+	// not park this machine's pushes as if the page were visible.
+	if visible, _ := presenceFresh(); visible {
+		t.Fatal("a peer's status poll marked the page visible")
+	}
+}
+
+func TestHandleStatusesBacksOffAFailingPeer(t *testing.T) {
+	withLocalStatuses(t, `{"l1":"idle"}`)
+	calls := 0
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+
+	for i := 0; i < 2; i++ {
+		if got := statusesReply(t, httptest.NewRequest("POST", "/api/statuses", nil)); got["l1"] != "idle" {
+			t.Fatalf("poll %d: statuses = %v, want local statuses despite the peer", i, got)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("peer polled %d times, want 1 inside the backoff window", calls)
+	}
+}

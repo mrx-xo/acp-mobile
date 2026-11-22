@@ -320,3 +320,94 @@ func forwardToMachine(w http.ResponseWriter, r *http.Request, target string) {
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
+
+// The phone polls /api/statuses every 3s, so a peer gets one second to
+// answer and a peer that failed is left alone for a while: an asleep
+// machine must not add its timeout to every poll.
+const (
+	peerStatusTimeout = time.Second
+	peerStatusBackoff = 10 * time.Second
+)
+
+var peerStatusRetry = struct {
+	mu    sync.Mutex
+	after map[string]time.Time
+}{after: map[string]time.Time{}}
+
+// resetPeerStatusBackoff forgets which peers recently failed a status poll.
+func resetPeerStatusBackoff() {
+	peerStatusRetry.mu.Lock()
+	peerStatusRetry.after = map[string]time.Time{}
+	peerStatusRetry.mu.Unlock()
+}
+
+// fetchPeerStatuses makes one POST to the peer's /api/statuses.
+func fetchPeerStatuses(ctx context.Context, m machine) (map[string]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, peerStatusTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+peerHostPort(m)+"/api/statuses", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(peerHeader, "1")
+	resp, err := peerHTTP.Do(req)
+	if err != nil {
+		return nil, doError{err}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("peer %s: status %d", m.ID, resp.StatusCode)
+	}
+	var body struct {
+		Statuses map[string]string `json:"statuses"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return nil, err
+	}
+	return body.Statuses, nil
+}
+
+// peerStatuses returns every reachable peer's session statuses in one map.
+// The phone replaces each card's status with what /api/statuses returns, so
+// a hub that answered with its own chats only blanked every remote card.
+// A peer that fails is skipped (its cards go blank, like the machine) and
+// not asked again until the backoff passes; the sessions poll owns IP
+// refresh and the asleep state.
+func peerStatuses(ctx context.Context) map[string]string {
+	fleet.mu.RLock()
+	peers := fleet.reg.peers(fleet.self)
+	fleet.mu.RUnlock()
+
+	now := time.Now()
+	results := make([]map[string]string, len(peers))
+	var wg sync.WaitGroup
+	for i, m := range peers {
+		peerStatusRetry.mu.Lock()
+		wait := now.Before(peerStatusRetry.after[m.ID])
+		peerStatusRetry.mu.Unlock()
+		if wait {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			statuses, err := fetchPeerStatuses(ctx, m)
+			if err != nil {
+				peerStatusRetry.mu.Lock()
+				peerStatusRetry.after[m.ID] = time.Now().Add(peerStatusBackoff)
+				peerStatusRetry.mu.Unlock()
+				return
+			}
+			results[i] = statuses
+		}()
+	}
+	wg.Wait()
+
+	merged := map[string]string{}
+	for _, statuses := range results {
+		for id, status := range statuses {
+			merged[id] = status
+		}
+	}
+	return merged
+}
