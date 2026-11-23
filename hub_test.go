@@ -881,7 +881,7 @@ func TestFleetRouteAbortsWhenThePeerCutsTheBody(t *testing.T) {
 
 func TestForwardTimeoutIsPerRoute(t *testing.T) {
 	for path, want := range map[string]time.Duration{
-		"/api/spawn":             180 * time.Second,
+		"/api/spawn":             270 * time.Second,
 		"/api/resume-transcript": 45 * time.Second,
 		"/api/fork":              60 * time.Second,
 		"/api/label":             15 * time.Second,

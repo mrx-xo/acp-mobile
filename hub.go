@@ -357,7 +357,11 @@ func remoteTarget(r *http.Request) (target string, status int, msg string) {
 func forwardTimeout(path string) time.Duration {
 	switch path {
 	case "/api/spawn":
-		return 180 * time.Second
+		// syzygy-launch.el waits up to 60 seconds (syzygy-launch--timeout) in
+		// each of four sequential stages: startup, model, permissions,
+		// effort.  Four stages plus 30 seconds of margin, so a slow but valid
+		// launch never loses its reply and buffer name while Emacs carries on.
+		return 270 * time.Second
 	case "/api/resume-transcript":
 		return 45 * time.Second
 	case "/api/fork":
