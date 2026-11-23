@@ -667,6 +667,7 @@ type fleetChat struct {
 	spawns    []string
 	wsQueries []string
 	spawned   bool
+	hold      chan struct{} // when set, the peer's options and presets wait for it to close
 }
 
 func (f *fleetChat) count(prefix string) int {
@@ -714,7 +715,14 @@ func newFleetChatPage(t *testing.T, peerState string, failSpawn bool, seed strin
 		f.mu.Lock()
 		f.log = append(f.log, key)
 		f.mu.Unlock()
-		return r.URL.Query().Get("machine")
+		m := r.URL.Query().Get("machine")
+		f.mu.Lock()
+		hold := f.hold
+		f.mu.Unlock()
+		if m == "vengeance" && hold != nil {
+			<-hold
+		}
+		return m
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -960,5 +968,97 @@ func TestComboForAsleepMachineSaysWakeFirst(t *testing.T) {
 	}
 	if len(f.spawnBodies()) != 0 {
 		t.Fatalf("must not launch: %v", f.spawnBodies())
+	}
+}
+
+// pinnedRows lists, per dotfiles row in the Project step, whether it is pinned
+// and carries the NEMESIS badge.
+const pinnedRows = `(()=>[...document.querySelectorAll('#sp-picker-list .sp-project-item')].filter(i=>i.textContent.includes('dotfiles')).map(i=>(i.querySelector('.machine-badge')?'NEMESIS:':'hub:')+i.querySelector('button[aria-pressed]:not(.sp-row)').getAttribute('aria-pressed')))()`
+
+func TestNewChatPinnedProjectIsPerMachine(t *testing.T) {
+	page, _ := newFleetChatPage(t, "awake", false, "")
+	reopen := func() {
+		page.call(t, "Page.reload", map[string]interface{}{})
+		page.waitFor(t, `typeof openSpawnSheet === 'function' && HUB_MACHINE === 'mrx'`)
+		page.eval(t, `openSpawnSheet()`)
+		page.waitFor(t, `spawnProjects.length === 3`)
+	}
+	page.eval(t, `[...document.querySelectorAll('#sp-picker-list .sp-project-item')].find(i=>i.querySelector('.machine-badge')).querySelector('button[aria-pressed]:not(.sp-row)').click()`)
+	if got := fmt.Sprint(page.eval(t, "JSON.stringify("+pinnedRows+")")); !strings.Contains(got, "NEMESIS:true") || !strings.Contains(got, "hub:false") {
+		t.Fatalf("pinning the NEMESIS row pins only it: %s", got)
+	}
+	reopen()
+	if got := fmt.Sprint(page.eval(t, "JSON.stringify("+pinnedRows+")")); !strings.Contains(got, "NEMESIS:true") || !strings.Contains(got, "hub:false") {
+		t.Fatalf("the pin survives a reload on its machine only: %s", got)
+	}
+	page.eval(t, `localStorage.setItem('syzygy.launch.pins', JSON.stringify(['/src/dotfiles']))`)
+	reopen()
+	if got := fmt.Sprint(page.eval(t, "JSON.stringify("+pinnedRows+")")); !strings.Contains(got, "NEMESIS:false") || !strings.Contains(got, "hub:true") {
+		t.Fatalf("a bare-path pin stored earlier is a hub pin: %s", got)
+	}
+}
+
+func TestNewChatTypedPathTargetsTheHub(t *testing.T) {
+	page, f := newFleetChatPage(t, "awake", false, "")
+	state := page.evalObject(t, `(async()=>{await `+launchOnPeer+`;
+  const before=spDraft.machine;
+  openSpawnView('project');spEl('picker-action').click();
+  spDir.value='/src/typed';spEl('picker-action').click();
+  await new Promise(r=>setTimeout(r,200));
+  const agents=spCatalog.agents.map(a=>a.id);
+  document.querySelector('#sp-preset-list .sp-row').click();
+  SPAWN_POLL_MS=5;selectSession=()=>{};
+  spGo.click();
+  for(let i=0;i<100&&spBusy;i++)await new Promise(r=>setTimeout(r,20));
+  return {before,machine:spDraft.machine,agents,view:spView};
+ })()`)
+	if state["before"] != "vengeance" || state["machine"] != "" || fmt.Sprint(state["agents"]) != "[codex claude opencode]" {
+		t.Fatalf("a typed path targets the hub with its agents: %#v", state)
+	}
+	for i := 0; i < 100 && len(f.spawnBodies()) == 0; i++ {
+		page.eval(t, `new Promise(r=>setTimeout(r,20))`)
+	}
+	bodies := f.spawnBodies()
+	if len(bodies) != 1 || strings.Contains(bodies[0], "machine") || !strings.Contains(bodies[0], "/src/typed") {
+		t.Fatalf("a hub launch sends no machine: %v", bodies)
+	}
+}
+
+// The peer's slow options and presets answer after the user has moved on to the
+// hub.  They are cached for the peer and never reach the sheet; returning to
+// the peer then uses that cache (a late reply is kept, no refetch is needed).
+func TestNewChatSlowOptionsForAnotherMachineAreDropped(t *testing.T) {
+	page, f := newFleetChatPage(t, "awake", false, "")
+	hold := make(chan struct{})
+	f.mu.Lock()
+	f.hold = hold
+	f.mu.Unlock()
+	state := page.evalObject(t, `(async()=>{
+  `+clickRow+`
+  pick('dotfiles',1).click();
+  await new Promise(r=>setTimeout(r,100));
+  openSpawnView('project');pick('dotfiles',0).click();
+  await new Promise(r=>setTimeout(r,200));
+  return {agents:spCatalog.agents.map(a=>a.id),presets:spawnPresets.map(p=>p.key),machine:spDraft.machine};
+ })()`)
+	if fmt.Sprint(state["agents"]) != "[codex claude opencode]" || fmt.Sprint(state["presets"]) != "[s]" || state["machine"] != "" {
+		t.Fatalf("hub choices before release: %#v", state)
+	}
+	close(hold)
+	state = page.evalObject(t, `(async()=>{
+  await new Promise(r=>setTimeout(r,400));
+  const hub={agents:spCatalog.agents.map(a=>a.id),presets:[...document.querySelectorAll('#sp-preset-list .sp-row')].map(b=>b.textContent),machine:spDraft.machine,settings:spDraft.settings.agent};
+  `+clickRow+`
+  openSpawnView('project');pick('dotfiles',1).click();
+  await new Promise(r=>setTimeout(r,100));
+  return {hub,peer:{agents:spCatalog.agents.map(a=>a.id),presets:[...document.querySelectorAll('#sp-preset-list .sp-row')].map(b=>b.textContent)}};
+ })()`)
+	hub := state["hub"].(map[string]interface{})
+	if fmt.Sprint(hub["agents"]) != "[codex claude opencode]" || strings.Contains(fmt.Sprint(hub["presets"]), "Gemini") || hub["machine"] != "" || hub["settings"] != "codex" {
+		t.Fatalf("a late reply for the peer must not land on the hub's sheet: %#v", hub)
+	}
+	peer := state["peer"].(map[string]interface{})
+	if fmt.Sprint(peer["agents"]) != "[gemini]" || !strings.Contains(fmt.Sprint(peer["presets"]), "Gemini Pro") {
+		t.Fatalf("going back to the peer shows its choices: %#v", peer)
 	}
 }
