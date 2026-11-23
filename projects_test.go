@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -55,5 +56,83 @@ func TestProjectsHandlerRejectsGet(t *testing.T) {
 	handleProjects(get, httptest.NewRequest(http.MethodGet, "/", nil))
 	if get.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET status = %d", get.Code)
+	}
+}
+
+// stubHubProjects fakes the hub's Lisp call and live cwds.
+func stubHubProjects(t *testing.T, listJSON string) {
+	t.Helper()
+	installFakeEmacsclient(t, `"`+base64.StdEncoding.EncodeToString([]byte(listJSON))+`"`)
+	previous := projectLiveCwds
+	projectLiveCwds = func() []string { return nil }
+	t.Cleanup(func() { projectLiveCwds = previous })
+}
+
+func TestMergedProjectsTagEachMachine(t *testing.T) {
+	stubHubProjects(t, `[{"name":"dotfiles","path":"/h/dotfiles"}]`)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(peerHeader) != "1" || r.Method != http.MethodPost {
+			t.Errorf("peer got %s with header %q", r.Method, r.Header.Get(peerHeader))
+		}
+		w.Write([]byte(`{"projects":[{"name":"dotfiles","path":"C:/d/dotfiles"}]}`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	rec := postJSON(t, handleProjects, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Projects []project `json:"projects"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Projects) != 2 ||
+		body.Projects[0].Machine != "mrx" || body.Projects[0].Path != "/h/dotfiles" ||
+		body.Projects[1].Machine != "vengeance" || body.Projects[1].Path != "C:/d/dotfiles" {
+		t.Fatalf("projects = %+v", body.Projects)
+	}
+}
+
+func TestMergedProjectsSkipAFailingPeer(t *testing.T) {
+	stubHubProjects(t, `[{"name":"dotfiles","path":"/h/dotfiles"}]`)
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	rec := postJSON(t, handleProjects, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Projects []project `json:"projects"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Projects) != 1 || body.Projects[0].Machine != "mrx" {
+		t.Fatalf("projects = %+v", body.Projects)
+	}
+}
+
+func TestProjectsServeLocalOnlyToPeers(t *testing.T) {
+	stubHubProjects(t, `[{"name":"dotfiles","path":"/h/dotfiles"}]`)
+	var called atomic.Bool
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called.Store(true)
+		w.Write([]byte(`{"projects":[{"name":"x","path":"/x"}]}`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	req := withPeerFlag(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{}`)))
+	rec := httptest.NewRecorder()
+	handleProjects(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"/x"`) || !strings.Contains(rec.Body.String(), "/h/dotfiles") {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if called.Load() {
+		t.Error("a peer's request fanned out")
 	}
 }

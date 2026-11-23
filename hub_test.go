@@ -811,3 +811,104 @@ func TestForwardTimeoutIsPerRoute(t *testing.T) {
 		}
 	}
 }
+
+func TestMergedSessionsReportGapsAndOS(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"sessions":[]}`)
+	}))
+	defer peer.Close()
+	m := peerAt(t, "vengeance", "NEMESIS", peer.URL)
+	m.OS = "windows"
+	m.Gaps = []string{"handoff"}
+	withFleetFixture(t, "mrx", m)
+	_, states := mergedSessions(context.Background())
+	raw, err := json.Marshal(states)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []struct {
+		OS   string   `json:"os"`
+		Gaps []string `json:"gaps"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil || len(got) != 2 {
+		t.Fatalf("states json %s (%v)", raw, err)
+	}
+	if got[1].OS != "windows" || len(got[1].Gaps) != 1 || got[1].Gaps[0] != "handoff" {
+		t.Errorf("peer = %+v", got[1])
+	}
+	if got[0].Gaps == nil || len(got[0].Gaps) != 0 {
+		t.Errorf("self gaps = %#v, want an empty array", got[0].Gaps)
+	}
+	if !strings.Contains(string(raw), `"gaps":[]`) {
+		t.Errorf("json %s: gaps must serialise as []", raw)
+	}
+}
+
+func TestFanOutJSONCollectsEveryAnsweringPeer(t *testing.T) {
+	var gotHeader, gotType, gotBody atomic.Value
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader.Store(r.Header.Get(peerHeader))
+		gotType.Store(r.Header.Get("Content-Type"))
+		b, _ := io.ReadAll(r.Body)
+		gotBody.Store(string(b))
+		fmt.Fprint(w, `{"from":"a"}`)
+	}))
+	defer a.Close()
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"from":"b"}`)
+	}))
+	defer b.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", a.URL), peerAt(t, "castor", "CASTOR", b.URL))
+	got := fanOutJSON(context.Background(), "/api/x", []byte(`{"q":1}`), time.Second, nil)
+	if len(got) != 2 || string(got["vengeance"]) != `{"from":"a"}` || string(got["castor"]) != `{"from":"b"}` {
+		t.Fatalf("got %v", got)
+	}
+	if gotHeader.Load() != "1" || gotType.Load() != "application/json" || gotBody.Load() != `{"q":1}` {
+		t.Errorf("header %v type %v body %v", gotHeader.Load(), gotType.Load(), gotBody.Load())
+	}
+}
+
+func TestFanOutJSONOmitsFailingAndSlowPeers(t *testing.T) {
+	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{}`) }))
+	defer ok.Close()
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer bad.Close()
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer slow.Close()
+	defer close(release)
+	withFleetFixture(t, "mrx",
+		peerAt(t, "good", "GOOD", ok.URL), peerAt(t, "bad", "BAD", bad.URL), peerAt(t, "slow", "SLOW", slow.URL))
+	start := time.Now()
+	got := fanOutJSON(context.Background(), "/api/x", nil, 200*time.Millisecond, nil)
+	if len(got) != 1 || got["good"] == nil {
+		t.Fatalf("got %v, want only good", got)
+	}
+	if time.Since(start) > time.Second {
+		t.Errorf("took %v, the budget did not bound the slow peer", time.Since(start))
+	}
+}
+
+func TestFanOutJSONHonoursSkip(t *testing.T) {
+	var asked atomic.Int32
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		fmt.Fprint(w, `{}`)
+	})
+	a, b := httptest.NewServer(h), httptest.NewServer(h)
+	defer a.Close()
+	defer b.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", a.URL), peerAt(t, "castor", "CASTOR", b.URL))
+	got := fanOutJSON(context.Background(), "/api/x", nil, time.Second, func(m machine) bool { return m.ID == "castor" })
+	if len(got) != 1 || got["vengeance"] == nil || asked.Load() != 1 {
+		t.Fatalf("got %v asked %d", got, asked.Load())
+	}
+}

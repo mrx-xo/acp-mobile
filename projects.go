@@ -2,16 +2,18 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"log"
 	"net/http"
 	"path/filepath"
+	"time"
 )
 
 type project struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
 	Live bool   `json:"live"`
+	// Machine is the id of the machine that owns the project.
+	Machine string `json:"machine,omitempty"`
 }
 
 func liveCwds() []string {
@@ -69,31 +71,82 @@ func loadProjects(r *http.Request) ([]project, error) {
 	return projects, nil
 }
 
+// projectsFanOutBudget bounds each peer's /api/projects answer.
+const projectsFanOutBudget = 3 * time.Second
+
+// mergedProjects is this machine's projects followed by every awake peer's,
+// in registry order, each tagged with its machine.  A peer that fails is
+// left out.  A project on two machines appears twice.
+func mergedProjects(r *http.Request) ([]project, error) {
+	local, err := localProjects(r)
+	if err != nil {
+		return nil, err
+	}
+	fleet.mu.RLock()
+	self := fleet.self
+	peers := fleet.reg.peers(self)
+	fleet.mu.RUnlock()
+	out := append(make([]project, 0, len(local)), local...)
+	replies := fanOutJSON(r.Context(), "/api/projects", []byte(`{}`), projectsFanOutBudget, nil)
+	for _, m := range peers {
+		var body struct {
+			Projects []project `json:"projects"`
+		}
+		if json.Unmarshal(replies[m.ID], &body) != nil {
+			continue
+		}
+		for _, p := range body.Projects {
+			p.Machine = m.ID
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// localProjects is this machine's rig projects plus live ones, tagged with
+// this machine's id.  It fails only when there is nothing to list.
+func localProjects(r *http.Request) ([]project, error) {
+	live := projectLiveCwds()
+	rig, err := loadProjects(r)
+	if err != nil {
+		if len(live) == 0 {
+			return nil, err
+		}
+		log.Printf("projects: %v; using live projects", err)
+		rig = []project{}
+	}
+	projects := mergeProjects(rig, live)
+	fleet.mu.RLock()
+	self := fleet.self
+	fleet.mu.RUnlock()
+	for i := range projects {
+		projects[i].Machine = self
+	}
+	return projects, nil
+}
+
 func handleProjects(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	live := projectLiveCwds()
-	rig, err := loadProjects(r)
+	fleet.mu.RLock()
+	hasPeers := len(fleet.reg.peers(fleet.self)) > 0
+	fleet.mu.RUnlock()
+	var projects []project
+	var err error
+	if isPeerRequest(r) || !hasPeers {
+		projects, err = localProjects(r)
+	} else {
+		projects, err = mergedProjects(r)
+	}
 	if err != nil {
-		if errors.Is(err, errElispNotFound) {
-			if len(live) == 0 {
-				writeElispError(w, "projects", err, "no projects on the rig")
-				return
-			}
-			log.Printf("projects: %v; using live projects", err)
-		} else if len(live) == 0 {
-			writeElispError(w, "projects", err, "no projects on the rig")
-			return
-		} else {
-			log.Printf("projects: %v; using live projects", err)
-		}
-		rig = []project{}
+		writeElispError(w, "projects", err, "no projects on the rig")
+		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{"projects": mergeProjects(rig, live)}); err != nil {
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{"projects": projects}); err != nil {
 		log.Printf("projects: %v", err)
 	}
 }

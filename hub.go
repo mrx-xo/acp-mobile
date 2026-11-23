@@ -22,6 +22,9 @@ type machineState struct {
 	Name     string `json:"name"`
 	State    string `json:"state"` // "awake" or "asleep"
 	LastSeen int64  `json:"lastSeen"`
+	OS       string `json:"os,omitempty"`
+	// Gaps are the features the machine declares it lacks; always an array.
+	Gaps []string `json:"gaps"`
 }
 
 // peerPort is the port every node serves on.  A var so tests can point
@@ -164,6 +167,68 @@ func fetchPeerSessions(ctx context.Context, m machine) ([]sessionInfo, error) {
 	return fetchPeerOnce(ctx, fresh)
 }
 
+// gapsOf is m's declared gaps, never nil so the JSON is always an array.
+func gapsOf(m machine) []string {
+	if m.Gaps == nil {
+		return []string{}
+	}
+	return m.Gaps
+}
+
+// fanOutJSON POSTs body (may be nil) to path on every peer in parallel with
+// the peer header, each call bounded by budget.  skip, when non-nil, leaves
+// a machine out.  The result maps machine id to the raw reply body; a peer
+// that errors, times out or answers non-200 is absent.
+func fanOutJSON(ctx context.Context, path string, body []byte, budget time.Duration, skip func(machine) bool) map[string][]byte {
+	fleet.mu.RLock()
+	peers := fleet.reg.peers(fleet.self)
+	fleet.mu.RUnlock()
+	replies := make([][]byte, len(peers))
+	var wg sync.WaitGroup
+	for i, m := range peers {
+		if skip != nil && skip(m) {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, budget)
+			defer cancel()
+			var rd io.Reader
+			if body != nil {
+				rd = bytes.NewReader(body)
+			}
+			req, err := http.NewRequestWithContext(cctx, http.MethodPost, "http://"+peerHostPort(m)+path, rd)
+			if err != nil {
+				return
+			}
+			req.Header.Set(peerHeader, "1")
+			if body != nil {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			resp, err := (&http.Client{}).Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				return
+			}
+			if b, err := io.ReadAll(resp.Body); err == nil {
+				replies[i] = b
+			}
+		}()
+	}
+	wg.Wait()
+	out := map[string][]byte{}
+	for i, m := range peers {
+		if replies[i] != nil {
+			out[m.ID] = replies[i]
+		}
+	}
+	return out
+}
+
 // mergedSessions returns this machine's sessions followed by every peer's,
 // in registry order, plus per-machine state.  Index 0 of the states is the
 // hub itself.
@@ -197,13 +262,16 @@ func mergedSessions(ctx context.Context) ([]sessionInfo, []machineState) {
 
 	now := time.Now().Unix()
 	sessions := local
-	states := []machineState{{ID: self, Name: selfName, State: "awake", LastSeen: now}}
+	fleet.mu.RLock()
+	selfM, _ := fleet.reg.byID(self)
+	fleet.mu.RUnlock()
+	states := []machineState{{ID: self, Name: selfName, State: "awake", LastSeen: now, OS: selfM.OS, Gaps: gapsOf(selfM)}}
 	fleet.mu.Lock()
 	if fleet.lastSeen == nil {
 		fleet.lastSeen = map[string]int64{}
 	}
 	for i, m := range peers {
-		st := machineState{ID: m.ID, Name: m.Name, State: "asleep"}
+		st := machineState{ID: m.ID, Name: m.Name, State: "asleep", OS: m.OS, Gaps: gapsOf(m)}
 		if errs[i] == nil {
 			fleet.lastSeen[m.ID] = now
 			st.State = "awake"
