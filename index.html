@@ -2027,6 +2027,21 @@ function setBell(on) {
   bellBtn.classList.toggle('on', !!on);
   bellBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
+// A remote chat's bell stays visible but off until fleet step 4; the hub's
+// own bell is off only when the hub declares the push gap.
+function paintBell() {
+  bellBtn.classList.toggle('visible', !!currentBufferName);
+  if (isRemoteChat()) {
+    bellBtn.disabled = true;
+    bellBtn.title = PUSH_REMOTE_TITLE;
+    bellBtn.setAttribute('aria-label', 'Phone push');
+    return;
+  }
+  const gap = machineGap('', 'push');
+  bellBtn.disabled = !!gap;
+  bellBtn.title = gap || 'Phone push for this chat';
+  bellBtn.setAttribute('aria-label', gap ? 'Phone push: ' + gap : 'Phone push');
+}
 const headerTitleMain = headerTitle.querySelector('.ht-main');
 const headerTitleOrd = headerTitle.querySelector('.ht-ord');
 const hsAgent = document.getElementById('hs-agent');
@@ -2090,9 +2105,8 @@ function updateChatHeader() {
     headerTitleMain.textContent = currentBufferName;
     headerTitleOrd.textContent = '';
   }
-  const remote = isRemoteChat();
-  bellBtn.classList.toggle('visible', !!currentBufferName && !remote);
-  headerTitle.title = remote ? REMOTE_ACTION_TITLE : '';
+  headerTitle.title = '';
+  paintBell();
   setBell(!!s.push);
   renderHeaderSub();
 }
@@ -2114,6 +2128,7 @@ function renderHeaderSub() {
       ? headerGit.staged + ' staged, ' + headerGit.unstaged + ' changed, ' + headerGit.untracked + ' new'
       : 'Clean tree';
   }
+  applyGapControls();
   const tb = document.getElementById('chat-toolbar');
   if (tb && !tb.hidden) renderToolbar();
 }
@@ -2123,13 +2138,14 @@ let headerModelToken = 0;
 async function fetchHeaderModel() {
   const token = ++headerModelToken;
   const bufferName = currentBufferName;
+  const machine = chatMachine();
   headerModel = '';
   renderHeaderSub();
   if (!bufferName) return;
   try {
     const resp = await fetch(basePath + '/api/models', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({bufferName})
+      body: JSON.stringify(machineBody({bufferName}, machine))
     });
     if (!resp.ok) return;
     const data = await resp.json();
@@ -2148,7 +2164,7 @@ async function fetchGitStatus() {
   const pid = currentSockPid;
   if (!pid) { headerGit = null; renderHeaderSub(); return; }
   try {
-    const resp = await fetch(basePath + '/api/git-status?pid=' + encodeURIComponent(pid), {cache: 'no-store'});
+    const resp = await fetch(withMachine(basePath + '/api/git-status?pid=' + encodeURIComponent(pid), chatMachine()), {cache: 'no-store'});
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
     if (token !== gitStatusToken || pid !== currentSockPid) return;
@@ -5365,7 +5381,7 @@ async function fbNavigate(dirPath) {
     const resp = await fetch(basePath + '/files/list', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ path: dirPath, showHidden: fbShowHidden })
+      body: JSON.stringify(machineBody({ path: dirPath, showHidden: fbShowHidden }, chatMachine()))
     });
     if (!resp.ok) throw new Error(await resp.text());
     const data = await resp.json();
@@ -5428,7 +5444,7 @@ async function fbOpenFile(filePath) {
     const resp = await fetch(basePath + '/files/read', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ path: filePath })
+      body: JSON.stringify(machineBody({ path: filePath }, chatMachine()))
     });
     if (!resp.ok) throw new Error(await resp.text());
     const data = await resp.json();
@@ -5468,28 +5484,76 @@ function sKey(s) {
   if (!s.machine || !HUB_MACHINE || s.machine === HUB_MACHINE) return bare;
   return s.machine + '/' + bare;
 }
-// Fleet step 1: a peer machine's session is view, reply, kill and fork.
-// Every other Lisp-backed action (clone, label, push, pin, model) would
-// run on the hub's Emacs, which does not own the chat, so the UI hides or
-// disables them until step 3 routes actions to the owning machine.
-const REMOTE_ACTION_TITLE = 'Not available for remote sessions yet';
+// Fleet step 3: every action about a chat carries the machine that owns
+// it, and the hub forwards it there.  A hub chat sends no machine at all,
+// so its requests stay byte-identical to a hub with no peers.  The one
+// holdout is the bell: phone push for a remote chat arrives with step 4.
+const PUSH_REMOTE_TITLE = 'Push for remote chats arrives with fleet step 4';
 function isRemoteSession(s) {
   return !!(s && s.machine && HUB_MACHINE && s.machine !== HUB_MACHINE);
 }
 function isRemoteChat() {
   return !!(currentSockMachine && HUB_MACHINE && currentSockMachine !== HUB_MACHINE);
 }
-// Clone and model have no other disabled state worth keeping, so a
-// local chat simply gets back what a remote one took.  Pin renders its
-// own state (renderPinEntry).  Kill and fork are not guarded: the hub
-// forwards them to the owning machine.
-function applyRemoteChatGuards() {
-  const remote = isRemoteChat();
-  for (const id of ['tb-clone', 'tb-model']) {
-    const b = document.getElementById(id);
-    if (!b) continue;
-    if (remote) { b.disabled = true; b.title = REMOTE_ACTION_TITLE; }
-    else if (b.title === REMOTE_ACTION_TITLE) { b.disabled = false; b.title = ''; }
+// The machine a request about the open chat names: '' for the hub.
+function chatMachine() { return isRemoteChat() ? currentSockMachine : ''; }
+// The machine a request about a listed session names: '' for the hub.
+function sessionMachine(s) { return isRemoteSession(s) ? s.machine : ''; }
+function withMachine(url, machine) {
+  return machine ? url + (url.indexOf('?') < 0 ? '?' : '&') + 'machine=' + encodeURIComponent(machine) : url;
+}
+function machineBody(obj, machine) {
+  return machine ? Object.assign({}, obj, {machine}) : obj;
+}
+// The open chat's own entry in the list: buffer names repeat across machines.
+function currentSession() {
+  return lastSessions.find(s => s.bufferName === currentBufferName && sessionMachine(s) === chatMachine());
+}
+// Declared gaps: what a machine cannot do, as the phrase after its name.
+const GAP_REASONS = {
+  'diff-review': 'cannot review diffs',
+  'files': 'cannot browse files',
+  'resume': 'cannot resume chats',
+  'push': 'cannot send push notifications',
+  'history': 'has no history',
+  'screenshot-to-chat': 'cannot capture screenshots',
+  'handoff': 'cannot hand off chats',
+  'wake': 'cannot be woken remotely'
+};
+// '' when the machine has no such gap or is unknown; '' (the hub) means HUB_MACHINE.
+function machineGap(machine, gap) {
+  const m = MACHINES.find(x => x.id === (machine || HUB_MACHINE));
+  if (!m || !Array.isArray(m.gaps) || m.gaps.indexOf(gap) < 0 || !GAP_REASONS[gap]) return '';
+  return machineName(m.id) + ' ' + GAP_REASONS[gap];
+}
+// Controls a gap disables.  natural() is the control's own disabled state
+// when no gap applies; the base title and aria-label are kept to restore.
+const GAP_CONTROLS = [
+  {gap: 'diff-review', id: 'tb-git', natural: () => !(headerGit && headerGit.branch)},
+  {gap: 'diff-review', id: 'hs-git', natural: () => false},
+  {gap: 'files', id: 'files-btn', natural: () => false}
+];
+function applyGapControls() {
+  const machine = chatMachine();
+  for (const c of GAP_CONTROLS) {
+    const el = document.getElementById(c.id);
+    if (!el) continue;
+    const reason = currentBufferName ? machineGap(machine, c.gap) : '';
+    const on = el.dataset.gapOn === '1';
+    if (reason) {
+      // Another renderer may have rewritten the title since: that is the new base.
+      if (!on || el.title !== reason) el.dataset.gapTitle = el.title;
+      if (!on) el.dataset.gapAria = el.getAttribute('aria-label') || '';
+      el.dataset.gapOn = '1';
+      el.disabled = true;
+      el.title = reason;
+      if (el.dataset.gapAria) el.setAttribute('aria-label', el.dataset.gapAria + ': ' + reason);
+    } else if (on) {
+      el.title = el.dataset.gapTitle || '';
+      if (el.dataset.gapAria) el.setAttribute('aria-label', el.dataset.gapAria);
+      delete el.dataset.gapOn; delete el.dataset.gapTitle; delete el.dataset.gapAria;
+      el.disabled = c.natural();
+    }
   }
 }
 function getLastViewed(session) {
@@ -5543,7 +5607,7 @@ function navSpinStop() {
 async function loadSessions(silent) {
   const requestSerial = ++sessionsLoadSerial;
   const statusSerial = ++statusRequestSerial;
-  if (!silent) { navSpinStart(); loadOrreryPins(); }
+  if (!silent) navSpinStart();
   try {
     const resp = await fetch(basePath + '/api/sessions', {
       method: 'POST', cache: 'no-store'
@@ -5565,6 +5629,9 @@ async function loadSessions(silent) {
     }
     MACHINES = data.machines || [];
     HUB_MACHINE = data.machine || (MACHINES[0] && MACHINES[0].id) || '';
+    if (!silent) loadOrreryPins();
+    applyGapControls();
+    paintBell();
     let sessions = data.sessions || [];
     const snapshot = {};
     for (const s of sessions) {
@@ -5650,14 +5717,27 @@ async function loadStatuses() {
 // The set lives in the daemon (syzygy-orrery-pin-json), so a reload sees
 // the same pins and a killed chat drops out on its own.  Nothing is
 // persisted, and the Mac's own anchoring is a separate list on purpose.
+// Fleet: each machine keeps its own pins and answers for them (the hub
+// without a machine, a peer with machine=<id>).  orreryPins holds card keys
+// in the sKey form: the bare buffer name for the hub, "<machine>/<name>"
+// for a peer, so same-named chats on two machines never share a pin.
 let orreryPins = new Set();
+const orreryPinNames = new Map(); // machine id ('' for the hub) -> buffer names
 // Every toggle bumps the generation; a report that was requested before
 // the toggle is stale by the time it lands and must not undo it.
 let orreryPinsGeneration = 0;
-function isChatPinned(name) { return !!name && orreryPins.has(name); }
-function acceptOrreryPins(pins, generation = orreryPinsGeneration) {
+function pinKey(machine, name) {
+  return machine && machine !== HUB_MACHINE ? machine + '/' + name : name;
+}
+// Asked with a card key: sKey(session) or pinKey(machine, name).
+function isChatPinned(key) { return !!key && orreryPins.has(key); }
+// The pin key of a listed session, '' when it has no buffer name to pin.
+function sessionPinKey(s) { return s && s.bufferName ? pinKey(s.machine, s.bufferName) : ''; }
+function acceptOrreryPins(pins, generation = orreryPinsGeneration, machine = '') {
   if (generation !== orreryPinsGeneration) return;
-  const next = new Set(Array.isArray(pins) ? pins : []);
+  orreryPinNames.set(machine === HUB_MACHINE ? '' : machine, Array.isArray(pins) ? pins : []);
+  const next = new Set();
+  for (const [m, names] of orreryPinNames) for (const n of names) next.add(pinKey(m, n));
   const same = next.size === orreryPins.size && [...next].every(n => orreryPins.has(n));
   orreryPins = next;
   if (!same && lastSessions.length && orreryEl && !orreryEl.classList.contains('hidden')) {
@@ -5668,29 +5748,35 @@ function acceptOrreryPins(pins, generation = orreryPinsGeneration) {
   if (typeof document !== 'undefined' && document.getElementById('tb-pin') &&
       !document.getElementById('chat-toolbar').hidden) renderPinEntry();
 }
+// One request for the hub and one per awake peer.  A machine that fails
+// keeps the pins it had; the others still land.
 async function loadOrreryPins() {
   const generation = orreryPinsGeneration;
-  try {
-    const resp = await fetch(basePath + '/api/pin', { cache: 'no-store' });
-    if (!resp.ok) return;
-    acceptOrreryPins((await resp.json()).pins, generation);
-  } catch (_) { /* the rig is away: keep the last known pins */ }
+  const asks = [''];
+  for (const m of MACHINES) if (m.id !== HUB_MACHINE && m.state === 'awake') asks.push(m.id);
+  await Promise.all(asks.map(async machine => {
+    try {
+      const resp = await fetch(withMachine(basePath + '/api/pin', machine), { cache: 'no-store' });
+      if (!resp.ok) return;
+      acceptOrreryPins((await resp.json()).pins, generation, machine);
+    } catch (_) { /* that machine is away: keep its last known pins */ }
+  }));
 }
-async function toggleChatPin(bufferName) {
+async function toggleChatPin(bufferName, machine = '') {
   const generation = ++orreryPinsGeneration;
   const resp = await fetch(basePath + '/api/pin', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ bufferName })
+    body: JSON.stringify(machineBody({ bufferName }, machine))
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || data.error) throw new Error(data.error || ('HTTP ' + resp.status));
-  acceptOrreryPins(data.pins, generation);
+  acceptOrreryPins(data.pins, generation, machine);
   return !!data.pinned;
 }
 // Pinned first, then whatever order the caller already chose.
 function pinnedFirst(list) {
-  return [...list].sort((a, b) => Number(isChatPinned(b.bufferName)) - Number(isChatPinned(a.bufferName)));
+  return [...list].sort((a, b) => Number(isChatPinned(sessionPinKey(b))) - Number(isChatPinned(sessionPinKey(a))));
 }
 
 function renderSessions(sessions) {
@@ -5802,15 +5888,13 @@ function makeSessionCard(s, name) {
       '<div class="sc-title">' + providerIcon(s.title || s.bufferName) +
         '<div class="' + nameClass + '">' + escHtml(name) + '</div>' +
         (s.push ? '<svg class="sc-bell" viewBox="0 0 24 24" aria-label="Phone push on"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>' : '') +
-        (isChatPinned(s.bufferName) ? '<svg class="sc-pin" viewBox="0 0 24 24" aria-label="Pinned chat"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>' : '') +
+        (isChatPinned(sessionPinKey(s)) ? '<svg class="sc-pin" viewBox="0 0 24 24" aria-label="Pinned chat"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>' : '') +
       '</div>' +
       (metaParts.length ? '<div class="sc-path">' + metaParts.join('  &middot;  ') + '</div>' : '') +
     '</div>';
-  // A remote card peeks through /api/preview?pid=, which only knows the
-  // hub's own sockets: not yet.  Delete works: the hub forwards the kill
-  // to the machine named in the request.
+  // Peek and delete name the card's machine; the hub forwards both.
   const remote = isRemoteSession(s);
-  if (!remote) attachPeekSwipe(d, s, name);
+  attachPeekSwipe(d, s, name);
   if (s.bufferName) {
     const del = document.createElement('button');
     del.className = 'sc-delete';
@@ -6321,8 +6405,8 @@ spSheet.addEventListener('keydown',e=>{
   if(e.key==='Tab'){const els=[...spSheet.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea:not(:disabled)')].filter(el=>el.getClientRects().length);const first=els[0],last=els[els.length-1];if(e.shiftKey && document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey && document.activeElement===last){e.preventDefault();first?.focus();}}
 });
 let SPAWN_POLL_MS = 1000;
-async function waitForSpawn(bufferName, prevKeys=new Set()) {
-  for(let i=0;i<15;i++) { await new Promise(r=>setTimeout(r,SPAWN_POLL_MS));await loadSessions(true);const fresh=lastSessions.find(x=>bufferName ? x.bufferName===bufferName : !prevKeys.has(sKey(x)));if(fresh){selectSession(fresh);return true;} }
+async function waitForSpawn(bufferName, prevKeys=new Set(), machine='') {
+  for(let i=0;i<15;i++) { await new Promise(r=>setTimeout(r,SPAWN_POLL_MS));await loadSessions(true);const fresh=lastSessions.find(x=>bufferName ? x.bufferName===bufferName && (!machine || x.machine===machine) : !prevKeys.has(sKey(x)));if(fresh){selectSession(fresh);return true;} }
   return false;
 }
 async function spawnAndOpen(body) {
@@ -6330,9 +6414,9 @@ async function spawnAndOpen(body) {
   const resp=await fetch(basePath+'/api/spawn',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const data=await resp.json();
   if(data.error || resp.ok===false) { const err=new Error(data.error || 'Launch failed');err.bufferName=data.bufferName;throw err; }
-  if(body.cloneOf) { if(!data.bufferName)throw new Error('Launch returned no chat identifier. Check the chat list before retrying.');cloneRecoveryBuffer=data.bufferName; }
+  if(body.cloneOf) { if(!data.bufferName)throw new Error('Launch returned no chat identifier. Check the chat list before retrying.');cloneRecoveryBuffer=data.bufferName;cloneRecoveryMachine=body.machine||''; }
   if(body.settings) { if(!data.bufferName)throw new Error('Launch returned no chat identifier. Check the chat list before retrying.');spRecoveryBuffer=data.bufferName;if(spFirstPrompt && !spFirstPrompt.bufferName)spFirstPrompt.bufferName=data.bufferName;persistSpawnDraft(); }
-  return waitForSpawn(data.bufferName,prevKeys);
+  return waitForSpawn(data.bufferName,prevKeys,body.machine||'');
 }
 async function spStart() {
   if(spBusy || spImagesLoading || spGo.disabled)return;
@@ -6372,8 +6456,8 @@ spGo.addEventListener('click',()=>{if(Date.now() >= spGoSuppressClickUntil)spSta
 // and directory, no history (the rig's SPC c n). The rig resolves the
 // buffer name; nothing else about the session needs to travel.
 let cloneRecoveryBuffer = '';
+let cloneRecoveryMachine = '';
 async function cloneSession() {
-  if (isRemoteChat()) return;
   if (!currentBufferName) {
     alert('No buffer name available for this session');
     return;
@@ -6382,13 +6466,15 @@ async function cloneSession() {
   if (btn.disabled) return;
   btn.disabled = true; setToolLabel(btn, 'Cloning\u2026');
   try {
-    const opened = cloneRecoveryBuffer ? await waitForSpawn(cloneRecoveryBuffer) : await spawnAndOpen({ cloneOf: currentBufferName });
+    const opened = cloneRecoveryBuffer
+      ? await waitForSpawn(cloneRecoveryBuffer, new Set(), cloneRecoveryMachine)
+      : await spawnAndOpen(machineBody({ cloneOf: currentBufferName }, chatMachine()));
     if (opened) cloneRecoveryBuffer = '';
     else alert('Clone created; still waiting for it to appear. Use Open clone to check again without creating another.');
   } catch (err) {
     if (err.bufferName) {
       cloneRecoveryBuffer = err.bufferName;
-      if (await waitForSpawn(cloneRecoveryBuffer).catch(() => false)) cloneRecoveryBuffer = '';
+      if (await waitForSpawn(cloneRecoveryBuffer, new Set(), cloneRecoveryMachine).catch(() => false)) cloneRecoveryBuffer = '';
       alert('Clone created, but settings failed: ' + err.message);
     } else alert('Clone failed: ' + err.message);
   } finally {
@@ -6455,7 +6541,6 @@ async function refreshForkEntry(btn) {
   const name = currentBufferName;
   const machine = isRemoteChat() ? currentSockMachine : '';
   const key = forkKey(machine, name);
-  if (btn.title === REMOTE_ACTION_TITLE) btn.title = '';
   if (!name) { btn.disabled = true; setToolLabel(btn, 'Fork'); return; }
   // A fork already in flight for this chat keeps the entry busy, so
   // reopening the menu cannot start a second one.
@@ -6580,11 +6665,13 @@ function closeModelPicker() {
   mdSheet.classList.remove('visible');
 }
 
+let modelPickerMachine = '';
 async function openModelPicker() {
-  if (isRemoteChat()) return;
   const token = ++modelPickerToken;
   const bufferName = currentBufferName;
+  const machine = chatMachine();
   modelPickerBuffer = bufferName;
+  modelPickerMachine = machine;
   modelPickerBusy = false;
   modelPickerData = {current: '', models: []};
   mdSearch.value = '';
@@ -6601,7 +6688,7 @@ async function openModelPicker() {
   try {
     const resp = await fetch(basePath + '/api/models', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({bufferName})
+      body: JSON.stringify(machineBody({bufferName}, machine))
     });
     if (!resp.ok) throw new Error(resp.status === 404
       ? 'No such session.' : 'Could not load models (' + resp.status + ').');
@@ -6632,7 +6719,7 @@ async function chooseModel(id) {
   try {
     const resp = await fetch(basePath + '/api/model', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({bufferName, modelId: id})
+      body: JSON.stringify(machineBody({bufferName, modelId: id}, modelPickerMachine))
     });
     const data = await resp.json();
     if (!resp.ok || data.ok !== true) {
@@ -6821,7 +6908,7 @@ async function showPreview(s, name) {
   pvSheet.classList.add('visible');
   syncHistoryDock();
   try {
-    const resp = await fetch(basePath + '/api/preview?pid=' + s.pid);
+    const resp = await fetch(withMachine(basePath + '/api/preview?pid=' + s.pid, sessionMachine(s)));
     const data = await resp.json();
     const msgs = data.messages || [];
     pvBody.innerHTML = msgs.length
@@ -7167,20 +7254,20 @@ document.getElementById('files-btn').addEventListener('click', openFileBrowser);
 // Tap the chat title → label this convo. Goes through Emacs (single
 // source of truth), which mirrors to labels.json for the cards.
 headerTitle.addEventListener('click', async () => {
-  if (isRemoteChat()) return;
   if (!currentBufferName) { alert('No buffer name for this session yet (old session — reload it on the rig first).'); return; }
-  const current = (lastSessions.find(s => s.bufferName === currentBufferName) || {}).label || '';
+  const machine = chatMachine();
+  const current = (currentSession() || {}).label || '';
   const label = window.prompt('Label this convo (empty clears):', current);
   if (label === null) return;
   try {
     const resp = await fetch(basePath + '/api/label', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ bufferName: currentBufferName, label: label.trim() })
+      body: JSON.stringify(machineBody({ bufferName: currentBufferName, label: label.trim() }, machine))
     });
     const data = await resp.json();
     if (data.error) { alert('Label failed: ' + data.error); return; }
-    const entry = lastSessions.find(s => s.bufferName === currentBufferName);
+    const entry = lastSessions.find(s => s.bufferName === currentBufferName && sessionMachine(s) === machine);
     if (entry) entry.label = label.trim();
     updateChatHeader();
   } catch (err) { alert('Label failed: ' + err.message); }
@@ -7386,8 +7473,8 @@ async function openSessionByName(name) {
 // arms the rig.  Optimistic flip; the server answers with the rig's
 // actual state.
 bellBtn.addEventListener('click', async () => {
-  if (!currentBufferName || isRemoteChat() || bellBtn.classList.contains('pending')) return;
-  const entry = lastSessions.find(s => s.bufferName === currentBufferName);
+  if (!currentBufferName || isRemoteChat() || bellBtn.disabled || bellBtn.classList.contains('pending')) return;
+  const entry = currentSession();
   const was = !!(entry && entry.push);
   setBell(!was);
   bellBtn.classList.add('pending');
@@ -7429,12 +7516,11 @@ const catalogueMenuScrim = document.getElementById('catalogue-menu-scrim');
 const catalogueMenu = document.getElementById('catalogue-menu');
 function setToolLabel(btn, text) { btn.querySelector('.tb-label').textContent = text; }
 function renderPinEntry() {
-  const pinned = isChatPinned(currentBufferName);
-  const remote = isRemoteChat();
-  tbPin.disabled = !currentBufferName || remote;
+  const pinned = isChatPinned(currentBufferName ? pinKey(chatMachine(), currentBufferName) : '');
+  tbPin.disabled = !currentBufferName;
   tbPin.classList.toggle('pinned', pinned);
   setToolLabel(tbPin, pinned ? 'Unpin' : 'Pin chat');
-  tbPin.title = remote ? REMOTE_ACTION_TITLE : pinned ? 'Unpin this chat' : 'Pin this chat';
+  tbPin.title = pinned ? 'Unpin this chat' : 'Pin this chat';
 }
 function renderTurnNavEntry() {
   const enabled = !!window.turnNav && turnNav.isEnabled();
@@ -7460,7 +7546,7 @@ function renderToolbar() {
   renderTurnNavEntry();
   refreshForkEntry(document.getElementById('tb-fork'));
   refreshCatalogueEntry();
-  applyRemoteChatGuards();
+  applyGapControls();
 }
 headerGrabber.addEventListener('click', () => setToolbarOpen(chatToolbar.hidden));
 // Drag: down past 24px opens, up past 24px closes. Tap still toggles.
@@ -7489,17 +7575,18 @@ tbCatalogue.addEventListener('click', async () => {
     return;
   }
   const chat = currentBufferName;
-  const stillHere = () => currentBufferName === chat && chatViewEl.classList.contains('visible');
+  const machine = chatMachine();
+  const stillHere = () => currentBufferName === chat && chatMachine() === machine && chatViewEl.classList.contains('visible');
   try {
-    const next = await catalogueFlow(id, stillHere);
+    const next = await catalogueFlow(id, stillHere, machine);
     if (next && stillHere()) paintCatalogueEntry(next);
   }
   catch (err) { if (stillHere()) alert('Catalogue failed: ' + err.message); }
 });
 tbPin.addEventListener('click', async () => {
-  if (!currentBufferName || isRemoteChat() || tbPin.disabled) return;
+  if (!currentBufferName || tbPin.disabled) return;
   tbPin.disabled = true;
-  try { await toggleChatPin(currentBufferName); }
+  try { await toggleChatPin(currentBufferName, chatMachine()); }
   catch (err) { alert('Pin failed: ' + err.message); }
   finally { renderPinEntry(); }
 });
@@ -7523,17 +7610,18 @@ function paintCatalogueEntry(state) {
 async function refreshCatalogueEntry() {
   const serial = ++toolbarCatalogueSerial;
   const sessionIdNow = currentSessionIdForCatalogue();
+  const machine = chatMachine();
   tbCatalogue.disabled = !sessionIdNow;
   if (!sessionIdNow) { setToolLabel(tbCatalogue, 'Catalogue'); return; }
   paintCatalogueEntry(catalogueStates.get(sessionIdNow));
   try {
-    const state = await fetchCatalogueState(sessionIdNow);
+    const state = await fetchCatalogueState(sessionIdNow, machine);
     if (serial !== toolbarCatalogueSerial) return;
     paintCatalogueEntry(state);
   } catch (_) { /* unknown to the index yet: leave the plain entry */ }
 }
 function currentSessionIdForCatalogue() {
-  const s = lastSessions.find(x => x.bufferName === currentBufferName);
+  const s = currentSession();
   return (s && s.sessionId) || sessionId || null;
 }
 function closeCatalogueMenu() {
@@ -7546,9 +7634,10 @@ document.getElementById('catalogue-edit').addEventListener('click', async () => 
   const id = currentSessionIdForCatalogue();
   if (!id) return;
   const chat = currentBufferName;
-  const stillHere = () => currentBufferName === chat && chatViewEl.classList.contains('visible');
+  const machine = chatMachine();
+  const stillHere = () => currentBufferName === chat && chatMachine() === machine && chatViewEl.classList.contains('visible');
   try {
-    const next = await catalogueFlow(id, stillHere);
+    const next = await catalogueFlow(id, stillHere, machine);
     if (next && stillHere()) paintCatalogueEntry(next);
   }
   catch (err) { if (stillHere()) alert('Catalogue failed: ' + err.message); }
@@ -7557,7 +7646,7 @@ document.getElementById('catalogue-remove').addEventListener('click', async () =
   closeCatalogueMenu();
   const id = currentSessionIdForCatalogue();
   if (!id || !window.confirm('Remove this chat from the catalogue? The note and tags are kept for a later re-save.')) return;
-  try { paintCatalogueEntry(await uncatalogue(id)); }
+  try { paintCatalogueEntry(await uncatalogue(id, chatMachine())); }
   catch (err) { alert('Uncatalogue failed: ' + err.message); }
 });
 document.getElementById('fb-back').addEventListener('click', fbNavigateUp);
@@ -7890,14 +7979,14 @@ function rememberCatalogueState(state) {
   patch(historyResumeTarget);
   return state;
 }
-async function catalogueRequest(method, payload, query = '') {
+async function catalogueRequest(method, payload, query = '', machine = '') {
   const id = method === 'GET' ? decodeURIComponent(query.replace(/^\?sessionId=/, '')) : payload.sessionId;
   const generation = method === 'GET'
     ? catalogueGeneration(id)
     : (catalogueGenerations.set(id, catalogueGeneration(id) + 1), catalogueGeneration(id));
-  const resp = await fetch(basePath + '/api/catalogue' + query, method === 'GET'
+  const resp = await fetch(withMachine(basePath + '/api/catalogue' + query, method === 'GET' ? machine : ''), method === 'GET'
     ? { cache: 'no-store' }
-    : { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+    : { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(machineBody(payload, machine)) });
   const text = await resp.text();
   let data = {};
   try { data = JSON.parse(text); } catch (_) { /* handled below */ }
@@ -7905,14 +7994,16 @@ async function catalogueRequest(method, payload, query = '') {
   if (generation !== catalogueGeneration(id)) return data;
   return rememberCatalogueState(data);
 }
-function fetchCatalogueState(id) {
-  return catalogueRequest('GET', null, '?sessionId=' + encodeURIComponent(id));
+// MACHINE is the owner of the chat the id belongs to ('' for the hub); the
+// History screen's own callers pass none.
+function fetchCatalogueState(id, machine = '') {
+  return catalogueRequest('GET', null, '?sessionId=' + encodeURIComponent(id), machine);
 }
-function saveCatalogue(id, note, tags) {
-  return catalogueRequest('POST', { sessionId: id, note, tags });
+function saveCatalogue(id, note, tags, machine = '') {
+  return catalogueRequest('POST', { sessionId: id, note, tags }, '', machine);
 }
-function uncatalogue(id) {
-  return catalogueRequest('POST', { sessionId: id, uncatalogue: true });
+function uncatalogue(id, machine = '') {
+  return catalogueRequest('POST', { sessionId: id, uncatalogue: true }, '', machine);
 }
 // "syzygy, Resume,#phone" -> ["syzygy", "resume", "phone"]
 function splitTags(text) {
@@ -7929,9 +8020,9 @@ function splitTags(text) {
 // STILL_CURRENT is asked before prompting and before saving, so a flow
 // started on a chat the user has since left neither prompts nor writes.
 // Resolves to the new state, or null when cancelled or no longer current.
-async function catalogueFlow(id, stillCurrent = () => true) {
+async function catalogueFlow(id, stillCurrent = () => true, machine = '') {
   let state = catalogueStates.get(id) || null;
-  try { state = await fetchCatalogueState(id); }
+  try { state = await fetchCatalogueState(id, machine); }
   catch (err) { if (!stillCurrent()) return null; if (!state) throw err; }
   if (!stillCurrent()) return null;
   const note = window.prompt('Why keep this chat? (note, may be empty)', state.note || '');
@@ -7940,7 +8031,7 @@ async function catalogueFlow(id, stillCurrent = () => true) {
   const tags = window.prompt('Tags, comma-separated (may be empty)' + (inUse ? '\nIn use: ' + inUse : ''),
     (state.tags || []).join(', '));
   if (tags === null || !stillCurrent()) return null;
-  return saveCatalogue(id, note.trim(), splitTags(tags));
+  return saveCatalogue(id, note.trim(), splitTags(tags), machine);
 }
 
 // Search box grammar: "#tag" words narrow to chats carrying that tag, a
@@ -8665,9 +8756,11 @@ function diffQuery(scope) {
   return currentSockPid ? 'scope=repository&pid=' + encodeURIComponent(currentSockPid) : null;
 }
 async function fetchDiffReview(scope) {
+  const gap = machineGap(chatMachine(), 'diff-review');
+  if (gap) throw new Error(gap);
   const query = diffQuery(scope);
   if (!query) throw new Error(scope === 'turn' ? 'No session yet' : 'No live session');
-  const resp = await fetch(basePath + '/api/diff-review?' + query, {cache: 'no-store'});
+  const resp = await fetch(withMachine(basePath + '/api/diff-review?' + query, chatMachine()), {cache: 'no-store'});
   if (!resp.ok) throw new Error((await resp.text()) || ('HTTP ' + resp.status));
   return resp.json();
 }
@@ -8718,6 +8811,8 @@ async function loadDiffReview(scope, options = {}) {
 }
 
 function openDiffReview(scope) {
+  const gap = machineGap(chatMachine(), 'diff-review');
+  if (gap) { showToast(gap); return; }
   diffReviewEl.classList.add('visible');
   closeDiffReader(false);
   loadDiffReview(scope || diffReview.scope, {refresh: true});

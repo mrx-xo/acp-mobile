@@ -3,6 +3,18 @@ import fs from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
+// Fleet helpers the sliced page sections call.  A hub-only page: no machine.
+const FLEET_STUBS = {
+  HUB_MACHINE: '', MACHINES: [], Map,
+  chatMachine: () => '', sessionMachine: () => '', machineGap: () => '',
+  withMachine: (url, machine) => machine ? url + (url.includes('?') ? '&' : '?') + 'machine=' + encodeURIComponent(machine) : url,
+  machineBody: (obj, machine) => machine ? {...obj, machine} : obj,
+};
+function withFleetStubs(context) {
+  for (const [key, value] of Object.entries(FLEET_STUBS)) if (!(key in context)) context[key] = value;
+  return context;
+}
+
 class FakeClassList {
   constructor() { this.values = new Set(); }
   add(...names) { names.forEach(name => this.values.add(name)); }
@@ -185,7 +197,7 @@ function loadSocketClient(overrides = {}) {
     JSON,
     ...overrides,
   };
-  vm.createContext(context);
+  vm.createContext(withFleetStubs(context));
   vm.runInContext(html.slice(start, end), context, {filename: 'index.html#socket'});
   return {context, clock, sockets, statusClasses, calls, documentListeners, windowListeners};
 }
@@ -406,7 +418,7 @@ function loadHistoryClient(overrides = {}) {
     Promise,
     ...overrides,
   };
-  vm.createContext(context);
+  vm.createContext(withFleetStubs(context));
   vm.runInContext(source, context, {filename: 'index.html#history'});
   return {context, elements};
 }
@@ -586,7 +598,7 @@ function loadTurnNav() {
   assert.notEqual(start, -1, 'turn nav block should exist');
   assert.notEqual(end, -1, 'turn nav block should have an end marker');
   const context = { console, Math };
-  vm.createContext(context);
+  vm.createContext(withFleetStubs(context));
   vm.runInContext(html.slice(start, end), context, {filename: 'index.html#turnnav'});
   // Objects built inside the vm have a foreign Object prototype, which
   // deepStrictEqual rejects; round-trip through JSON to normalise.
@@ -743,7 +755,7 @@ function loadModelPicker(overrides = {}) {
     Array, Error, JSON, Promise,
     ...overrides,
   };
-  vm.createContext(context);
+  vm.createContext(withFleetStubs(context));
   vm.runInContext(html.slice(start, end), context, {filename: 'index.html#models'});
   return {context, elements, timers};
 }
@@ -754,10 +766,15 @@ const modelData = () => ({current: 'first', models: [
 ]});
 const modelReply = data => ({ok: true, json: async () => data});
 
-test('model picker stays closed for a remote chat', async () => {
-  const {context, elements} = loadModelPicker({isRemoteChat: () => true});
+test('model picker opens for a remote chat and names its machine', async () => {
+  const sent = [];
+  const {context, elements} = loadModelPicker({
+    chatMachine: () => 'vengeance',
+    fetch: async (url, options) => { sent.push(JSON.parse(options.body)); return modelReply(modelData()); },
+  });
   await context.openModelPicker();
-  assert.equal(elements.has('model-sheet') && elements.get('model-sheet').classList.contains('visible'), false);
+  assert.equal(elements.get('model-sheet').classList.contains('visible'), true);
+  assert.deepEqual(sent, [{bufferName: '*Agent @ demo*', machine: 'vengeance'}]);
 });
 
 test('model picker lists models in rig order with the current model marked', async () => {
@@ -948,7 +965,7 @@ function loadSpawnSheet(overrides = {}) {
     localStorage: (() => { const m = new Map(); return {getItem:k => m.has(k) ? m.get(k) : null, setItem:(k,v) => m.set(k,String(v)), removeItem:k => m.delete(k)}; })(),
     ...overrides,
   };
-  vm.createContext(context);
+  vm.createContext(withFleetStubs(context));
   vm.runInContext(source, context, {filename: 'index.html#spawn'});
   // Top-level let/const stay in the script scope, not on the context.
   const get = name => vm.runInContext(name, context);
@@ -1418,7 +1435,7 @@ function loadOrreryPins(overrides = {}) {
     fetch: async () => { throw new Error('unexpected fetch'); },
     ...overrides,
   };
-  vm.createContext(context);
+  vm.createContext(withFleetStubs(context));
   vm.runInContext(html.slice(start, end), context, {filename: 'index.html#orrery-pins'});
   return context;
 }
@@ -1539,7 +1556,7 @@ function loadDiffReview(overrides = {}) {
     ...overrides,
   };
   delete context.storage;
-  vm.createContext(context);
+  vm.createContext(withFleetStubs(context));
   vm.runInContext(html.slice(start, end), context, {filename: 'index.html#diff-review'});
   return {context, elements, stored};
 }
