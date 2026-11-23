@@ -6520,8 +6520,12 @@ spSheet.addEventListener('keydown',e=>{
   if(e.key==='Tab'){const els=[...spSheet.querySelectorAll('button:not(:disabled),input:not(:disabled),textarea:not(:disabled)')].filter(el=>el.getClientRects().length);const first=els[0],last=els[els.length-1];if(e.shiftKey && document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey && document.activeElement===last){e.preventDefault();first?.focus();}}
 });
 let SPAWN_POLL_MS = 1000;
+// The one rule for "the new chat": by buffer name on that machine, else any session not seen before.
+function findSpawnedSession(bufferName, prevKeys, machine='') {
+  return lastSessions.find(x=>bufferName ? x.bufferName===bufferName && sameMachine(x.machine,machine) : !prevKeys.has(sKey(x)));
+}
 async function waitForSpawn(bufferName, prevKeys=new Set(), machine='') {
-  for(let i=0;i<15;i++) { await new Promise(r=>setTimeout(r,SPAWN_POLL_MS));await loadSessions(true);const fresh=lastSessions.find(x=>bufferName ? x.bufferName===bufferName && sameMachine(x.machine,machine) : !prevKeys.has(sKey(x)));if(fresh){selectSession(fresh);return true;} }
+  for(let i=0;i<15;i++) { await new Promise(r=>setTimeout(r,SPAWN_POLL_MS));await loadSessions(true);const fresh=findSpawnedSession(bufferName,prevKeys,machine);if(fresh){selectSession(fresh);return true;} }
   return false;
 }
 async function spawnAndOpen(body) {
@@ -8084,8 +8088,11 @@ let historyCataloguedOnly = false;
 // the same path.  historyMachine is what a request about the entry names ('' for the hub).
 function historyMachine(t) { return t && !sameMachine(t.machine, '') ? t.machine : ''; }
 function historyKey(t) { return catalogueKey(historyMachine(t), t.file); }
-// Resumes in flight, by entry key: the same entry cannot be resumed twice at once.
-const historyResuming = new Set();
+// Resumes in flight: entry key -> that resume's record ({serial}).  A reply
+// is applied only while the navigation generation still holds and the
+// record is still the one that started the request, so resumes of different
+// entries (even the same path on two machines) never complete or fail each other.
+const historyResuming = new Map();
 function historyBadgeHtml(t) {
   const m = historyMachine(t);
   return m ? '<span class="machine-badge" style="color:' + machineColor(m) + '">' + escHtml(machineName(m)) + '</span>' : '';
@@ -8590,11 +8597,15 @@ async function openTranscript(t, query = '') {
 async function resumeTranscript(t) {
   if (!t || !t.resumable || historyResumeGap(t)) return;
   const key = historyKey(t);
-  if (historyResuming.has(key)) return;
-  historyResuming.add(key);
-  const machine = historyMachine(t);
   const serial = historyRequestSerial;
-  const current = () => serial === historyRequestSerial;
+  const earlier = historyResuming.get(key);
+  // A resume from this very screen is still running; one left behind by
+  // navigation is superseded by this one.
+  if (earlier && earlier.serial === serial) return;
+  const op = {serial};
+  historyResuming.set(key, op);
+  const machine = historyMachine(t);
+  const current = () => serial === historyRequestSerial && historyResuming.get(key) === op;
   setControlState(historyResumeBtn, {disabled: true});
   historyResumeBtn.textContent = 'resuming…';
   try {
@@ -8617,7 +8628,9 @@ async function resumeTranscript(t) {
     // needs a moment for acp-multiplex to publish its socket.  Buffer name is
     // the stable identity across provider-specific session-ID forks.
     // The same buffer name can exist on several machines: the entry's own wins.
-    const findTarget = () => lastSessions.find(s => s.bufferName === data.bufferName && sameMachine(s.machine, machine));
+    // One matching rule (findSpawnedSession, shared with waitForSpawn); the
+    // loop stays here because it must not select once the user has left.
+    const findTarget = () => findSpawnedSession(data.bufferName, null, machine);
     let target = findTarget();
     for (let i = 0; !target && i < 20; i++) {
       await new Promise(resolve => setTimeout(resolve, 750));
@@ -8635,8 +8648,9 @@ async function resumeTranscript(t) {
   } catch (err) {
     if (current()) alert('Resume failed: ' + err.message);
   } finally {
-    historyResuming.delete(key);
-    if (current()) {
+    const live = current();
+    if (historyResuming.get(key) === op) historyResuming.delete(key);
+    if (live) {
       setControlState(historyResumeBtn, {disabled: false});
       historyResumeBtn.textContent = 'resume';
     }

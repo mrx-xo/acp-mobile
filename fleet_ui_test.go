@@ -88,8 +88,12 @@ type historyFleet struct {
 	resumes     []string // body of each /api/resume-transcript
 	catalogues  []string // body of each POST /api/catalogue
 	wsQueries   []string
-	gaps        string // JSON array of the peer's gaps
-	failOpen    bool   // the peer's transcript answers 502
+	gaps        string        // JSON array of the peer's gaps
+	failOpen    bool          // the peer's transcript answers 502
+	failResume  bool          // the peer's resume answers 502
+	extraEntry  bool          // a third, unresumable peer entry with its own reason
+	holdResume  chan struct{} // when set, the peer's resume waits for it
+	held        chan struct{} // signalled when a peer resume is being held
 	srv         *httptest.Server
 }
 
@@ -123,8 +127,13 @@ func newHistoryFleet(t *testing.T, gaps string) *historyFleet {
 		f.listQueries = append(f.listQueries, r.URL.RawQuery)
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		extra := ""
+		if f.extraEntry {
+			extra = `,{"machine":"vengeance","file":"/t/two.md","project":"skate","timestamp":"2026-09-01-11-00-00",` +
+				`"agent":"Claude","preview":"Preview two","sessionId":"s2","label":"","resumable":false,"resumeReason":"no session id recorded"}`
+		}
 		// The same file path on both machines: only machine plus file is unique.
-		_, _ = fmt.Fprint(w, `[`+entry("mrx", "/t/one.md", "s1")+`,`+entry("vengeance", "/t/one.md", "s1")+`]`)
+		_, _ = fmt.Fprint(w, `[`+entry("mrx", "/t/one.md", "s1")+`,`+entry("vengeance", "/t/one.md", "s1")+extra+`]`)
 	})
 	mux.HandleFunc("/api/transcript-search", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -150,8 +159,24 @@ func newHistoryFleet(t *testing.T, gaps string) *historyFleet {
 		b, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.resumes = append(f.resumes, string(b))
+		hold, failResume := f.holdResume, f.failResume
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(b), `"machine":"vengeance"`) {
+			if hold != nil {
+				f.held <- struct{}{}
+				select {
+				case <-hold:
+				case <-r.Context().Done():
+					return
+				}
+			}
+			if failResume {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = fmt.Fprint(w, `{"error":"NEMESIS did not answer"}`)
+				return
+			}
+		}
 		_, _ = fmt.Fprint(w, `{"ok":true,"bufferName":"Claude Agent @ skate"}`)
 	})
 	mux.HandleFunc("/api/catalogue", func(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +210,7 @@ func openHistory(t *testing.T, f *historyFleet) *chromePage {
 	page := openChromePage(t, f.srv.URL)
 	page.waitFor(t, `document.querySelectorAll('.session-card').length === 2`)
 	page.eval(t, `document.getElementById('nav-history-btn').click()`)
-	page.waitFor(t, `document.querySelectorAll('#history-body .hist-card').length === 2`)
+	page.waitFor(t, `document.querySelectorAll('#history-body .hist-card').length >= 2`)
 	return page
 }
 
@@ -267,6 +292,7 @@ func TestHistoryOpensAndResumesOnTheEntrysMachine(t *testing.T) {
 // disabled, and says why.  The hub's own Resume stays live.
 func TestHistoryResumeGapIsDisabledWithReason(t *testing.T) {
 	f := newHistoryFleet(t, `["resume"]`)
+	f.extraEntry = true
 	page := openHistory(t, f)
 	page.eval(t, `document.querySelectorAll('#history-body .hist-card')[1].click()`)
 	page.waitFor(t, `document.querySelectorAll('#history-body .pv-msg').length === 2`)
@@ -283,6 +309,15 @@ func TestHistoryResumeGapIsDisabledWithReason(t *testing.T) {
 		title: document.getElementById('history-resume').title})`).(string)
 	if got != `{"disabled":false,"title":"Resume this conversation"}` {
 		t.Fatalf("hub resume button = %s, want live", got)
+	}
+	// The gap wins over the entry's own reason.
+	page.eval(t, `document.getElementById('history-back').click()`)
+	page.eval(t, `document.querySelectorAll('#history-body .hist-card')[2].click()`)
+	page.waitFor(t, `document.querySelectorAll('#history-body .pv-msg').length === 2`)
+	got, _ = page.eval(t, `JSON.stringify({disabled: document.getElementById('history-resume').disabled,
+		title: document.getElementById('history-resume').title})`).(string)
+	if got != `{"disabled":true,"title":"NEMESIS cannot resume chats"}` {
+		t.Fatalf("unresumable peer entry button = %s, want the gap reason, not the entry's", got)
 	}
 }
 
@@ -315,4 +350,115 @@ func TestHistoryRemoteOpenFailureShowsServerError(t *testing.T) {
 	}
 	page.eval(t, `document.getElementById('history-back').click()`)
 	page.waitFor(t, `document.querySelectorAll('#history-body .hist-card').length === 2`)
+}
+
+// A failed resume on another machine shows the server's message, re-enables
+// Resume, and leaves the list usable.
+func TestHistoryRemoteResumeFailureLeavesHistoryUsable(t *testing.T) {
+	f := newHistoryFleet(t, `[]`)
+	f.failResume = true
+	page := openHistory(t, f)
+	page.eval(t, `window.__alerts = []; window.alert = m => window.__alerts.push(m)`)
+	page.eval(t, `document.querySelectorAll('#history-body .hist-card')[1].click()`)
+	page.waitFor(t, `document.querySelectorAll('#history-body .pv-msg').length === 2`)
+	page.eval(t, `document.getElementById('history-resume').click()`)
+	page.waitFor(t, `window.__alerts.length === 1`)
+	if got, _ := page.eval(t, `window.__alerts[0]`).(string); got != "Resume failed: NEMESIS did not answer" {
+		t.Fatalf("alert = %q, want the server's message", got)
+	}
+	page.waitFor(t, `!document.getElementById('history-resume').disabled && document.getElementById('history-resume').textContent === 'resume'`)
+	page.eval(t, `document.getElementById('history-back').click()`)
+	page.eval(t, `document.querySelectorAll('#history-body .hist-card')[0].click()`)
+	page.waitFor(t, `document.querySelectorAll('#history-body .pv-msg').length === 2`)
+}
+
+// Two resumes of entries that share a file path but live on different
+// machines do not cross: the held NEMESIS reply, arriving after the user
+// moved on and resumed the hub entry, opens nothing and changes nothing.
+func TestHistoryTwoResumesDoNotCrossEntries(t *testing.T) {
+	f := newHistoryFleet(t, `[]`)
+	release := make(chan struct{})
+	f.holdResume = release
+	f.held = make(chan struct{}, 4)
+	var once sync.Once
+	releaseHeld := func() { once.Do(func() { close(release) }) }
+	// Registered after the server's cleanup, so it runs before the server closes.
+	t.Cleanup(releaseHeld)
+	page := openHistory(t, f)
+
+	page.eval(t, `document.querySelectorAll('#history-body .hist-card')[1].click()`)
+	page.waitFor(t, `document.querySelectorAll('#history-body .pv-msg').length === 2`)
+	page.eval(t, `document.getElementById('history-resume').click()`)
+	select {
+	case <-f.held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the NEMESIS resume never reached the server")
+	}
+	page.eval(t, `document.getElementById('history-back').click()`)
+	page.eval(t, `document.querySelectorAll('#history-body .hist-card')[0].click()`)
+	page.waitFor(t, `document.querySelectorAll('#history-body .pv-msg').length === 2`)
+	page.eval(t, `document.getElementById('history-resume').click()`)
+	waitWS := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			for _, q := range f.snapshot(&f.wsQueries) {
+				if strings.Contains(q, want) {
+					return
+				}
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+		t.Fatalf("no /ws dial with %s; saw %q", want, f.snapshot(&f.wsQueries))
+	}
+	waitWS("sock=1")
+	releaseHeld()
+	time.Sleep(1500 * time.Millisecond) // time for a wrongly applied late reply
+	for _, q := range f.snapshot(&f.wsQueries) {
+		if strings.Contains(q, "sock=40388") || strings.Contains(q, "machine=vengeance") {
+			t.Fatalf("the late NEMESIS reply opened a chat: /ws?%s", q)
+		}
+	}
+	if got := f.snapshot(&f.resumes); len(got) != 2 || got[0] != `{"file":"/t/one.md","machine":"vengeance"}` || got[1] != `{"file":"/t/one.md"}` {
+		t.Fatalf("resume bodies = %q, want the peer's then the hub's, each on its own machine", got)
+	}
+	if n, _ := page.eval(t, `historyResuming.size`).(float64); n != 0 {
+		t.Fatalf("resumes still tracked = %v, want 0", n)
+	}
+}
+
+// A resume left behind by navigation does not block resuming the same entry
+// again: the new one supersedes it, and only the new one opens the chat.
+func TestHistoryResumeSupersedesLeftBehindResume(t *testing.T) {
+	f := newHistoryFleet(t, `[]`)
+	release := make(chan struct{})
+	f.holdResume = release
+	f.held = make(chan struct{}, 4)
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	page := openHistory(t, f)
+	for i := 0; i < 2; i++ {
+		page.eval(t, `document.querySelectorAll('#history-body .hist-card')[1].click()`)
+		page.waitFor(t, `document.querySelectorAll('#history-body .pv-msg').length === 2`)
+		page.eval(t, `document.getElementById('history-resume').click()`)
+		select {
+		case <-f.held:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("resume %d never reached the server", i+1)
+		}
+		if i == 0 {
+			page.eval(t, `document.getElementById('history-back').click()`)
+		}
+	}
+	once.Do(func() { close(release) })
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.snapshot(&f.wsQueries)) == 0 && time.Now().Before(deadline) {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if got := f.snapshot(&f.resumes); len(got) != 2 {
+		t.Fatalf("resume bodies = %q, want both attempts sent", got)
+	}
+	if len(f.snapshot(&f.wsQueries)) == 0 {
+		t.Fatal("the second resume did not open the chat")
+	}
 }

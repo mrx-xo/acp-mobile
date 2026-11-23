@@ -424,6 +424,10 @@ function loadHistoryClient(overrides = {}) {
     ...overrides,
   };
   vm.createContext(withFleetStubs(context));
+  // The page's shared "find the new chat" rule lives outside the History slice.
+  const rule = html.indexOf('function findSpawnedSession');
+  assert.notEqual(rule, -1, 'findSpawnedSession should exist');
+  vm.runInContext(html.slice(rule, html.indexOf('async function waitForSpawn', rule)), context, {filename: 'index.html#spawn-rule'});
   vm.runInContext(source, context, {filename: 'index.html#history'});
   return {context, elements};
 }
