@@ -11,7 +11,7 @@
 # 80 bytes. Run from the hub machine.
 #
 # Test hook, only for exercising the cleanup path: SWEEP_FAKE_SESSIONS_FAIL=1
-# makes the post-kill confirmation treat every /api/sessions reply as failed.
+# makes every membership check (in_sessions) answer unknown.
 set -u
 
 usage() { echo "usage: fleet-node-sweep.sh <machine-id> [--launch]" >&2; exit 2; }
@@ -69,6 +69,8 @@ in_sessions() {
   local verdict
   QUIET=1 call POST /api/sessions '{}' "${2:-20}"
   present=unknown
+  # Test hook: every membership check answers unknown, for every caller.
+  [ -z "${SWEEP_FAKE_SESSIONS_FAIL:-}" ] || return 0
   [ "$status" = 200 ] || return 0
   verdict="$(printf '%s' "$body" | jq -er --arg b "$1" '
     if (.sessions | type) == "array"
@@ -89,7 +91,6 @@ confirm_gone() {
     left=$(( deadline - $(date +%s) ))
     [ "$left" -ge 1 ] || return 1
     in_sessions "$1" "$left"
-    if [ -n "${SWEEP_FAKE_SESSIONS_FAIL:-}" ]; then present=unknown; fi
     [ "$present" = absent ] && return 0
     left=$(( deadline - $(date +%s) ))
     [ "$left" -ge 1 ] || return 1
@@ -118,7 +119,7 @@ on_exit() {
     if [ "$present" = absent ]; then
       echo "after the extra kill: $buf confirmed gone" | scrub
     else
-      echo "UNCONFIRMED: $buf may still be running on $id" | scrub
+      echo "UNCONFIRMED after the extra kill: $buf may still be running on $id" | scrub
     fi
     [ "$code" -ne 0 ] || code=1
   fi
