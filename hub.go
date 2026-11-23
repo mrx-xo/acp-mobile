@@ -252,22 +252,45 @@ func remoteTarget(r *http.Request) string {
 	return target
 }
 
-// refuseRemoteMachine answers 501 when r names another machine, and
-// reports whether it did.  Spawn, label, push, pin and preview run on this
-// machine's Emacs and sockets, which do not own a peer's chat; routing
-// them to the owning node arrives in fleet step 3.  Kill and fork already
-// route (forwardToMachine).  A request without a machine is untouched.
-func refuseRemoteMachine(w http.ResponseWriter, r *http.Request) bool {
-	if remoteTarget(r) == "" {
-		return false
+// forwardTimeout is how long the hub waits for a peer to answer a
+// forwarded action on path.  The node runs emacsclient or a spawn script
+// before it answers, so these wait longer than the session poll does.
+func forwardTimeout(path string) time.Duration {
+	switch path {
+	case "/api/spawn":
+		return 180 * time.Second
+	case "/api/resume-transcript":
+		return 45 * time.Second
+	case "/api/fork":
+		return 60 * time.Second
 	}
-	http.Error(w, "remote machine actions arrive in a later step", http.StatusNotImplemented)
-	return true
+	return 15 * time.Second
 }
 
-// peerActionHTTP carries a forwarded action.  The node runs emacsclient
-// before it answers, so this waits longer than the session poll does.
-var peerActionHTTP = &http.Client{Timeout: 15 * time.Second}
+// peerActionHTTP carries a forwarded action.  It has no client timeout:
+// forwardToMachine bounds each call with a per-route context deadline.
+var peerActionHTTP = &http.Client{}
+
+// fleetRoute wraps a machine-scoped handler.  A request that names no
+// machine, or this one, runs h unchanged.  A request that names another
+// machine is handed to that machine (forwardToMachine), because this
+// machine's Emacs and sockets do not own its chats.  A call that already
+// came from a peer is never forwarded again, so two hubs cannot bounce an
+// action between each other.
+func fleetRoute(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		target := remoteTarget(r)
+		if target == "" {
+			h(w, r)
+			return
+		}
+		if isPeerRequest(r) {
+			http.Error(w, "a forwarded action is not forwarded again", http.StatusNotImplemented)
+			return
+		}
+		forwardToMachine(w, r, target)
+	}
+}
 
 // forwardToMachine replays r's method, path and body on the machine with
 // id target, as a peer call, and relays that machine's status and body.
@@ -297,7 +320,9 @@ func forwardToMachine(w http.ResponseWriter, r *http.Request, target string) {
 	query := r.URL.Query()
 	query.Set("machine", target)
 	u := "http://" + peerHostPort(m) + r.URL.Path + "?" + query.Encode()
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, u, bytes.NewReader(body))
+	ctx, cancel := context.WithTimeout(r.Context(), forwardTimeout(r.URL.Path))
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, r.Method, u, bytes.NewReader(body))
 	if err != nil {
 		jsonError(http.StatusInternalServerError, err.Error())
 		return

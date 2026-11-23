@@ -357,21 +357,21 @@ func main() {
 
 	mux.HandleFunc("/api/sessions", handleSessions)
 	mux.HandleFunc("/api/statuses", handleStatuses)
-	mux.HandleFunc("/api/spawn", handleSpawn)
-	mux.HandleFunc("/api/presets", handlePresets)
-	mux.HandleFunc("/api/mode-words", handleModeWords)
-	mux.HandleFunc("/api/launch-options", handleLaunchOptions)
+	mux.HandleFunc("/api/spawn", fleetRoute(handleSpawn))
+	mux.HandleFunc("/api/presets", fleetRoute(handlePresets))
+	mux.HandleFunc("/api/mode-words", fleetRoute(handleModeWords))
+	mux.HandleFunc("/api/launch-options", fleetRoute(handleLaunchOptions))
 	registerModelHandlers(mux)
 	mux.HandleFunc("/api/projects", handleProjects)
 	mux.HandleFunc("/api/mermaid-config", handleMermaidConfig)
-	mux.HandleFunc("/api/kill", handleKill)
-	mux.HandleFunc("/api/label", handleLabel)
-	mux.HandleFunc("/api/push", handlePush)
-	mux.HandleFunc("/api/fork", handleFork)
-	mux.HandleFunc("/api/catalogue", handleCatalogue)
-	mux.HandleFunc("/api/diff-review", handleDiffReview)
-	mux.HandleFunc("/api/git-status", handleGitStatus)
-	mux.HandleFunc("/api/pin", handlePin)
+	mux.HandleFunc("/api/kill", fleetRoute(handleKill))
+	mux.HandleFunc("/api/label", fleetRoute(handleLabel))
+	mux.HandleFunc("/api/push", fleetRoute(handlePush))
+	mux.HandleFunc("/api/fork", fleetRoute(handleFork))
+	mux.HandleFunc("/api/catalogue", fleetRoute(handleCatalogue))
+	mux.HandleFunc("/api/diff-review", fleetRoute(handleDiffReview))
+	mux.HandleFunc("/api/git-status", fleetRoute(handleGitStatus))
+	mux.HandleFunc("/api/pin", fleetRoute(handlePin))
 	mux.HandleFunc("/api/push-key", handlePushKey)
 	mux.HandleFunc("/api/push-subscribe", handlePushSubscribe)
 	mux.HandleFunc("/api/notify", handleNotify)
@@ -379,13 +379,13 @@ func main() {
 	mux.HandleFunc("/api/presence", handlePresence)
 	mux.HandleFunc("/sw.js", handleServiceWorker)
 	mux.HandleFunc("/manifest.webmanifest", handleManifest)
-	mux.HandleFunc("/api/preview", handlePreview)
+	mux.HandleFunc("/api/preview", fleetRoute(handlePreview))
 	mux.HandleFunc("/api/transcripts", handleTranscripts)
 	mux.HandleFunc("/api/transcript-search", handleTranscriptSearch)
-	mux.HandleFunc("/api/transcript", handleTranscript)
-	mux.HandleFunc("/api/resume-transcript", handleResumeTranscript)
-	mux.HandleFunc("/files/list", handleFileList)
-	mux.HandleFunc("/files/read", handleFileRead)
+	mux.HandleFunc("/api/transcript", fleetRoute(handleTranscript))
+	mux.HandleFunc("/api/resume-transcript", fleetRoute(handleResumeTranscript))
+	mux.HandleFunc("/files/list", fleetRoute(handleFileList))
+	mux.HandleFunc("/files/read", fleetRoute(handleFileRead))
 
 	// CSRF protection via Sec-Fetch-Site headers
 	cop := http.NewCrossOriginProtection()
@@ -894,9 +894,6 @@ func validPresetKey(key string) bool {
 }
 
 func handleSpawn(w http.ResponseWriter, r *http.Request) {
-	if refuseRemoteMachine(w, r) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -936,9 +933,6 @@ func handleSpawn(w http.ResponseWriter, r *http.Request) {
 // multiplex socket replays full history to any connection, so we dial,
 // drain the replay, and keep the last few user/agent messages.
 func handlePreview(w http.ResponseWriter, r *http.Request) {
-	if refuseRemoteMachine(w, r) {
-		return
-	}
 	pid := r.URL.Query().Get("pid")
 	if _, err := strconv.Atoi(pid); err != nil {
 		http.Error(w, "invalid pid", http.StatusBadRequest)
@@ -1833,9 +1827,6 @@ func handleResumeTranscript(w http.ResponseWriter, r *http.Request) {
 // bridge as handleKill.  Emacs owns the label hash and mirrors it to
 // labels.json, so rig and phone always agree.
 func handleLabel(w http.ResponseWriter, r *http.Request) {
-	if refuseRemoteMachine(w, r) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1872,9 +1863,6 @@ func handleLabel(w http.ResponseWriter, r *http.Request) {
 // same bridge as handleLabel.  Emacs owns the buffer-local minor mode and
 // mirrors armed session ids to push.json, so rig and phone always agree.
 func handlePush(w http.ResponseWriter, r *http.Request) {
-	if refuseRemoteMachine(w, r) {
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -1911,15 +1899,6 @@ func handlePush(w http.ResponseWriter, r *http.Request) {
 // fork failed to start), which becomes 409 so the phone explains
 // instead of retrying.
 func handleFork(w http.ResponseWriter, r *http.Request) {
-	// A peer's chat forks on the machine that owns it, probe included.
-	if target := remoteTarget(r); target != "" {
-		if isPeerRequest(r) {
-			http.Error(w, "a forwarded action is not forwarded again", http.StatusNotImplemented)
-			return
-		}
-		forwardToMachine(w, r, target)
-		return
-	}
 	var bufferName string
 	probe := false
 	switch r.Method {
@@ -1999,14 +1978,6 @@ func evalEmacsContext(ctx context.Context, name string, args ...string) ([]byte,
 }
 
 func handleKill(w http.ResponseWriter, r *http.Request) {
-	if target := remoteTarget(r); target != "" {
-		if isPeerRequest(r) {
-			http.Error(w, "a forwarded action is not forwarded again", http.StatusNotImplemented)
-			return
-		}
-		forwardToMachine(w, r, target)
-		return
-	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

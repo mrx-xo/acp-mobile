@@ -308,7 +308,7 @@ func TestKillForwardsToOwningMachine(t *testing.T) {
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
 
 	rec := httptest.NewRecorder()
-	handleKill(rec, httptest.NewRequest("POST", "/api/kill",
+	fleetRoute(handleKill)(rec, httptest.NewRequest("POST", "/api/kill",
 		strings.NewReader(`{"bufferName":"Claude Agent @ skate","machine":"vengeance"}`)))
 
 	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"ok":true}` {
@@ -337,7 +337,7 @@ func TestKillRelaysThePeersRefusal(t *testing.T) {
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
 
 	rec := httptest.NewRecorder()
-	handleKill(rec, httptest.NewRequest("POST", "/api/kill",
+	fleetRoute(handleKill)(rec, httptest.NewRequest("POST", "/api/kill",
 		strings.NewReader(`{"bufferName":"Claude Agent @ skate","machine":"vengeance"}`)))
 
 	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "session not found or already closed") {
@@ -362,7 +362,7 @@ func TestKillOnUnreachableOrUnknownMachineAnswersJSON(t *testing.T) {
 		{"nowhere", http.StatusNotFound, "nowhere"},
 	} {
 		rec := httptest.NewRecorder()
-		handleKill(rec, httptest.NewRequest("POST", "/api/kill",
+		fleetRoute(handleKill)(rec, httptest.NewRequest("POST", "/api/kill",
 			strings.NewReader(`{"bufferName":"x","machine":"`+tc.machine+`"}`)))
 		var reply struct{ Error string }
 		if rec.Code != tc.code || json.Unmarshal(rec.Body.Bytes(), &reply) != nil || !strings.Contains(reply.Error, tc.want) {
@@ -396,7 +396,7 @@ func TestKillFromAPeerIsNotForwardedAgain(t *testing.T) {
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
 
 	rec := httptest.NewRecorder()
-	handleKill(rec, withPeerFlag(httptest.NewRequest("POST", "/api/kill",
+	fleetRoute(handleKill)(rec, withPeerFlag(httptest.NewRequest("POST", "/api/kill",
 		strings.NewReader(`{"bufferName":"x","machine":"vengeance"}`))))
 
 	if hits != 0 || rec.Code != http.StatusNotImplemented {
@@ -518,7 +518,7 @@ func TestForkForwardsToOwningMachine(t *testing.T) {
 		httptest.NewRequest("POST", "/api/fork", strings.NewReader(`{"bufferName":"Claude Agent @ skate","machine":"vengeance"}`)),
 	} {
 		rec := httptest.NewRecorder()
-		handleFork(rec, req)
+		fleetRoute(handleFork)(rec, req)
 		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"supported":true`) {
 			t.Fatalf("%s: hub answered %d %q, want the peer's 200", req.Method, rec.Code, rec.Body.String())
 		}
@@ -542,9 +542,146 @@ func TestForkFromAPeerIsNotForwardedAgain(t *testing.T) {
 	defer peer.Close()
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
 	rec := httptest.NewRecorder()
-	handleFork(rec, withPeerFlag(httptest.NewRequest("POST", "/api/fork",
+	fleetRoute(handleFork)(rec, withPeerFlag(httptest.NewRequest("POST", "/api/fork",
 		strings.NewReader(`{"bufferName":"Claude Agent @ skate","machine":"vengeance"}`))))
 	if rec.Code != http.StatusNotImplemented || called {
 		t.Fatalf("code=%d forwarded=%v, want 501 and no second hop", rec.Code, called)
+	}
+}
+
+// peerRecorder is a peer server that records what the hub forwarded.
+type peerRecorder struct {
+	hits                                 int
+	method, path, header, rawQuery, body string
+	query                                map[string][]string
+}
+
+func newPeerRecorder(t *testing.T, status int, reply string) (*peerRecorder, *httptest.Server) {
+	t.Helper()
+	rec := &peerRecorder{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.hits++
+		rec.method, rec.path, rec.header = r.Method, r.URL.Path, r.Header.Get(peerHeader)
+		rec.rawQuery, rec.query = r.URL.RawQuery, r.URL.Query()
+		b, _ := io.ReadAll(r.Body)
+		rec.body = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		fmt.Fprint(w, reply)
+	}))
+	t.Cleanup(srv.Close)
+	return rec, srv
+}
+
+func TestFleetRouteForwardsToOwningMachine(t *testing.T) {
+	argsFile := installFakeEmacsclient(t, "t")
+	rec, peer := newPeerRecorder(t, http.StatusTeapot, `{"ok":"peer"}`)
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+
+	body := `{"bufferName":"b","label":"x","machine":"vengeance"}`
+	w := httptest.NewRecorder()
+	fleetRoute(handleLabel)(w, httptest.NewRequest("POST", "/api/label", strings.NewReader(body)))
+
+	if w.Code != http.StatusTeapot || strings.TrimSpace(w.Body.String()) != `{"ok":"peer"}` {
+		t.Fatalf("hub answered %d %q, want the peer's status and body", w.Code, w.Body.String())
+	}
+	if rec.method != "POST" || rec.path != "/api/label" || rec.header != "1" || rec.body != body {
+		t.Fatalf("peer saw %s %s header=%q body=%q", rec.method, rec.path, rec.header, rec.body)
+	}
+	if got := rec.query["machine"]; len(got) != 1 || got[0] != "vengeance" {
+		t.Fatalf("peer query machine = %v, want [vengeance]", got)
+	}
+	if _, err := os.Stat(argsFile); err == nil {
+		t.Fatal("a forwarded request still ran the hub's emacsclient")
+	}
+}
+
+func TestFleetRouteKeepsTheQueryString(t *testing.T) {
+	rec, peer := newPeerRecorder(t, http.StatusOK, `{}`)
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+
+	w := httptest.NewRecorder()
+	fleetRoute(handlePreview)(w, httptest.NewRequest("GET", "/api/preview?pid=40388&machine=vengeance", nil))
+
+	if rec.hits != 1 || rec.method != "GET" || rec.path != "/api/preview" {
+		t.Fatalf("peer hits=%d saw %s %s", rec.hits, rec.method, rec.path)
+	}
+	for k, want := range map[string]string{"pid": "40388", "machine": "vengeance"} {
+		if got := rec.query[k]; len(got) != 1 || got[0] != want {
+			t.Errorf("peer query %s = %v, want exactly [%s] (raw %q)", k, got, want, rec.rawQuery)
+		}
+	}
+}
+
+func TestFleetRouteRunsLocalWithoutMachine(t *testing.T) {
+	rec, peer := newPeerRecorder(t, http.StatusOK, `{}`)
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	for _, tc := range []struct{ url, body string }{
+		{"/api/x", `{"a":1}`},
+		{"/api/x?machine=mrx", `{"a":1}`},
+		{"/api/x", `{"a":1,"machine":"mrx"}`},
+	} {
+		ran := ""
+		h := fleetRoute(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			ran = string(b)
+		})
+		h(httptest.NewRecorder(), httptest.NewRequest("POST", tc.url, strings.NewReader(tc.body)))
+		if ran != tc.body {
+			t.Errorf("%s %s: handler saw body %q, want it to run locally with the full body", tc.url, tc.body, ran)
+		}
+	}
+	if rec.hits != 0 {
+		t.Fatalf("peer called %d times for local requests", rec.hits)
+	}
+}
+
+func TestFleetRouteDoesNotForwardAPeersCall(t *testing.T) {
+	rec, peer := newPeerRecorder(t, http.StatusOK, `{}`)
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+
+	ran := false
+	w := httptest.NewRecorder()
+	fleetRoute(func(http.ResponseWriter, *http.Request) { ran = true })(w, withPeerFlag(
+		httptest.NewRequest("POST", "/api/kill", strings.NewReader(`{"bufferName":"x","machine":"vengeance"}`))))
+
+	if rec.hits != 0 || ran || w.Code != http.StatusNotImplemented {
+		t.Fatalf("peer-origin call: forwarded %d, ran %v, code %d; want 0, false, 501", rec.hits, ran, w.Code)
+	}
+}
+
+func TestFleetRouteUnknownOrSilentMachineAnswersJSON(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", deadURL))
+	for _, tc := range []struct {
+		machine string
+		code    int
+		want    string
+	}{
+		{"ghost", http.StatusNotFound, "unknown machine ghost"},
+		{"vengeance", http.StatusBadGateway, "NEMESIS did not answer"},
+	} {
+		w := httptest.NewRecorder()
+		fleetRoute(handleLabel)(w, httptest.NewRequest("POST", "/api/label",
+			strings.NewReader(`{"bufferName":"x","machine":"`+tc.machine+`"}`)))
+		var reply struct{ Error string }
+		if w.Code != tc.code || json.Unmarshal(w.Body.Bytes(), &reply) != nil || reply.Error != tc.want {
+			t.Errorf("machine %s: %d %q, want %d and error %q", tc.machine, w.Code, w.Body.String(), tc.code, tc.want)
+		}
+	}
+}
+
+func TestForwardTimeoutIsPerRoute(t *testing.T) {
+	for path, want := range map[string]time.Duration{
+		"/api/spawn":             180 * time.Second,
+		"/api/resume-transcript": 45 * time.Second,
+		"/api/fork":              60 * time.Second,
+		"/api/label":             15 * time.Second,
+	} {
+		if got := forwardTimeout(path); got != want {
+			t.Errorf("forwardTimeout(%q) = %v, want %v", path, got, want)
+		}
 	}
 }

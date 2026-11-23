@@ -7,8 +7,8 @@ import (
 )
 
 func registerModelHandlers(mux *http.ServeMux) {
-	mux.HandleFunc("/api/models", handleModels)
-	mux.HandleFunc("/api/model", handleModel)
+	mux.HandleFunc("/api/models", fleetRoute(handleModels))
+	mux.HandleFunc("/api/model", fleetRoute(handleModel))
 }
 
 func validModelID(id string) bool {
