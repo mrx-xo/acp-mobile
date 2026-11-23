@@ -222,15 +222,20 @@ const remoteActionPeekLimit = 1 << 20
 
 // remoteTarget returns the machine r names (query or JSON body field
 // "machine") when it is not this one, else "".  The body is restored for
-// the handler.
-func remoteTarget(r *http.Request) string {
-	target := r.URL.Query().Get("machine")
+// the handler.  tooLarge is true when the machine could only be named in
+// a body longer than remoteActionPeekLimit: the owner is then unknown and
+// the caller must refuse, not run the request locally.
+func remoteTarget(r *http.Request) (target string, tooLarge bool) {
+	target = r.URL.Query().Get("machine")
 	if target == "" && r.Body != nil && r.Body != http.NoBody {
-		peek, err := io.ReadAll(io.LimitReader(r.Body, remoteActionPeekLimit))
+		peek, err := io.ReadAll(io.LimitReader(r.Body, remoteActionPeekLimit+1))
 		r.Body = struct {
 			io.Reader
 			io.Closer
 		}{io.MultiReader(bytes.NewReader(peek), r.Body), r.Body}
+		if err == nil && len(peek) > remoteActionPeekLimit {
+			return "", true
+		}
 		if err == nil {
 			var body struct {
 				Machine string `json:"machine"`
@@ -241,15 +246,15 @@ func remoteTarget(r *http.Request) string {
 		}
 	}
 	if target == "" {
-		return ""
+		return "", false
 	}
 	fleet.mu.RLock()
 	self := fleet.self
 	fleet.mu.RUnlock()
 	if target == self {
-		return ""
+		return "", false
 	}
-	return target
+	return target, false
 }
 
 // forwardTimeout is how long the hub waits for a peer to answer a
@@ -279,7 +284,13 @@ var peerActionHTTP = &http.Client{}
 // action between each other.
 func fleetRoute(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		target := remoteTarget(r)
+		target, tooLarge := remoteTarget(r)
+		if tooLarge {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			json.NewEncoder(w).Encode(map[string]string{"error": "request body too large"})
+			return
+		}
 		if target == "" {
 			h(w, r)
 			return
