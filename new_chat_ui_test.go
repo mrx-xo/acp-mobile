@@ -213,7 +213,7 @@ func TestNewChatCustomPresetPinsAndPartialFailure(t *testing.T) {
   spEl('save').click();spEl('save-name').value='My setup';spEl('picker-action').click();
   const custom=spCustom.find(p=>p.label==='My setup');
   openSpawnView('project');document.querySelector('#sp-picker-list button[aria-label="Pin dotfiles"]').click();
-  const pinned=spPins.includes('/src/dotfiles');openSpawnView('prompt');
+  const pinned=spPins.some(e=>e.path==='/src/dotfiles'&&!e.machine);openSpawnView('prompt');
   spTask.value='Keep unsent prompt';spTask.dispatchEvent(new Event('input'));
   let posts=0;const original=fetch;window.fetch=async(url,opts)=>{
     if(url.endsWith('/api/spawn')){posts++;return {ok:false,json:async()=>({ok:false,error:'Effort rejected',bufferName:'partial chat'})};}
@@ -573,7 +573,7 @@ func TestNewChatPinKeepsFocusAndEmptyProjectResume(t *testing.T) {
   openSpawnView('project');
   {const b=document.querySelector('#sp-picker-list button[aria-label="Pin dotfiles"]');b.focus();b.click();}
   const projectFocus=document.activeElement.getAttribute('aria-label');
-  openSpawnView('prompt');spDraft.cwd='';spRecent=['/src/acp-mobile'];persistSpawnDraft();
+  openSpawnView('prompt');spDraft.cwd='';spRecent=[{path:'/src/acp-mobile',machine:''}];persistSpawnDraft();
   hideSpawnSheet();openSpawnSheet();
   return {homeFocus,projectFocus,resumed:spView,cwd:spDraft.cwd};
  })()`)
@@ -1034,6 +1034,48 @@ func TestNewChatPinnedProjectIsPerMachine(t *testing.T) {
 	reopen()
 	if got := fmt.Sprint(page.eval(t, "JSON.stringify("+pinnedRows+")")); !strings.Contains(got, "NEMESIS:false") || !strings.Contains(got, "hub:true") {
 		t.Fatalf("a bare-path pin stored earlier is a hub pin: %s", got)
+	}
+}
+
+// A Windows path is a path, never a machine named "C:".  Pins and recents are
+// stored as {path, machine} objects and never parsed back; a bare string
+// stored earlier is a hub path whatever it contains.
+func TestNewChatWindowsPathIsNotAMachine(t *testing.T) {
+	winSession := `{"pid":2,"sessionId":"s2","bufferName":"repo 2","project":"repo","cwd":"C:/Users/demo/repo","machine":"vengeance"}`
+	page, _ := newFleetChatPage(t, "awake", false, "", "["+winSession+"]")
+	reopen := func() {
+		page.call(t, "Page.reload", map[string]interface{}{})
+		page.waitFor(t, `typeof openSpawnSheet === 'function' && HUB_MACHINE === 'mrx'`)
+		page.waitFor(t, `lastSessions.length > 0`)
+		page.eval(t, `openSpawnSheet(); openSpawnView('project'); 0`)
+		page.waitFor(t, `spawnProjects.length === 3`)
+	}
+	const badges = `JSON.stringify([...document.querySelectorAll('#sp-picker-list .machine-badge')].map(b=>b.textContent).sort())`
+	page.eval(t, `localStorage.setItem('syzygy.launch.pins', JSON.stringify(['C:/Users/demo/repo','/home/x/repo']));
+		localStorage.setItem('syzygy.launch.recent', JSON.stringify(['C:/Users/demo/repo']))`)
+	reopen()
+	if got := fmt.Sprint(page.eval(t, `JSON.stringify(spRecent)`)); got != `[{"path":"C:/Users/demo/repo","machine":""}]` {
+		t.Fatalf("a legacy recent loads as this machine's, with the whole path: %s", got)
+	}
+	if got := fmt.Sprint(page.eval(t, `JSON.stringify(spPins)`)); got != `[{"path":"C:/Users/demo/repo","machine":""},{"path":"/home/x/repo","machine":""}]` {
+		t.Fatalf("legacy pins load as this machine's, with the whole path: %s", got)
+	}
+	if got := fmt.Sprint(page.eval(t, badges)); strings.Contains(got, "C:") {
+		t.Fatalf("a Windows path produced a phantom machine badge: %s", got)
+	}
+	page.eval(t, `localStorage.removeItem('syzygy.launch.pins'); localStorage.removeItem('syzygy.launch.recent')`)
+	reopen()
+	page.eval(t, `[...document.querySelectorAll('#sp-picker-list .sp-project-item')].find(i=>i.textContent.includes('repo')&&i.querySelector('.machine-badge')).querySelector('button[aria-pressed]:not(.sp-row)').click()`)
+	const want = `[{"path":"C:/Users/demo/repo","machine":"vengeance"}]`
+	if got := fmt.Sprint(page.eval(t, `localStorage.getItem('syzygy.launch.pins')`)); got != want {
+		t.Fatalf("pinning on vengeance stores %s, want %s", got, want)
+	}
+	reopen()
+	if got := fmt.Sprint(page.eval(t, `JSON.stringify(spPins)`)); got != want {
+		t.Fatalf("the pin reloads as exactly that: %s", got)
+	}
+	if got := fmt.Sprint(page.eval(t, `JSON.stringify([...document.querySelectorAll('#sp-picker-list .sp-project-item')].filter(i=>i.textContent.includes('repo')).map(i=>(i.querySelector('.machine-badge')?i.querySelector('.machine-badge').textContent:'hub')+':'+i.querySelector('button[aria-pressed]:not(.sp-row)').getAttribute('aria-pressed')))`)); got != `["NEMESIS:true"]` {
+		t.Fatalf("only the NEMESIS row is pinned: %s", got)
 	}
 }
 

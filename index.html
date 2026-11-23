@@ -6041,17 +6041,21 @@ for (const k of ['cwd','name','task','preset','step','machine']) if (typeof spSt
 let spCustom = spRead('presets', []);
 spCustom = Array.isArray(spCustom) ? spCustom.filter(spValidPreset) : [];
 let spPins = spRead('pins', []), spRecent = spRead('recent', []);
-spPins = Array.isArray(spPins) ? spPins.filter(p => typeof p === 'string') : [];
-spRecent = Array.isArray(spRecent) ? spRecent.filter(p => typeof p === 'string') : [];
-// A pinned or recent project is stored under a machine-qualified key: the hub's
-// is the bare path (what older versions stored), another machine's is
-// '<machine>/<path>', the way sKey qualifies a chat.  Paths start with '/' or '~'.
-function spProjectKey(machine, path) { machine = spKey(machine); return machine ? machine + '/' + path : path; }
-function spKeyParts(key) {
-  if (key[0] === '/' || key[0] === '~') return {machine:'', path:key};
-  const i = key.indexOf('/');
-  return i < 0 ? {machine:'', path:key} : {machine:key.slice(0, i), path:key.slice(i + 1)};
+// A pinned or recent project is stored as {path, machine}: machine is '' for this
+// machine (the hub), else the owning machine's id.  Never a string to take apart:
+// a path such as C:/Users/me/repo has a colon and slashes and no machine in it.
+// A bare string stored by an older version is a hub path, whatever it contains.
+function spProjectEntry(value) {
+  if (typeof value === 'string') return value ? {path:value, machine:''} : null;
+  if (value && typeof value.path === 'string' && value.path) return {path:value.path, machine:typeof value.machine === 'string' ? spKey(value.machine) : ''};
+  return null;
 }
+const spProjectList = value => Array.isArray(value) ? value.map(spProjectEntry).filter(Boolean) : [];
+spPins = spProjectList(spPins);
+spRecent = spProjectList(spRecent);
+// Only for comparing two entries: nothing may split this back into machine and path.
+function spProjectKey(machine, path) { return spKey(machine) + '\0' + path; }
+function spSameProject(a, b) { return spProjectKey(a.machine, a.path) === spProjectKey(b.machine, b.path); }
 // Launch combos: a project plus the four settings, remembered on this device.
 // The preset key is informational; identity is cwd plus settings.
 function spComboValid(c) { return !!c && typeof c.cwd === 'string' && !!c.cwd && !!c.settings && ['agent','model','mode'].every(k => typeof c.settings[k] === 'string' && c.settings[k]) && (c.settings.effort === undefined || typeof c.settings.effort === 'string'); }
@@ -6367,9 +6371,9 @@ function renderSpawnPicker() {
   if (spView === 'project') {
     // A project is its machine plus its path: two machines can share a path.
     const pid=p => spKey(p.machine)+'\0'+p.path, projects=new Map(spawnProjects.map(p => [pid(p),p]));
-    const known=[...spPins,...spRecent].map(spKeyParts).concat(lastSessions.filter(s => s.cwd).map(s => ({path:s.cwd,machine:sessionMachine(s)})));
+    const known=[...spPins,...spRecent].concat(lastSessions.filter(s => s.cwd).map(s => ({path:s.cwd,machine:sessionMachine(s)})));
     for (const k of known) if (!projects.has(pid(k))) projects.set(pid(k),{name:k.path.split('/').filter(Boolean).pop() || k.path,path:k.path,machine:k.machine});
-    const pinned=p => spPins.includes(spProjectKey(p.machine,p.path)), recent=p => spRecent.includes(spProjectKey(p.machine,p.path));
+    const pinned=p => spPins.some(e => spSameProject(e,p)), recent=p => spRecent.some(e => spSameProject(e,p));
     const groups=[['Pinned',pinned],['Recent',p=>!pinned(p) && recent(p)],['Projects',p=>!pinned(p) && !recent(p)]];
     for (const [name,filter] of groups) {
       const matches=[...projects.values()].filter(p => filter(p) && projectMatches(p,query)); if (!matches.length) continue; heading(name);
@@ -6379,7 +6383,7 @@ function renderSpawnPicker() {
         const projectRow=row(p.name,shortPath(p.path)+(count ? ' / '+count+' active':''),p.path===spDraft.cwd && sameMachine(machine,spDraft.machine),()=>pickSpawnProject(p.path,machine));
         if (machine) { const badge=spMachineBadge(machine); badge.style.marginLeft='8px'; projectRow.querySelector('.sp-row-title').appendChild(badge); }
         item.appendChild(projectRow);
-        item.appendChild(spPinButton(p.name,pinned(p),()=>{const key=spProjectKey(p.machine,p.path);spPins=spPins.includes(key)?spPins.filter(x=>x!==key):[...spPins,key];spWrite('pins',spPins);renderSpawnPicker();}));list.appendChild(item);
+        item.appendChild(spPinButton(p.name,pinned(p),()=>{const entry={path:p.path,machine:spKey(p.machine)};spPins=pinned(p)?spPins.filter(x=>!spSameProject(x,entry)):[...spPins,entry];spWrite('pins',spPins);renderSpawnPicker();}));list.appendChild(item);
       }
     }
   } else {
@@ -6452,7 +6456,7 @@ function openSpawnSheet(cwd, step='', machine='', query) {
   // Judge the resume step before prefilling, so an empty project resumes on Project.
   const view=spRecoveryBuffer ? 'prompt' : step || spResumeStep();
   if (!spDraft.cwd && !asking) {
-    if (spRecent[0]) { const r=spKeyParts(spRecent[0]); spDraft.cwd=r.path; spSetMachine(r.machine); }
+    if (spRecent[0]) { const r=spRecent[0]; spDraft.cwd=r.path; spSetMachine(r.machine); }
     else { const s=lastSessions.find(s=>s.cwd); if (s) { spDraft.cwd=s.cwd; spSetMachine(sessionMachine(s)); } }
   }
   spName.value=spDraft.name;spTask.value=spDraft.task;spDir.value=spDraft.cwd;spNameOpen=false;
@@ -6559,7 +6563,7 @@ async function spStart() {
   try {
     const opened=spRecoveryBuffer ? await waitForSpawn(spRecoveryBuffer,new Set(),machine) : await spawnAndOpen(machineBody({cwd:spDraft.cwd,name:spDraft.name.trim(),task:spFirstPrompt ? '' : spDraft.task,settings:{...spDraft.settings}},machine));
     if(opened) {
-      {const key=spProjectKey(machine,spDraft.cwd);spRecent=[key,...spRecent.filter(p=>p!==key)].slice(0,12);spWrite('recent',spRecent);}
+      {const entry={path:spDraft.cwd,machine:spKey(machine)};spRecent=[entry,...spRecent.filter(p=>!spSameProject(p,entry))].slice(0,12);spWrite('recent',spRecent);}
       spRecordCombo({cwd:spDraft.cwd,preset:spDraft.preset,machine,settings:spDraft.settings});
       if(spRecoveryKeepsTask)spFirstPrompt=null; // Failed settings must never submit the held message.
       if(!spFirstPrompt) {
