@@ -9,6 +9,11 @@ const FLEET_STUBS = {
   sameMachine: (a, b) => (a || '') === (b || ''), chatMachine: () => '', sessionMachine: () => '', machineGap: () => '',
   withMachine: (url, machine) => machine ? url + (url.includes('?') ? '&' : '?') + 'machine=' + encodeURIComponent(machine) : url,
   machineBody: (obj, machine) => machine ? {...obj, machine} : obj,
+  machineName: id => String(id).toUpperCase(), machineColor: () => '#928374',
+  // The page's gap state holder, reduced: no gap ever holds a control here.
+  controlStateOf: el => el._state || (el._state = {gap: ''}),
+  paintControl: () => {},
+  setControlState: (el, patch) => { if ('title' in patch) el.title = patch.title; if ('disabled' in patch) el.disabled = patch.disabled; },
 };
 function withFleetStubs(context) {
   for (const [key, value] of Object.entries(FLEET_STUBS)) if (!(key in context)) context[key] = value;
@@ -534,7 +539,7 @@ test('a stale history-list response cannot overwrite a newer transcript view', a
   };
   const {context, elements} = loadHistoryClient({
     fetch: async url => {
-      if (url === '/api/transcripts') return {ok: true, json: () => oldList.promise};
+      if (url === '/api/transcripts?fleet=1') return {ok: true, json: () => oldList.promise};
       return {
         ok: true,
         json: async () => ({content: '\n---\n## User (now)\n\ncurrent transcript'}),
@@ -1170,7 +1175,7 @@ test('catalogued chip toggles state and aria-pressed and switches empty-box requ
       });
       return {
         ok: true,
-        json: async () => url === '/api/transcripts'
+        json: async () => url === '/api/transcripts?fleet=1'
           ? []
           : {results: [], truncated: false},
       };
@@ -1186,7 +1191,7 @@ test('catalogued chip toggles state and aria-pressed and switches empty-box requ
   assert.equal(context.historyCataloguedOnly, true);
   assert.equal(chip.attributes['aria-pressed'], 'true');
   assert.deepEqual(requests, [{
-    url: '/api/transcript-search',
+    url: '/api/transcript-search?fleet=1',
     method: 'POST',
     body: {query: '', catalogued: true, tags: []},
   }]);
@@ -1197,11 +1202,11 @@ test('catalogued chip toggles state and aria-pressed and switches empty-box requ
   assert.equal(context.historyCataloguedOnly, false);
   assert.equal(chip.attributes['aria-pressed'], 'false');
   assert.deepEqual(requests, [{
-    url: '/api/transcript-search',
+    url: '/api/transcript-search?fleet=1',
     method: 'POST',
     body: {query: '', catalogued: true, tags: []},
   }, {
-    url: '/api/transcripts',
+    url: '/api/transcripts?fleet=1',
     method: 'POST',
     body: null,
   }]);
@@ -1229,7 +1234,7 @@ test('runHistoryQuery searches a tag without requiring text or the chip', async 
   await new Promise(resolve => setImmediate(resolve));
 
   assert.deepEqual(requests, [{
-    url: '/api/transcript-search',
+    url: '/api/transcript-search?fleet=1',
     method: 'POST',
     body: {query: '', catalogued: false, tags: ['syzygy']},
   }]);
@@ -1405,7 +1410,7 @@ test('going back to a narrowed History list after a catalogue change reruns the 
   const searches = [];
   const {context, elements} = loadHistoryClient({
     fetch: async (url, options) => {
-      if (url === '/api/transcript-search') {
+      if (url === '/api/transcript-search?fleet=1') {
         searches.push(JSON.parse(options.body));
         return {ok: true, json: async () => ({results: [{file: '/t.md', sessionId: 's1', catalogued: '2026-09-08T10:00:00Z', project: 'p', timestamp: '2026-09-08-10-00-00'}], truncated: false})};
       }

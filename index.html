@@ -8080,6 +8080,23 @@ let historyRootState = {
 // The Catalogued chip narrows History to chats kept on purpose.  It is the
 // same filter as a bare "#" in the search box; both feed searchHistory.
 let historyCataloguedOnly = false;
+// A History entry is identified by machine plus file: two machines can hold
+// the same path.  historyMachine is what a request about the entry names ('' for the hub).
+function historyMachine(t) { return t && !sameMachine(t.machine, '') ? t.machine : ''; }
+function historyKey(t) { return catalogueKey(historyMachine(t), t.file); }
+// Resumes in flight, by entry key: the same entry cannot be resumed twice at once.
+const historyResuming = new Set();
+function historyBadgeHtml(t) {
+  const m = historyMachine(t);
+  return m ? '<span class="machine-badge" style="color:' + machineColor(m) + '">' + escHtml(machineName(m)) + '</span>' : '';
+}
+// The server's {"error": "..."} text when the body is that, else the raw text.
+function historyErrorText(text) {
+  try { const data = JSON.parse(text); if (data && typeof data.error === 'string' && data.error) return data.error; } catch (_) { /* not JSON */ }
+  return String(text || '').trim();
+}
+// The resume gap of an entry's machine, '' when none.
+function historyResumeGap(t) { return machineGap(historyMachine(t), 'resume'); }
 
 // --- Catalogue: keep a chat on purpose, with a note and tags ---
 // State is agent-recall's sidecar on the rig; /api/catalogue reads and
@@ -8095,13 +8112,11 @@ function catalogueKey(machine, id) { return sameMachine(machine, '') ? id : mach
 function catalogueGeneration(key) { return catalogueGenerations.get(key) || 0; }
 function rememberCatalogueState(state, machine = '') {
   if (state && state.sessionId) catalogueStates.set(catalogueKey(machine, state.sessionId), state);
-  // History gains machine identity in the History task; until then another
-  // machine's result must not patch its rows.
-  if (!sameMachine(machine, '')) return state;
   if (historyRootState.filter && historyRootState.filter.narrowed) historyRootState.stale = true;
-  // History rows and the open transcript carry their own copy.
+  // History rows and the open transcript carry their own copy; only the
+  // rows of the machine that owns the chat, since ids can repeat across machines.
   const patch = t => {
-    if (!t || t.sessionId !== state.sessionId) return;
+    if (!t || t.sessionId !== state.sessionId || !sameMachine(t.machine, machine)) return;
     t.catalogued = state.catalogued || '';
     t.note = state.note || '';
     t.tags = Array.isArray(state.tags) ? state.tags : [];
@@ -8202,11 +8217,25 @@ function setHistoryView(title, backFn, resetScroll = true, resumeTarget = null) 
   historyBackBtn.style.display = backFn ? '' : 'none';
   historyResumeTarget = resumeTarget;
   historyResumeBtn.style.display = resumeTarget ? '' : 'none';
-  historyResumeBtn.disabled = !resumeTarget || !resumeTarget.resumable;
   historyResumeBtn.textContent = 'resume';
-  historyResumeBtn.title = resumeTarget && !resumeTarget.resumable
-    ? (resumeTarget.resumeReason || 'This conversation cannot be resumed.')
-    : 'Resume this conversation';
+  // One persistent button: its own state goes through setControlState and the
+  // entry machine's resume gap, when declared, holds it disabled with the reason.
+  setControlState(historyResumeBtn, {
+    disabled: !resumeTarget || !resumeTarget.resumable,
+    title: resumeTarget && !resumeTarget.resumable
+      ? (resumeTarget.resumeReason || 'This conversation cannot be resumed.')
+      : 'Resume this conversation'
+  });
+  controlStateOf(historyResumeBtn).gap = resumeTarget ? historyResumeGap(resumeTarget) : '';
+  paintControl(historyResumeBtn);
+  if (resumeTarget && historyMachine(resumeTarget)) {
+    const badge = document.createElement('span');
+    badge.className = 'machine-badge';
+    badge.style.color = machineColor(historyMachine(resumeTarget));
+    badge.style.marginLeft = '6px';
+    badge.textContent = machineName(historyMachine(resumeTarget));
+    historyTitle.appendChild(badge);
+  }
   paintHistoryCatalogueBtn(resumeTarget);
   if (resetScroll) historyBody.scrollTop = 0;
   // Only the transcript view (the one with a resume target) gets the nav.
@@ -8276,7 +8305,7 @@ async function editHistoryCatalogue(t) {
   const serial = historyRequestSerial;
   const current = () => serial === historyRequestSerial;
   try {
-    const state = await catalogueFlow(t.sessionId, current);
+    const state = await catalogueFlow(t.sessionId, current, historyMachine(t));
     if (!state || !current()) return;
     repaintHistoryCatalogue(t);
   } catch (err) { if (current()) alert('Catalogue failed: ' + err.message); }
@@ -8288,7 +8317,7 @@ async function toggleHistoryCatalogue(t) {
   const serial = historyRequestSerial;
   historyCatalogueBtn.disabled = true;
   try {
-    await uncatalogue(t.sessionId);
+    await uncatalogue(t.sessionId, historyMachine(t));
     if (serial !== historyRequestSerial) return;
     repaintHistoryCatalogue(t);
   } catch (err) {
@@ -8315,6 +8344,7 @@ function renderHistoryRoot() {
   for (const t of list) {
     const card = document.createElement('div');
     card.className = 'hist-card';
+    card.setAttribute('data-history-key', historyKey(t));
     const name = t.label || t.preview || '(empty)';
     const detail = historyRootState.mode === 'search'
       ? (t.snippet || (t.label ? t.preview : ''))
@@ -8329,7 +8359,8 @@ function renderHistoryRoot() {
         ? '<div class="hc-snippet">' + escHtml(detail) + '</div>' : '') +
       (t.note ? '<div class="hc-note">' + escHtml(t.note) + '</div>' : '') +
       tagChipsHtml(t.tags) +
-      '<div class="hc-meta">' + agentBadge(t.agent) + ' &middot; ' +
+      '<div class="hc-meta">' + historyBadgeHtml(t) + (historyMachine(t) ? ' &middot; ' : '') +
+        agentBadge(t.agent) + ' &middot; ' +
         escHtml(t.project) + ' &middot; ' + escHtml(fmtHistTs(t.timestamp)) + count +
         (t.catalogued ? ' &middot; <span class="hc-kept">kept</span>' : '') + '</div>';
     card.addEventListener('click', () => {
@@ -8357,9 +8388,10 @@ async function loadHistory(clearQuery = false) {
   historyBody.innerHTML = '<div class="hist-empty">loading…</div>';
   let list;
   try {
-    const resp = await fetch(basePath + '/api/transcripts', { method: 'POST' });
-    if (!resp.ok) throw new Error(await resp.text());
-    list = await resp.json();
+    const resp = await fetch(basePath + '/api/transcripts?fleet=1', { method: 'POST' });
+    if (!resp.ok) throw new Error(historyErrorText(await resp.text()));
+    const data = await resp.json();
+    list = Array.isArray(data) ? data : (data && data.transcripts);
   } catch (err) {
     if (serial !== historyRequestSerial) return;
     historyBody.innerHTML = '<div class="hist-empty">history failed: ' + escHtml(err.message) + '</div>';
@@ -8396,7 +8428,7 @@ async function searchHistory(query) {
   historyBody.innerHTML = '<div class="hist-empty">searching…</div>';
   let payload;
   try {
-    const resp = await fetch(basePath + '/api/transcript-search', {
+    const resp = await fetch(basePath + '/api/transcript-search?fleet=1', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)
@@ -8487,8 +8519,8 @@ async function openTranscript(t, query = '') {
   historyBody.innerHTML = '<div class="hist-empty">loading…</div>';
   let content;
   try {
-    const resp = await fetch(basePath + '/api/transcript?file=' + encodeURIComponent(t.file), { method: 'POST' });
-    if (!resp.ok) throw new Error(await resp.text());
+    const resp = await fetch(withMachine(basePath + '/api/transcript?file=' + encodeURIComponent(t.file), historyMachine(t)), { method: 'POST' });
+    if (!resp.ok) throw new Error(historyErrorText(await resp.text()));
     content = (await resp.json()).content;
   } catch (err) {
     if (serial !== historyRequestSerial) return;
@@ -8500,11 +8532,12 @@ async function openTranscript(t, query = '') {
   historyBody.innerHTML = '';
   const CAP = 200;
   if (t.catalogued) historyBody.appendChild(renderKeptBox(t));
-  if (!t.resumable) {
+  const resumeGap = historyResumeGap(t);
+  if (resumeGap || !t.resumable) {
     const unavailable = document.createElement('div');
     unavailable.className = 'hist-note';
     unavailable.textContent = 'resume unavailable · ' +
-      (t.resumeReason || 'this transcript has no resumable session');
+      (resumeGap || t.resumeReason || 'this transcript has no resumable session');
     historyBody.appendChild(unavailable);
   }
   const needle = query.toLocaleLowerCase();
@@ -8555,16 +8588,20 @@ async function openTranscript(t, query = '') {
 }
 
 async function resumeTranscript(t) {
-  if (!t || !t.resumable) return;
+  if (!t || !t.resumable || historyResumeGap(t)) return;
+  const key = historyKey(t);
+  if (historyResuming.has(key)) return;
+  historyResuming.add(key);
+  const machine = historyMachine(t);
   const serial = historyRequestSerial;
   const current = () => serial === historyRequestSerial;
-  historyResumeBtn.disabled = true;
+  setControlState(historyResumeBtn, {disabled: true});
   historyResumeBtn.textContent = 'resuming…';
   try {
     const resp = await fetch(basePath + '/api/resume-transcript', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({file: t.file})
+      body: JSON.stringify(machineBody({file: t.file}, machine))
     });
     if (!current()) return;
     const text = await resp.text();
@@ -8579,13 +8616,15 @@ async function resumeTranscript(t) {
     // Reusing an active conversation can match immediately.  A restored one
     // needs a moment for acp-multiplex to publish its socket.  Buffer name is
     // the stable identity across provider-specific session-ID forks.
-    let target = lastSessions.find(s => s.bufferName === data.bufferName);
+    // The same buffer name can exist on several machines: the entry's own wins.
+    const findTarget = () => lastSessions.find(s => s.bufferName === data.bufferName && sameMachine(s.machine, machine));
+    let target = findTarget();
     for (let i = 0; !target && i < 20; i++) {
       await new Promise(resolve => setTimeout(resolve, 750));
       if (!current()) return;
       await loadSessions(true);
       if (!current()) return;
-      target = lastSessions.find(s => s.bufferName === data.bufferName);
+      target = findTarget();
     }
     if (target && current()) {
       closeHistory();
@@ -8596,8 +8635,9 @@ async function resumeTranscript(t) {
   } catch (err) {
     if (current()) alert('Resume failed: ' + err.message);
   } finally {
+    historyResuming.delete(key);
     if (current()) {
-      historyResumeBtn.disabled = false;
+      setControlState(historyResumeBtn, {disabled: false});
       historyResumeBtn.textContent = 'resume';
     }
   }
