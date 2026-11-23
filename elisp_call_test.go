@@ -9,9 +9,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestElispExprQuotesEachArgumentKind(t *testing.T) {
@@ -127,10 +129,15 @@ func installFileWritingEmacsclient(t *testing.T, reply string, exitCode int) (ar
 	}
 	script := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$@\" > \"$FAKE_EMACSCLIENT_ARGS\"\n" +
-		"p=$(printf '%s' \"$2\" | sed -n 's/.*(prin1-to-string v) nil \"\\([^\"]*\\)\".*/\\1/p')\n" +
-		"printf '%s' \"$p\" > \"$FAKE_TARGET_FILE\"\n" +
+		"p=$(printf '%s' \"$2\" | sed -n 's/.*(prin1-to-string v) nil \"\\([^\"]*\\)\".*/\\1/p' | sed 's/\\\\\\\\/\\\\/g')\n" +
+		"if [ -z \"$p\" ]; then echo 'fake: no reply path' >&2; exit 2; fi\n" +
+		"printf '%s' \"$p\" > \"$FAKE_TARGET_FILE\" || exit 2\n" +
 		"if [ \"$FAKE_EXIT\" != 0 ]; then echo 'emacsclient: boom'; exit \"$FAKE_EXIT\"; fi\n" +
-		"cp \"$FAKE_REPLY_FILE\" \"$p\"\n" +
+		"if [ -n \"$FAKE_LATE\" ]; then\n" +
+		"  ( sleep \"$FAKE_LATE\"; if [ -e \"$p\" ]; then cp \"$FAKE_REPLY_FILE\" \"$p\"; fi ) >/dev/null 2>&1 &\n" +
+		"  exec sleep 30\n" +
+		"fi\n" +
+		"if [ -e \"$p\" ]; then cp \"$FAKE_REPLY_FILE\" \"$p\" || { echo 'fake: cannot write reply' >&2; exit 3; }; fi\n" +
 		"echo t\n"
 	if err := os.WriteFile(filepath.Join(dir, "emacsclient"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -169,22 +176,16 @@ func TestEvalElispToFileWrapsTheExpression(t *testing.T) {
 		t.Fatalf("args = %q", raw)
 	}
 	target, _ := os.ReadFile(pathFile)
+	lit := elispStr(string(target)).text
 	want := "(let ((v (fn 1)) (print-length nil) (print-level nil) (coding-system-for-write 'utf-8-unix))\n" +
-		"  (write-region (prin1-to-string v) nil " + elispStr(string(target)).text + " nil 'silent)\n" +
+		"  (when (file-exists-p " + lit + ")\n" +
+		"    (write-region (prin1-to-string v) nil " + lit + " nil 'silent))\n" +
 		"  t)"
 	if got != want {
 		t.Fatalf("expression = %q, want %q", got, want)
 	}
 	if strings.Contains(string(target), `\`) {
 		t.Fatalf("path %q has a backslash", target)
-	}
-}
-
-func TestElispPathLiteralUsesForwardSlashes(t *testing.T) {
-	got := elispPathLiteral(`C:\Users\x\AppData\Local\Temp\acp-elisp-123`)
-	want := `"C:/Users/x/AppData/Local/Temp/acp-elisp-123"`
-	if got != want {
-		t.Fatalf("elispPathLiteral = %s, want %s", got, want)
 	}
 }
 
@@ -233,5 +234,47 @@ func TestCallElispUsesTheFilePath(t *testing.T) {
 	}
 	if string(got) != payload {
 		t.Fatalf("decoded %d bytes, want %d", len(got), len(payload))
+	}
+}
+
+func TestEvalElispToFileIgnoresALateWrite(t *testing.T) {
+	_, pathFile := installFileWritingEmacsclient(t, `"late"`, 0)
+	t.Setenv("FAKE_LATE", "0.6")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := evalElispToFile(ctx, "(slow)"); err == nil {
+		t.Fatal("want a cancellation error")
+	}
+	time.Sleep(1200 * time.Millisecond)
+	target, _ := os.ReadFile(pathFile)
+	if len(target) == 0 {
+		t.Fatal("fake never saw a path")
+	}
+	if _, err := os.Stat(string(target)); !os.IsNotExist(err) {
+		t.Fatalf("a late write recreated the file (stat err = %v)", err)
+	}
+}
+
+func TestEvalElispToFileTreatsAnEmptyReplyAsAnError(t *testing.T) {
+	installFileWritingEmacsclient(t, "", 0)
+	out, err := evalElispToFile(context.Background(), "(fn)")
+	if err == nil || !strings.Contains(err.Error(), "no reply") {
+		t.Fatalf("out = %q err = %v, want a no-reply error", out, err)
+	}
+}
+
+func TestEvalElispToFileKeepsABackslashInAUnixPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a backslash is a separator on Windows")
+	}
+	installFileWritingEmacsclient(t, `"ok"`, 0)
+	tmp := filepath.Join(t.TempDir(), `a\b`)
+	if err := os.Mkdir(tmp, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+	out, err := evalElispToFile(context.Background(), "(fn)")
+	if err != nil || string(out) != `"ok"` {
+		t.Fatalf("out = %q err = %v", out, err)
 	}
 }

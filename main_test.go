@@ -162,9 +162,15 @@ func TestBridgeReturnsAfterClientClose(t *testing.T) {
 // call, as the printed value, and prints only t.  Existing fakes keep
 // saying "Emacs returns X".  fake_expr recovers the original expression
 // from the wrapper, so recorded args still show what the caller asked.
-const fakeEmacsReply = "fake_reply() {\n" +
-	"  p=$(printf '%s' \"$3\" | sed -n 's/.*(prin1-to-string v) nil \"\\([^\"]*\\)\".*/\\1/p')\n" +
-	"  printf '%s\\n' \"$1\" > \"$p\"\n" +
+const fakeEmacsReply = "fake_path() {\n" +
+	"  printf '%s' \"$1\" | sed -n 's/.*(prin1-to-string v) nil \"\\([^\"]*\\)\".*/\\1/p' | sed 's/\\\\\\\\/\\\\/g'\n" +
+	"}\n" +
+	"fake_reply() {\n" +
+	"  p=$(fake_path \"$3\")\n" +
+	"  if [ -z \"$p\" ]; then echo 'fake emacsclient: no reply path in expression' >&2; exit 2; fi\n" +
+	"  if [ -e \"$p\" ]; then\n" +
+	"    printf '%s\\n' \"$1\" > \"$p\" || { echo 'fake emacsclient: cannot write reply' >&2; exit 3; }\n" +
+	"  fi\n" +
 	"  echo t\n" +
 	"}\n" +
 	"fake_expr() {\n" +

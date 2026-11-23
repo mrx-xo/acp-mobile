@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -72,11 +73,17 @@ type elispError struct {
 func (e *elispError) Error() string { return fmt.Sprintf("%v: %s", e.err, e.output) }
 func (e *elispError) Unwrap() error { return e.err }
 
-// elispPathLiteral renders a filesystem path as an elisp string with
-// forward slashes, which Emacs accepts on every OS (a Windows temp path
-// has backslashes and a drive letter).
-func elispPathLiteral(path string) string {
-	return elispStr(strings.ReplaceAll(path, `\`, "/")).text
+// wrapElispForFile wraps EXPR so Emacs writes the printed value to PATH
+// and prints only t.  The write happens only while the file Go created
+// still exists: Go removes it when the call returns, so an evaluation
+// that finishes late (after cancellation) writes nothing.  PATH goes
+// through filepath.ToSlash, which Emacs accepts on Windows.
+func wrapElispForFile(expr, path string) string {
+	lit := elispStr(filepath.ToSlash(path)).text
+	return "(let ((v " + expr + ") (print-length nil) (print-level nil) (coding-system-for-write 'utf-8-unix))\n" +
+		"  (when (file-exists-p " + lit + ")\n" +
+		"    (write-region (prin1-to-string v) nil " + lit + " nil 'silent))\n" +
+		"  t)"
 }
 
 // evalElispToFile evaluates EXPR in the daemon and returns exactly the
@@ -94,9 +101,7 @@ func evalElispToFile(ctx context.Context, expr string) ([]byte, error) {
 	f.Close()
 	defer os.Remove(path)
 
-	wrapped := "(let ((v " + expr + ") (print-length nil) (print-level nil) (coding-system-for-write 'utf-8-unix))\n" +
-		"  (write-region (prin1-to-string v) nil " + elispPathLiteral(path) + " nil 'silent)\n" +
-		"  t)"
+	wrapped := wrapElispForFile(expr, path)
 	out, err := evalEmacsContext(ctx, "emacsclient", "--eval", wrapped)
 	if err != nil {
 		return out, err
@@ -104,6 +109,11 @@ func evalElispToFile(ctx context.Context, expr string) ([]byte, error) {
 	reply, err := os.ReadFile(path)
 	if err != nil {
 		return out, err
+	}
+	if len(reply) == 0 {
+		// prin1-to-string never yields an empty string, so an empty file
+		// means Emacs did not write the reply.
+		return out, fmt.Errorf("emacs wrote no reply: %s", strings.TrimSpace(string(out)))
 	}
 	return reply, nil
 }
