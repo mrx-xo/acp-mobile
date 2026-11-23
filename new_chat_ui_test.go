@@ -1122,6 +1122,36 @@ func TestGroupPlusUsesTheGroupsOnlyMachine(t *testing.T) {
 	}
 }
 
+func TestGroupPlusWithoutACwdAsksForTheProject(t *testing.T) {
+	noCwd := `{"pid":2,"sessionId":"s2","bufferName":"dotfiles 2","project":"dotfiles","cwd":null,"machine":"vengeance"}`
+	page, f := newFleetChatPage(t, "awake", false, "", "["+noCwd+"]")
+	// A draft left by an earlier hub launch must not be reused for this group.
+	page.eval(t, `(()=>{hideSpawnSheet();spDraft.cwd='/src/hub-draft';spDraft.machine='';spDraft.preset='s';
+  spDraft.settings=spSettings({agent:'codex',model:'stale-model',mode:'full',effort:'high'});persistSpawnDraft();return true})()`)
+	state := page.evalObject(t, plusOnDotfilesGroup)
+	if state["view"] != "project" || state["cwd"] != "" || state["machine"] != "" || state["search"] != "dotfiles" {
+		t.Fatalf("a group with no cwd asks for the project: %#v", state)
+	}
+	cleared := page.evalObject(t, `({preset:spDraft.preset,settings:Object.values(spDraft.settings).join(',')})`)
+	if cleared["preset"] != "" || strings.Contains(fmt.Sprint(cleared["settings"]), "stale-model") {
+		t.Fatalf("the hub draft's choices are cleared: %#v", cleared)
+	}
+	page.eval(t, `(async()=>{
+  `+clickRow+`
+  pick('dotfiles',1).click();
+  for(let i=0;i<100&&!spawnPresets.length;i++)await new Promise(r=>setTimeout(r,20));
+  document.querySelector('#sp-preset-list .sp-row').click();
+  SPAWN_POLL_MS=5;selectSession=()=>{};
+  spGo.click();return true})()`)
+	for i := 0; i < 100 && len(f.spawnBodies()) == 0; i++ {
+		page.eval(t, `new Promise(r=>setTimeout(r,20))`)
+	}
+	bodies := f.spawnBodies()
+	if len(bodies) != 1 || !strings.Contains(bodies[0], `"machine":"vengeance"`) || !strings.Contains(bodies[0], `"/src/dotfiles"`) || strings.Contains(bodies[0], "hub-draft") {
+		t.Fatalf("the launch goes to the NEMESIS project, never the hub draft: %v", bodies)
+	}
+}
+
 func TestGroupPlusAsksWhenAGroupMixesMachines(t *testing.T) {
 	hub, peer := fleetDotfilesSession(1, "mrx"), fleetDotfilesSession(2, "vengeance")
 	for _, order := range []string{"[" + hub + "," + peer + "]", "[" + peer + "," + hub + "]"} {

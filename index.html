@@ -6441,7 +6441,7 @@ function openSpawnSheet(cwd, step='', machine='', query) {
   spReturnFocus=document.activeElement;
   spMessage('');
   const asking=query !== undefined && !spRecoveryBuffer;
-  if (asking) { spDraft.cwd=''; spSetMachine(''); }
+  if (asking) { spDraft.cwd=''; spSetMachine(''); spDraft.settings=spSettings({}); spDraft.preset=''; }
   if (cwd && !spRecoveryBuffer) { spDraft.cwd=cwd; spSetMachine(machine); }
   spUseMachine(spKey(spDraft.machine));
   // Judge the resume step before prefilling, so an empty project resumes on Project.
@@ -6697,11 +6697,17 @@ async function refreshForkEntry(btn) {
 }
 
 function spawnAgent() { openSpawnSheet(null); }
-function spawnInProject(cwd, machine) { openSpawnSheet(cwd, 'preset', machine); }
+// A project to start in always has a cwd; without one the sheet asks (query ''), so a
+// draft left by another machine or project is never reused for it.
+function spawnInProject(cwd, machine, name='') {
+  if (!cwd) return openSpawnSheet(null, 'project', '', name);
+  openSpawnSheet(cwd, 'preset', machine);
+}
 // The + on a project group: the group's one machine, or ask when it mixes machines.
 function spawnInGroup(group, name) {
   const machine = sessionMachine(group[0]);
-  if (group.every(s => sameMachine(sessionMachine(s), machine))) return spawnInProject(group[0].cwd, machine);
+  const withCwd = group.find(s => s.cwd);
+  if (withCwd && group.every(s => sameMachine(sessionMachine(s), machine))) return spawnInProject(withCwd.cwd, machine, name);
   openSpawnSheet(null, 'project', '', name);
 }
 // --- Spawn sheet: end ---
