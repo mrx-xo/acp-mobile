@@ -2172,7 +2172,7 @@ async function fetchHeaderModel() {
     });
     if (!resp.ok) return;
     const data = await resp.json();
-    if (token !== headerModelToken || bufferName !== currentBufferName) return;
+    if (token !== headerModelToken || bufferName !== currentBufferName || !sameMachine(machine, chatMachine())) return;
     headerModel = typeof data.current === 'string'
       ? canonicalModelName(data.current, Array.isArray(data.models) ? data.models : [], bufferName)
       : '';
@@ -5928,6 +5928,11 @@ function makeSessionCard(s, name) {
 }
 
 function selectSession(session) {
+  // Sheets and overlays belong to the chat being left; their pending requests die with them.
+  closeModelPicker();
+  resetDiffReview();
+  closeFileViewer();
+  closeFileBrowser();
   markViewed(session);
   stashDraft(); // the chat being left keeps its own half-typed text
   currentSockPid = session.pid;
@@ -6810,6 +6815,11 @@ function closeModelPicker() {
 }
 
 let modelPickerMachine = '';
+// The picker still belongs to the chat it was opened for: same buffer name on
+// the same machine, and nothing newer has taken its token.
+function modelPickerHere(token, bufferName, machine) {
+  return token === modelPickerToken && bufferName === currentBufferName && sameMachine(machine, chatMachine());
+}
 async function openModelPicker() {
   const token = ++modelPickerToken;
   const bufferName = currentBufferName;
@@ -6838,7 +6848,7 @@ async function openModelPicker() {
       ? 'No such session.' : 'Could not load models (' + resp.status + ').');
     const data = await resp.json();
     if (!Array.isArray(data.models)) throw new Error('Invalid models reply.');
-    if (token !== modelPickerToken || bufferName !== currentBufferName) return;
+    if (!modelPickerHere(token, bufferName, machine)) return;
     modelPickerData = {
       current: data.current || '',
       models: data.models.filter(model => model && typeof model.id === 'string' && model.id)
@@ -6846,7 +6856,7 @@ async function openModelPicker() {
     mdOpenGroups = new Set([modelGroupKey(modelPickerData.current)]);
     renderModelRows(modelPickerData);
   } catch (err) {
-    if (token !== modelPickerToken || bufferName !== currentBufferName) return;
+    if (!modelPickerHere(token, bufferName, machine)) return;
     mdList.innerHTML = '';
     modelPickerMessage('Models unavailable: ' + err.message);
   }
@@ -6855,30 +6865,31 @@ async function openModelPicker() {
 async function chooseModel(id) {
   if (modelPickerBusy || !modelPickerBuffer ||
       modelPickerBuffer !== currentBufferName ||
+      !sameMachine(modelPickerMachine, chatMachine()) ||
       !modelPickerData.models.some(model => model.id === id)) return;
   const token = ++modelPickerToken;
-  const bufferName = modelPickerBuffer;
+  const bufferName = modelPickerBuffer, machine = modelPickerMachine;
   modelPickerBusy = true;
   renderModelRows(modelPickerData);
   try {
     const resp = await fetch(basePath + '/api/model', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(machineBody({bufferName, modelId: id}, modelPickerMachine))
+      body: JSON.stringify(machineBody({bufferName, modelId: id}, machine))
     });
     const data = await resp.json();
     if (!resp.ok || data.ok !== true) {
       throw new Error(data.error || 'Could not switch model (' + resp.status + ').');
     }
-    if (token !== modelPickerToken || bufferName !== currentBufferName) return;
+    if (!modelPickerHere(token, bufferName, machine)) return;
     modelPickerData = {...modelPickerData, current: data.current || id};
     headerModel = canonicalModelName(modelPickerData.current, modelPickerData.models, bufferName);
     renderHeaderSub();
     renderModelRows(modelPickerData);
     setTimeout(() => {
-      if (token === modelPickerToken && bufferName === currentBufferName) closeModelPicker();
+      if (modelPickerHere(token, bufferName, machine)) closeModelPicker();
     }, 300);
   } catch (err) {
-    if (token !== modelPickerToken || bufferName !== currentBufferName) return;
+    if (!modelPickerHere(token, bufferName, machine)) return;
     modelPickerBusy = false;
     renderModelRows(modelPickerData);
     modelPickerMessage('Model switch failed: ' + err.message);
@@ -6902,19 +6913,22 @@ async function killSession() {
     return;
   }
   if (!window.confirm('Kill session "' + currentBufferName + '"?')) return;
+  const bufferName = currentBufferName, machine = chatMachine();
 
   try {
     const resp = await fetch(basePath + '/api/kill', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ bufferName: currentBufferName, machine: isRemoteChat() ? currentSockMachine : undefined })
+      body: JSON.stringify({ bufferName, machine: machine || undefined })
     });
     const data = await resp.json();
     if (data.error) {
       alert('Kill failed: ' + data.error);
       return;
     }
-    showOrrery();
+    // Leave the list only if the killed chat is still the open one.
+    if (currentBufferName === bufferName && sameMachine(chatMachine(), machine)) showOrrery();
+    else loadSessions(true);
   } catch (err) {
     alert('Kill failed: ' + err.message);
   }
@@ -7399,7 +7413,7 @@ document.getElementById('files-btn').addEventListener('click', openFileBrowser);
 // source of truth), which mirrors to labels.json for the cards.
 headerTitle.addEventListener('click', async () => {
   if (!currentBufferName) { alert('No buffer name for this session yet (old session — reload it on the rig first).'); return; }
-  const machine = chatMachine();
+  const machine = chatMachine(), bufferName = currentBufferName;
   const current = (currentSession() || {}).label || '';
   const label = window.prompt('Label this convo (empty clears):', current);
   if (label === null) return;
@@ -7407,13 +7421,13 @@ headerTitle.addEventListener('click', async () => {
     const resp = await fetch(basePath + '/api/label', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(machineBody({ bufferName: currentBufferName, label: label.trim() }, machine))
+      body: JSON.stringify(machineBody({ bufferName, label: label.trim() }, machine))
     });
     const data = await resp.json();
     if (data.error) { alert('Label failed: ' + data.error); return; }
-    const entry = lastSessions.find(s => s.bufferName === currentBufferName && sameMachine(s.machine, machine));
+    const entry = lastSessions.find(s => s.bufferName === bufferName && sameMachine(s.machine, machine));
     if (entry) entry.label = label.trim();
-    updateChatHeader();
+    if (currentBufferName === bufferName && sameMachine(chatMachine(), machine)) updateChatHeader();
   } catch (err) { alert('Label failed: ' + err.message); }
 });
 // --- Web Push: this phone subscribes through the service worker; the

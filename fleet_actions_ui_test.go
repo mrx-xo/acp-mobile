@@ -183,6 +183,11 @@ type fleetFixture struct {
 	spawn    string            // overrides the /api/spawn reply
 	status   int               // overrides the /api/spawn status
 	catalog  map[string]string // /api/catalogue reply by machine query
+	// holdHubModels, when set, makes a /api/models request that names no
+	// machine wait until it is closed or the request ends; modelsHeld counts
+	// the requests waiting.
+	holdHubModels chan struct{}
+	modelsHeld    int
 }
 
 func newFleetFixture(t *testing.T, machinesJSON string) *fleetFixture {
@@ -238,7 +243,21 @@ func newFleetFixture(t *testing.T, machinesJSON string) *fleetFixture {
 			reply := reply // request-local: handlers run concurrently
 			f.mu.Lock()
 			spawn, status, cat := f.spawn, f.status, f.catalog[r.URL.Query().Get("machine")]
+			hold := f.holdHubModels
 			f.mu.Unlock()
+			if p == "/api/models" && hold != nil {
+				b, _ := io.ReadAll(r.Body)
+				r.Body = io.NopCloser(strings.NewReader(string(b)))
+				if !strings.Contains(string(b), `"machine"`) {
+					f.mu.Lock()
+					f.modelsHeld++
+					f.mu.Unlock()
+					select {
+					case <-hold:
+					case <-r.Context().Done():
+					}
+				}
+			}
 			if p == "/api/spawn" && spawn != "" {
 				reply = spawn
 				if status != 0 {
@@ -600,5 +619,77 @@ func TestFleetGapRestoresTheControlsOwnState(t *testing.T) {
 		return f.disabled + '|' + f.title + '|' + g.title; })()`).(string)
 	if got != "true||2 unstaged" {
 		t.Fatalf("after the gap: %q, want a still-disabled files control and the git title written during the gap", got)
+	}
+}
+
+// The model picker belongs to the chat it was opened for, machine included.
+// Switching to a same-named chat on another machine closes it, so a model
+// choice can never land on the chat that was open before.
+func TestFleetModelPickerClosesWhenTheChatChanges(t *testing.T) {
+	f := newFleetFixture(t, fleetTwoMachines)
+	page := openChromePage(t, f.srv.URL)
+	page.waitFor(t, `document.querySelectorAll('.session-card').length === 2`)
+	page.eval(t, `SPAWN_POLL_MS = 5; setToolbarOpen(true); selectSession(lastSessions.find(s => s.machine === 'mrx')); 0`)
+	page.waitFor(t, `currentBufferName === 'Claude Agent @ shared'`)
+	opened, _ := page.eval(t, `(async () => {
+		await openModelPicker();
+		return mdSheet.classList.contains('visible') && mdList.textContent.includes('M1');
+	})()`).(bool)
+	if !opened {
+		t.Fatal("the picker did not open on the hub chat")
+	}
+	closed, _ := page.eval(t, `(() => {
+		selectSession(lastSessions.find(s => s.machine === 'vengeance'));
+		return !mdSheet.classList.contains('visible') && modelPickerBuffer === null;
+	})()`).(bool)
+	if !closed {
+		t.Fatal("switching to the same-named chat on another machine left the picker open")
+	}
+	page.eval(t, `(async () => { await openModelPicker(); await chooseModel('m1'); return 0; })()`)
+	var chosen []fleetRequest
+	for _, r := range f.requests() {
+		if r.Path == "/api/model" {
+			chosen = append(chosen, r)
+		}
+	}
+	if len(chosen) != 1 || !chosen[0].names("vengeance") {
+		t.Fatalf("the model request after reopening = %+v, want one naming vengeance", chosen)
+	}
+}
+
+// A model list requested for the hub chat that arrives after the user moved
+// to the same-named chat on another machine is dropped.
+func TestFleetLateModelListForAnotherMachineIsDropped(t *testing.T) {
+	f := newFleetFixture(t, fleetTwoMachines)
+	hold := make(chan struct{})
+	f.holdHubModels = hold
+	var once sync.Once
+	release := func() { once.Do(func() { close(hold) }) }
+	// Registered after the server's own cleanup, so it runs first and the
+	// held handler returns before the server closes.
+	t.Cleanup(release)
+	page := openChromePage(t, f.srv.URL)
+	page.waitFor(t, `document.querySelectorAll('.session-card').length === 2`)
+	page.eval(t, `SPAWN_POLL_MS = 5; setToolbarOpen(true); selectSession(lastSessions.find(s => s.machine === 'mrx')); 0`)
+	page.waitFor(t, `currentBufferName === 'Claude Agent @ shared'`)
+	page.eval(t, `window.__late = openModelPicker(); 0`)
+	for i := 0; i < 100; i++ {
+		f.mu.Lock()
+		n := f.modelsHeld
+		f.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	page.eval(t, `selectSession(lastSessions.find(s => s.machine === 'vengeance')); 0`)
+	release()
+	state := page.evalObject(t, `(async () => {
+		await window.__late;
+		await new Promise(r => setTimeout(r, 100));
+		return {models: modelPickerData.models.length, text: mdList.textContent, visible: mdSheet.classList.contains('visible')};
+	})()`)
+	if state["models"] != float64(0) || strings.Contains(fmt.Sprint(state["text"]), "M1") || state["visible"] != false {
+		t.Fatalf("the hub chat's late model list reached the NEMESIS chat: %#v", state)
 	}
 }
