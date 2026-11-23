@@ -380,8 +380,8 @@ func main() {
 	mux.HandleFunc("/sw.js", handleServiceWorker)
 	mux.HandleFunc("/manifest.webmanifest", handleManifest)
 	mux.HandleFunc("/api/preview", fleetRoute(handlePreview))
-	mux.HandleFunc("/api/transcripts", handleTranscripts)
-	mux.HandleFunc("/api/transcript-search", handleTranscriptSearch)
+	mux.HandleFunc("/api/transcripts", fleetRoute(handleTranscripts))
+	mux.HandleFunc("/api/transcript-search", fleetRoute(handleTranscriptSearch))
 	mux.HandleFunc("/api/transcript", fleetRoute(handleTranscript))
 	mux.HandleFunc("/api/resume-transcript", fleetRoute(handleResumeTranscript))
 	mux.HandleFunc("/files/list", fleetRoute(handleFileList))
@@ -1036,6 +1036,8 @@ type transcriptInfo struct {
 	File      string `json:"file"`
 	Project   string `json:"project"`
 	Timestamp string `json:"timestamp"`
+	// Machine is the id of the machine that holds the transcript.
+	Machine   string `json:"machine,omitempty"`
 	Agent     string `json:"agent"`
 	Preview   string `json:"preview"`
 	SessionID string `json:"sessionId"`
@@ -1490,6 +1492,126 @@ func eligibleTranscriptRecords(transcripts []transcriptInfo) ([]transcriptInfo, 
 
 type transcriptIndexLoader func(ctx context.Context, limit int) ([]transcriptInfo, error)
 
+// searchFailure is a search error with the HTTP answer it maps to.
+type searchFailure struct {
+	code int
+	msg  string
+}
+
+func (f *searchFailure) Error() string { return f.msg }
+
+// transcriptSearchBudget bounds the local search and each peer's answer.
+const transcriptSearchBudget = 8 * time.Second
+
+type transcriptSearchReq struct {
+	Query string `json:"query"`
+	// Catalogue narrowing: Catalogued keeps only saved chats,
+	// Tags keeps chats carrying every listed tag.  Either one
+	// makes an empty Query legal, which then lists the narrowed
+	// set newest save first instead of ranking matches.
+	Catalogued bool     `json:"catalogued"`
+	Tags       []string `json:"tags"`
+}
+
+// localTranscriptSearch runs the search against this machine's index and
+// tags every result with this machine's id.
+func localTranscriptSearch(ctx context.Context, load transcriptIndexLoader, query string, filter catalogueFilter) ([]transcriptSearchResult, bool, *searchFailure) {
+	ctx, cancel := context.WithTimeout(ctx, transcriptSearchBudget)
+	defer cancel()
+	timedOut := func(err error) bool {
+		return errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)
+	}
+	transcripts, err := load(ctx, 0)
+	if err != nil {
+		if timedOut(err) {
+			return nil, false, &searchFailure{http.StatusGatewayTimeout, "search timed out"}
+		}
+		return nil, false, &searchFailure{http.StatusBadGateway, "transcript index unavailable"}
+	}
+	transcripts = mergeTranscriptLabels(transcripts, loadLabels())
+	transcripts = filter.apply(transcripts)
+	var results []transcriptSearchResult
+	var truncated bool
+	if query == "" {
+		results, truncated, err = listCatalogued(transcripts)
+	} else {
+		results, truncated, err = searchTranscriptRecords(ctx, query, transcripts)
+	}
+	if err != nil {
+		if timedOut(err) {
+			return nil, false, &searchFailure{http.StatusGatewayTimeout, "search timed out"}
+		}
+		log.Printf("transcript search: %v", err)
+		return nil, false, &searchFailure{http.StatusInternalServerError, "search failed"}
+	}
+	self := thisMachineID()
+	for i := range results {
+		results[i].Machine = self
+	}
+	return results, truncated, nil
+}
+
+// mergedTranscriptSearch is this machine's results plus every awake peer's
+// (machines with a history gap are not asked), ranked and capped as one
+// list.  The peers get the hub's request body unchanged.  The hub's own
+// failure is an error only when no machine has any result.
+func mergedTranscriptSearch(ctx context.Context, load transcriptIndexLoader, body []byte, query string, filter catalogueFilter) ([]transcriptSearchResult, bool, *searchFailure) {
+	fleet.mu.RLock()
+	peers := fleet.reg.peers(fleet.self)
+	fleet.mu.RUnlock()
+	var replies map[string][]byte
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		replies = fanOutJSON(ctx, "/api/transcript-search", body, transcriptSearchBudget, hasHistoryGap)
+	}()
+	local, truncated, fail := localTranscriptSearch(ctx, load, query, filter)
+	<-done
+	if fail != nil {
+		log.Printf("transcript search: %v; using other machines", fail)
+	}
+	merged := append(make([]transcriptSearchResult, 0, len(local)), local...)
+	for _, m := range peers {
+		raw, answered := replies[m.ID]
+		if !answered {
+			continue // fanOutJSON logged why
+		}
+		var reply struct {
+			Results   []transcriptSearchResult `json:"results"`
+			Truncated bool                     `json:"truncated"`
+		}
+		if err := json.Unmarshal(raw, &reply); err != nil {
+			log.Printf("fleet: /api/transcript-search on %s: %v", m.ID, err)
+			continue
+		}
+		for _, r := range reply.Results {
+			r.Machine = m.ID
+			merged = append(merged, r)
+		}
+		truncated = truncated || reply.Truncated
+	}
+	if fail != nil && len(merged) == 0 {
+		return nil, false, fail
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		a, b := merged[i], merged[j]
+		if query == "" {
+			// The catalogue listing has no match counts: newest save first.
+			if a.Catalogued != b.Catalogued {
+				return a.Catalogued > b.Catalogued
+			}
+		} else if a.MatchCount != b.MatchCount {
+			return a.MatchCount > b.MatchCount
+		}
+		return a.Timestamp > b.Timestamp
+	})
+	if len(merged) > transcriptSearchLimit {
+		merged = merged[:transcriptSearchLimit]
+		truncated = true
+	}
+	return merged, truncated, nil
+}
+
 func newTranscriptSearchHandler(load transcriptIndexLoader) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1498,17 +1620,13 @@ func newTranscriptSearchHandler(load transcriptIndexLoader) http.Handler {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Type", "application/json")
-		r.Body = http.MaxBytesReader(w, r.Body, 4096)
-		var req struct {
-			Query string `json:"query"`
-			// Catalogue narrowing: Catalogued keeps only saved chats,
-			// Tags keeps chats carrying every listed tag.  Either one
-			// makes an empty Query legal, which then lists the narrowed
-			// set newest save first instead of ranking matches.
-			Catalogued bool     `json:"catalogued"`
-			Tags       []string `json:"tags"`
+		// The body is read once: the local search and the fan-out share it.
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
+		var req transcriptSearchReq
+		if err == nil {
+			err = json.NewDecoder(bytes.NewReader(raw)).Decode(&req)
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
@@ -1527,33 +1645,16 @@ func newTranscriptSearchHandler(load transcriptIndexLoader) http.Handler {
 			http.Error(w, "query must be between 2 and 200 printable characters", http.StatusBadRequest)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
-		defer cancel()
-		transcripts, err := load(ctx, 0)
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				http.Error(w, "search timed out", http.StatusGatewayTimeout)
-				return
-			}
-			http.Error(w, "transcript index unavailable", http.StatusBadGateway)
-			return
-		}
-		transcripts = mergeTranscriptLabels(transcripts, loadLabels())
-		transcripts = filter.apply(transcripts)
 		var results []transcriptSearchResult
 		var truncated bool
-		if queryLen == 0 {
-			results, truncated, err = listCatalogued(transcripts)
+		var fail *searchFailure
+		if wantsFleet(r) {
+			results, truncated, fail = mergedTranscriptSearch(r.Context(), load, raw, query, filter)
 		} else {
-			results, truncated, err = searchTranscriptRecords(ctx, query, transcripts)
+			results, truncated, fail = localTranscriptSearch(r.Context(), load, query, filter)
 		}
-		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				http.Error(w, "search timed out", http.StatusGatewayTimeout)
-				return
-			}
-			log.Printf("transcript search: %v", err)
-			http.Error(w, "search failed", http.StatusInternalServerError)
+		if fail != nil {
+			http.Error(w, fail.msg, fail.code)
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1616,20 +1717,85 @@ func handleTranscriptSearch(w http.ResponseWriter, r *http.Request) {
 	newTranscriptSearchHandler(loadTranscriptIndex).ServeHTTP(w, r)
 }
 
+// transcriptsFanOutBudget bounds each peer's /api/transcripts answer.
+const transcriptsFanOutBudget = 4 * time.Second
+
+// localTranscripts is this machine's recent transcripts, tagged with this
+// machine's id.
+func localTranscripts(ctx context.Context, load transcriptIndexLoader) ([]transcriptInfo, error) {
+	transcripts, err := load(ctx, 100)
+	if err != nil {
+		return nil, err
+	}
+	transcripts = mergeTranscriptLabels(transcripts, loadLabels())
+	transcripts, err = eligibleTranscriptRecords(transcripts)
+	if err != nil {
+		return nil, err
+	}
+	self := thisMachineID()
+	for i := range transcripts {
+		transcripts[i].Machine = self
+	}
+	return transcripts, nil
+}
+
+// mergedTranscripts is this machine's history plus every awake peer's
+// (machines with a history gap are not asked), newest first, each entry
+// tagged with its machine.  The hub's own failure is an error only when no
+// machine has any entry.
+func mergedTranscripts(ctx context.Context, load transcriptIndexLoader) ([]transcriptInfo, error) {
+	fleet.mu.RLock()
+	peers := fleet.reg.peers(fleet.self)
+	fleet.mu.RUnlock()
+	var replies map[string][]byte
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		replies = fanOutJSON(ctx, "/api/transcripts", []byte(`{}`), transcriptsFanOutBudget, hasHistoryGap)
+	}()
+	local, localErr := localTranscripts(ctx, load)
+	<-done
+	if localErr != nil {
+		log.Printf("transcripts: %v; using other machines", localErr)
+	}
+	merged := append(make([]transcriptInfo, 0, len(local)), local...)
+	for _, m := range peers {
+		raw, answered := replies[m.ID]
+		if !answered {
+			continue // fanOutJSON logged why
+		}
+		var entries []transcriptInfo
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			log.Printf("fleet: /api/transcripts on %s: %v", m.ID, err)
+			continue
+		}
+		for _, t := range entries {
+			t.Machine = m.ID
+			merged = append(merged, t)
+		}
+	}
+	if localErr != nil && len(merged) == 0 {
+		return nil, localErr
+	}
+	// Timestamps are zero-padded YYYY-MM-DD-HH-MM-SS, so string order is
+	// time order.
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].Timestamp > merged[j].Timestamp })
+	return merged, nil
+}
+
 func newTranscriptsHandler(load transcriptIndexLoader) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		transcripts, err := load(r.Context(), 100)
-		if err != nil {
-			log.Printf("transcripts: %v", err)
-			http.Error(w, "history unavailable", http.StatusBadGateway)
-			return
+		var transcripts []transcriptInfo
+		var err error
+		if wantsFleet(r) {
+			transcripts, err = mergedTranscripts(r.Context(), load)
+		} else {
+			transcripts, err = localTranscripts(r.Context(), load)
 		}
-		transcripts = mergeTranscriptLabels(transcripts, loadLabels())
-		transcripts, err = eligibleTranscriptRecords(transcripts)
 		if err != nil {
 			log.Printf("transcripts: %v", err)
 			http.Error(w, "history unavailable", http.StatusBadGateway)

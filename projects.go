@@ -140,19 +140,14 @@ func handleProjects(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	fleet.mu.RLock()
-	hasPeers := len(fleet.reg.peers(fleet.self)) > 0
-	fleet.mu.RUnlock()
 	var projects []project
 	var err error
 	// The merged list is opt-in: a page that predates it sends no fleet flag
-	// and must not be handed another machine's projects.  Naming a machine
-	// (fleetRoute) always wins.
-	wantFleet := r.URL.Query().Get("fleet") == "1" && r.URL.Query().Get("machine") == ""
-	if isPeerRequest(r) || !hasPeers || !wantFleet {
-		projects, err = localProjects(r)
-	} else {
+	// and must not be handed another machine's projects.
+	if wantsFleet(r) {
 		projects, err = mergedProjects(r)
+	} else {
+		projects, err = localProjects(r)
 	}
 	if err != nil {
 		writeElispError(w, "projects", err, "no projects on the rig")

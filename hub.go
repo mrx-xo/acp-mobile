@@ -536,3 +536,33 @@ func peerStatuses(ctx context.Context) map[string]string {
 	}
 	return merged
 }
+
+// wantsFleet reports whether r asks for the merged, every-machine answer:
+// only a request that sends fleet=1, names no machine, is not itself a peer's
+// call, and reaches a machine that has peers.  Everything else is local.
+func wantsFleet(r *http.Request) bool {
+	q := r.URL.Query()
+	if q.Get("fleet") != "1" || q.Get("machine") != "" || isPeerRequest(r) {
+		return false
+	}
+	fleet.mu.RLock()
+	defer fleet.mu.RUnlock()
+	return len(fleet.reg.peers(fleet.self)) > 0
+}
+
+// hasHistoryGap reports whether m cannot answer history requests.
+func hasHistoryGap(m machine) bool {
+	for _, g := range m.Gaps {
+		if g == "history" {
+			return true
+		}
+	}
+	return false
+}
+
+// thisMachineID is this machine's id in the registry.
+func thisMachineID() string {
+	fleet.mu.RLock()
+	defer fleet.mu.RUnlock()
+	return fleet.self
+}
