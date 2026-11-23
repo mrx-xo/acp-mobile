@@ -554,6 +554,42 @@ func peerStatuses(ctx context.Context) map[string]string {
 	return merged
 }
 
+// mergedLocalBudget bounds this machine's own lookup in a merged list
+// (projects, history, history search).  The lookup runs next to the fan-out,
+// so a hung local Emacs costs the answer this long and no longer, and the
+// healthy peers' entries are still returned.  A variable so tests can shorten it.
+var mergedLocalBudget = 8 * time.Second
+
+// localWithin runs this machine's own lookup under mergedLocalBudget.  When
+// the budget runs out it returns the deadline error without waiting for work,
+// which is then cancelled; a lookup that ignores its context keeps running in
+// its goroutine until it returns, and its late result is dropped.
+func localWithin[T any](ctx context.Context, work func(context.Context) (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(ctx, mergedLocalBudget)
+	defer cancel()
+	type outcome struct {
+		value T
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		v, err := work(ctx)
+		done <- outcome{v, err}
+	}()
+	select {
+	case o := <-done:
+		return o.value, o.err
+	case <-ctx.Done():
+		select {
+		case o := <-done:
+			return o.value, o.err
+		default:
+		}
+		var zero T
+		return zero, ctx.Err()
+	}
+}
+
 // wantsFleet reports whether r asks for the merged, every-machine answer:
 // only a request that sends fleet=1, names no machine, is not itself a peer's
 // call, and reaches a machine that has peers.  Everything else is local.

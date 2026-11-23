@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // historyHome gives the test a HOME with one eligible transcript file per
@@ -438,5 +439,54 @@ func TestTranscriptsFanOutABodyAtTheCapWhole(t *testing.T) {
 	rec := postHistory(newTranscriptsHandler(load), "/api/transcripts?fleet=1", sent)
 	if rec.Code != http.StatusOK || got.Load() != sent {
 		t.Fatalf("status %d, peer got %d bytes, want %d", rec.Code, len(got.Load().(string)), len(sent))
+	}
+}
+
+func TestMergedTranscriptsDoNotWaitForAHungLocalLookup(t *testing.T) {
+	logs := captureLog(t)
+	shortenLocalBudget(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	// A loader that ignores its context, like an Emacs call that never returns.
+	load := func(context.Context, int) ([]transcriptInfo, error) { <-release; return nil, errors.New("released") }
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[{"file":"/p/p1.md","sessionId":"p1","timestamp":"2026-11-02-10-00-00"}]`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	started := time.Now()
+	rec := answersWithin(t, 3*time.Second, func(rec *httptest.ResponseRecorder) {
+		newTranscriptsHandler(load).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/transcripts?fleet=1", strings.NewReader(`{}`)))
+	})
+	if got := joinKeys(transcriptKeys(t, rec)); got != "vengeance:p1" {
+		t.Fatalf("got %q, want the peer's entry", got)
+	}
+	if took := time.Since(started); took > 2*time.Second {
+		t.Fatalf("answered after %v, want about the local budget", took)
+	}
+	if !strings.Contains(logs.String(), "transcripts: ") || !strings.Contains(logs.String(), "; using other machines") {
+		t.Errorf("log %q does not record the local timeout", logs.String())
+	}
+}
+
+func TestMergedTranscriptSearchDoesNotWaitForAHungLocalLookup(t *testing.T) {
+	logs := captureLog(t)
+	shortenLocalBudget(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	load := func(context.Context, int) ([]transcriptInfo, error) { <-release; return nil, errors.New("released") }
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"results":[{"file":"/p/p1.md","sessionId":"p1","timestamp":"2026-11-02-10-00-00","matchCount":2}],"truncated":false}`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	rec := answersWithin(t, 3*time.Second, func(rec *httptest.ResponseRecorder) {
+		newTranscriptSearchHandler(load).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/transcript-search?fleet=1", strings.NewReader(`{"query":"hello"}`)))
+	})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"p1"`) {
+		t.Fatalf("status = %d body = %s, want the peer's result", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(logs.String(), "; using other machines") {
+		t.Errorf("log %q does not record the local timeout", logs.String())
 	}
 }

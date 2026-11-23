@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -79,17 +80,27 @@ const projectsFanOutBudget = 3 * time.Second
 // left out.  The hub's own failure is an error only when no machine has any
 // project.  A project on two machines appears twice.
 func mergedProjects(r *http.Request) ([]project, error) {
-	local, localErr := localProjects(r)
-	if localErr != nil {
-		// The hub's own list failing must not hide the other machines.
-		log.Printf("projects: %v; using other machines", localErr)
-	}
 	fleet.mu.RLock()
 	self := fleet.self
 	peers := fleet.reg.peers(self)
 	fleet.mu.RUnlock()
+	// The local lookup runs beside the fan-out under its own deadline, so a
+	// hung Emacs here neither delays nor hides the other machines.
+	var replies map[string][]byte
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		replies = fanOutJSON(r.Context(), "/api/projects", []byte(`{}`), projectsFanOutBudget, nil)
+	}()
+	local, localErr := localWithin(r.Context(), func(ctx context.Context) ([]project, error) {
+		return localProjects(r.WithContext(ctx))
+	})
+	<-done
+	if localErr != nil {
+		// The hub's own list failing must not hide the other machines.
+		log.Printf("projects: %v; using other machines", localErr)
+	}
 	out := append(make([]project, 0, len(local)), local...)
-	replies := fanOutJSON(r.Context(), "/api/projects", []byte(`{}`), projectsFanOutBudget, nil)
 	for _, m := range peers {
 		var body struct {
 			Projects []project `json:"projects"`

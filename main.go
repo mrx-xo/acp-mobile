@@ -1568,7 +1568,24 @@ func mergedTranscriptSearch(ctx context.Context, load transcriptIndexLoader, pat
 		defer close(done)
 		replies = fanOutJSON(ctx, path, body, transcriptSearchBudget, hasHistoryGap)
 	}()
-	local, truncated, fail := localTranscriptSearch(ctx, load, query, filter)
+	type localSearch struct {
+		results   []transcriptSearchResult
+		truncated bool
+	}
+	found, err := localWithin(ctx, func(ctx context.Context) (localSearch, error) {
+		results, truncated, fail := localTranscriptSearch(ctx, load, query, filter)
+		if fail != nil {
+			return localSearch{}, fail
+		}
+		return localSearch{results, truncated}, nil
+	})
+	local, truncated := found.results, found.truncated
+	var fail *searchFailure
+	if err != nil {
+		if !errors.As(err, &fail) {
+			fail = &searchFailure{http.StatusGatewayTimeout, "search timed out", err}
+		}
+	}
 	<-done
 	if fail != nil {
 		log.Printf("transcripts: %v; using other machines", fail.err)
@@ -1791,7 +1808,9 @@ func mergedTranscripts(ctx context.Context, load transcriptIndexLoader, path str
 		defer close(done)
 		replies = fanOutJSON(ctx, path, body, transcriptsFanOutBudget, hasHistoryGap)
 	}()
-	local, localErr := localTranscripts(ctx, load)
+	local, localErr := localWithin(ctx, func(ctx context.Context) ([]transcriptInfo, error) {
+		return localTranscripts(ctx, load)
+	})
 	<-done
 	if localErr != nil {
 		log.Printf("transcripts: %v; using other machines", localErr)

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -296,5 +297,79 @@ func TestMergedProjectsLogAMalformedPeerReply(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "fleet: /api/projects on vengeance: ") {
 		t.Errorf("log %q lacks the decode failure", logs.String())
+	}
+}
+
+// installBlockingEmacsclient is an emacsclient that never answers until the
+// test ends: the cleanup releases it, so no process outlives the test.
+func installBlockingEmacsclient(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	release := filepath.Join(dir, "release")
+	script := "#!/bin/sh\nwhile [ ! -e \"" + release + "\" ]; do sleep 0.05; done\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "emacsclient"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	previousConfig := appConfig
+	appConfig = config{}
+	t.Cleanup(func() {
+		appConfig = previousConfig
+		os.WriteFile(release, nil, 0600)
+	})
+}
+
+// shortenLocalBudget lets a test see the local deadline fire quickly.
+func shortenLocalBudget(t *testing.T) {
+	t.Helper()
+	previous := mergedLocalBudget
+	mergedLocalBudget = 300 * time.Millisecond
+	t.Cleanup(func() { mergedLocalBudget = previous })
+}
+
+// answersWithin runs serve and fails the test when it has not returned in d.
+// A request that is still running then keeps its own recorder; the test's
+// cleanups release whatever it waits on.
+func answersWithin(t *testing.T, d time.Duration, serve func(*httptest.ResponseRecorder)) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serve(rec)
+	}()
+	select {
+	case <-done:
+		return rec
+	case <-time.After(d):
+		t.Fatalf("no answer within %v: a hung local lookup blocks the merged list", d)
+		return nil
+	}
+}
+
+func TestMergedProjectsDoNotWaitForAHungLocalLookup(t *testing.T) {
+	logs := captureLog(t)
+	installBlockingEmacsclient(t)
+	shortenLocalBudget(t)
+	previous := projectLiveCwds
+	projectLiveCwds = func() []string { return nil }
+	t.Cleanup(func() { projectLiveCwds = previous })
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"projects":[{"name":"dotfiles","path":"C:/d/dotfiles"}]}`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	started := time.Now()
+	rec := answersWithin(t, 3*time.Second, func(rec *httptest.ResponseRecorder) {
+		handleProjects(rec, httptest.NewRequest(http.MethodPost, "/?fleet=1", strings.NewReader(`{}`)))
+	})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "C:/d/dotfiles") {
+		t.Fatalf("status = %d body = %s, want the peer's project", rec.Code, rec.Body.String())
+	}
+	if took := time.Since(started); took > 2*time.Second {
+		t.Fatalf("answered after %v, want about the local budget", took)
+	}
+	if !strings.Contains(logs.String(), "projects: ") || !strings.Contains(logs.String(), "; using other machines") {
+		t.Errorf("log %q does not record the local timeout", logs.String())
 	}
 }
