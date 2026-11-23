@@ -302,20 +302,28 @@ func TestMergedProjectsLogAMalformedPeerReply(t *testing.T) {
 
 // installBlockingEmacsclient is an emacsclient that never answers until the
 // test ends: the cleanup releases it, so no process outlives the test.
-func installBlockingEmacsclient(t *testing.T) {
+func installBlockingEmacsclient(t *testing.T) (release func()) {
 	t.Helper()
 	dir := t.TempDir()
-	release := filepath.Join(dir, "release")
-	script := "#!/bin/sh\nwhile [ ! -e \"" + release + "\" ]; do sleep 0.05; done\nexit 1\n"
+	releasePath := filepath.Join(dir, "release")
+	script := "#!/bin/sh\nwhile [ ! -e \"" + releasePath + "\" ]; do sleep 0.05; done\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(dir, "emacsclient"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	previousConfig := appConfig
 	appConfig = config{}
+	t.Cleanup(func() { appConfig = previousConfig })
+	return func() { os.WriteFile(releasePath, nil, 0600) }
+}
+
+// finishLocalLookups registers, last, the cleanup that releases the blocked
+// lookup and waits for it to end before earlier cleanups restore globals.
+func finishLocalLookups(t *testing.T, release func()) {
+	t.Helper()
 	t.Cleanup(func() {
-		appConfig = previousConfig
-		os.WriteFile(release, nil, 0600)
+		release()
+		localLookups.Wait()
 	})
 }
 
@@ -349,7 +357,7 @@ func answersWithin(t *testing.T, d time.Duration, serve func(*httptest.ResponseR
 
 func TestMergedProjectsDoNotWaitForAHungLocalLookup(t *testing.T) {
 	logs := captureLog(t)
-	installBlockingEmacsclient(t)
+	release := installBlockingEmacsclient(t)
 	shortenLocalBudget(t)
 	previous := projectLiveCwds
 	projectLiveCwds = func() []string { return nil }
@@ -359,6 +367,7 @@ func TestMergedProjectsDoNotWaitForAHungLocalLookup(t *testing.T) {
 	}))
 	defer peer.Close()
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	finishLocalLookups(t, release)
 	started := time.Now()
 	rec := answersWithin(t, 3*time.Second, func(rec *httptest.ResponseRecorder) {
 		handleProjects(rec, httptest.NewRequest(http.MethodPost, "/?fleet=1", strings.NewReader(`{}`)))

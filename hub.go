@@ -560,11 +560,16 @@ func peerStatuses(ctx context.Context) map[string]string {
 // healthy peers' entries are still returned.  A variable so tests can shorten it.
 var mergedLocalBudget = 8 * time.Second
 
+// localLookups counts local lookups still running, including those localWithin
+// stopped waiting for, so a test can wait for them before it restores globals.
+var localLookups sync.WaitGroup
+
 // localWithin runs this machine's own lookup under mergedLocalBudget.  When
 // the budget runs out it returns the deadline error without waiting for work,
 // which is then cancelled; a lookup that ignores its context keeps running in
 // its goroutine until it returns, and its late result is dropped.
 func localWithin[T any](ctx context.Context, work func(context.Context) (T, error)) (T, error) {
+	localLookups.Add(1)
 	ctx, cancel := context.WithTimeout(ctx, mergedLocalBudget)
 	defer cancel()
 	type outcome struct {
@@ -573,6 +578,7 @@ func localWithin[T any](ctx context.Context, work func(context.Context) (T, erro
 	}
 	done := make(chan outcome, 1)
 	go func() {
+		defer localLookups.Done()
 		v, err := work(ctx)
 		done <- outcome{v, err}
 	}()

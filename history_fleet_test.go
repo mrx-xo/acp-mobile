@@ -446,7 +446,6 @@ func TestMergedTranscriptsDoNotWaitForAHungLocalLookup(t *testing.T) {
 	logs := captureLog(t)
 	shortenLocalBudget(t)
 	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
 	// A loader that ignores its context, like an Emacs call that never returns.
 	load := func(context.Context, int) ([]transcriptInfo, error) { <-release; return nil, errors.New("released") }
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -454,6 +453,7 @@ func TestMergedTranscriptsDoNotWaitForAHungLocalLookup(t *testing.T) {
 	}))
 	defer peer.Close()
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	finishLocalLookups(t, func() { close(release) })
 	started := time.Now()
 	rec := answersWithin(t, 3*time.Second, func(rec *httptest.ResponseRecorder) {
 		newTranscriptsHandler(load).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/transcripts?fleet=1", strings.NewReader(`{}`)))
@@ -473,13 +473,13 @@ func TestMergedTranscriptSearchDoesNotWaitForAHungLocalLookup(t *testing.T) {
 	logs := captureLog(t)
 	shortenLocalBudget(t)
 	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
 	load := func(context.Context, int) ([]transcriptInfo, error) { <-release; return nil, errors.New("released") }
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"results":[{"file":"/p/p1.md","sessionId":"p1","timestamp":"2026-11-02-10-00-00","matchCount":2}],"truncated":false}`))
 	}))
 	defer peer.Close()
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	finishLocalLookups(t, func() { close(release) })
 	rec := answersWithin(t, 3*time.Second, func(rec *httptest.ResponseRecorder) {
 		newTranscriptSearchHandler(load).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/transcript-search?fleet=1", strings.NewReader(`{"query":"hello"}`)))
 	})
