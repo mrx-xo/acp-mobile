@@ -156,13 +156,28 @@ func TestBridgeReturnsAfterClientClose(t *testing.T) {
 	}
 }
 
+// fakeEmacsReply is a shell fragment (it takes the canned reply as $1)
+// that behaves like a real Emacs running evalElispToFile's wrapped
+// expression: it writes the reply to the path named in the write-region
+// call, as the printed value, and prints only t.  Existing fakes keep
+// saying "Emacs returns X".  fake_expr recovers the original expression
+// from the wrapper, so recorded args still show what the caller asked.
+const fakeEmacsReply = "fake_reply() {\n" +
+	"  p=$(printf '%s' \"$3\" | sed -n 's/.*(prin1-to-string v) nil \"\\([^\"]*\\)\".*/\\1/p')\n" +
+	"  printf '%s\\n' \"$1\" > \"$p\"\n" +
+	"  echo t\n" +
+	"}\n" +
+	"fake_expr() {\n" +
+	"  printf '%s' \"$1\" | head -n 1 | sed -e 's/^(let ((v //' -e \"s/) (print-length nil).*$//\"\n" +
+	"}\n"
+
 func installFakeEmacsclient(t *testing.T, output string) string {
 	t.Helper()
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
-	script := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$@\" > \"$FAKE_EMACSCLIENT_ARGS\"\n" +
-		"printf '%s\\n' \"$FAKE_EMACSCLIENT_OUTPUT\"\n"
+	script := "#!/bin/sh\n" + fakeEmacsReply +
+		"printf '%s\\n' \"$1\" \"$(fake_expr \"$2\")\" > \"$FAKE_EMACSCLIENT_ARGS\"\n" +
+		"fake_reply \"$FAKE_EMACSCLIENT_OUTPUT\" \"$@\"\n"
 	path := filepath.Join(dir, "emacsclient")
 	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -180,11 +195,11 @@ func installPollingFakeEmacsclient(t *testing.T, startOutput, statusOutput strin
 	t.Helper()
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
-	script := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$@\" >> \"$FAKE_EMACSCLIENT_ARGS\"\n" +
+	script := "#!/bin/sh\n" + fakeEmacsReply +
+		"printf '%s\\n' \"$1\" \"$(fake_expr \"$2\")\" >> \"$FAKE_EMACSCLIENT_ARGS\"\n" +
 		"case \"$2\" in\n" +
-		"  *syzygy-recall-resume-status-json*) printf '%s\\n' \"$FAKE_EMACSCLIENT_STATUS_OUTPUT\" ;;\n" +
-		"  *) printf '%s\\n' \"$FAKE_EMACSCLIENT_START_OUTPUT\" ;;\n" +
+		"  *syzygy-recall-resume-status-json*) fake_reply \"$FAKE_EMACSCLIENT_STATUS_OUTPUT\" \"$@\" ;;\n" +
+		"  *) fake_reply \"$FAKE_EMACSCLIENT_START_OUTPUT\" \"$@\" ;;\n" +
 		"esac\n"
 	path := filepath.Join(dir, "emacsclient")
 	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
@@ -216,10 +231,10 @@ func installBlockingFakeEmacsclient(t *testing.T) {
 func installBlockingStatusFakeEmacsclient(t *testing.T, startOutput string) {
 	t.Helper()
 	dir := t.TempDir()
-	script := "#!/bin/sh\n" +
+	script := "#!/bin/sh\n" + fakeEmacsReply +
 		"case \"$2\" in\n" +
 		"  *syzygy-recall-resume-status-json*) while :; do :; done ;;\n" +
-		"  *) printf '%s\\n' \"$FAKE_EMACSCLIENT_START_OUTPUT\" ;;\n" +
+		"  *) fake_reply \"$FAKE_EMACSCLIENT_START_OUTPUT\" \"$@\" ;;\n" +
 		"esac\n"
 	path := filepath.Join(dir, "emacsclient")
 	if err := os.WriteFile(path, []byte(script), 0700); err != nil {

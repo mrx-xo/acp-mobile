@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -71,10 +72,46 @@ type elispError struct {
 func (e *elispError) Error() string { return fmt.Sprintf("%v: %s", e.err, e.output) }
 func (e *elispError) Unwrap() error { return e.err }
 
+// elispPathLiteral renders a filesystem path as an elisp string with
+// forward slashes, which Emacs accepts on every OS (a Windows temp path
+// has backslashes and a drive letter).
+func elispPathLiteral(path string) string {
+	return elispStr(strings.ReplaceAll(path, `\`, "/")).text
+}
+
+// evalElispToFile evaluates EXPR in the daemon and returns exactly the
+// text `emacsclient --eval EXPR` would print for the value (its prin1
+// form).  The value travels through a temp file and emacsclient prints
+// only t, because some emacsclient builds corrupt any printed reply
+// longer than about 1 KB.  On a non-zero exit the returned bytes are
+// emacsclient's combined output, not the file.
+func evalElispToFile(ctx context.Context, expr string) ([]byte, error) {
+	f, err := os.CreateTemp("", "acp-elisp-*")
+	if err != nil {
+		return nil, err
+	}
+	path := f.Name()
+	f.Close()
+	defer os.Remove(path)
+
+	wrapped := "(let ((v " + expr + ") (print-length nil) (print-level nil) (coding-system-for-write 'utf-8-unix))\n" +
+		"  (write-region (prin1-to-string v) nil " + elispPathLiteral(path) + " nil 'silent)\n" +
+		"  t)"
+	out, err := evalEmacsContext(ctx, "emacsclient", "--eval", wrapped)
+	if err != nil {
+		return out, err
+	}
+	reply, err := os.ReadFile(path)
+	if err != nil {
+		return out, err
+	}
+	return reply, nil
+}
+
 // callElisp evaluates FN with ARGS in the daemon and returns the trimmed
 // printed result.  A bare nil result is errElispNotFound.
 func callElisp(ctx context.Context, fn string, args ...elispArg) (string, error) {
-	out, err := evalEmacsContext(ctx, "emacsclient", "--eval", elispExpr(fn, args...))
+	out, err := evalElispToFile(ctx, elispExpr(fn, args...))
 	result := strings.TrimSpace(string(out))
 	if err != nil {
 		return result, &elispError{err: err, output: result}

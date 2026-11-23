@@ -1724,7 +1724,7 @@ func decodeTranscriptIndexOutput(out []byte) ([]transcriptInfo, error) {
 
 func loadTranscriptIndex(ctx context.Context, limit int) ([]transcriptInfo, error) {
 	expr := fmt.Sprintf("(syzygy-recall-transcripts-json %d)", limit)
-	out, err := evalEmacsContext(ctx, "emacsclient", "--eval", expr)
+	out, err := evalElispToFile(ctx, expr)
 	if err != nil {
 		return nil, fmt.Errorf("emacsclient: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -1969,8 +1969,7 @@ func handleResumeTranscript(w http.ResponseWriter, r *http.Request) {
 
 	evaluate := func(expr string) (resumeTranscriptResult, string, bool) {
 		var result resumeTranscriptResult
-		out, err := evalEmacsContext(
-			resumeContext, "emacsclient", "--eval", expr)
+		out, err := evalElispToFile(resumeContext, expr)
 		if err != nil {
 			if resumeContext.Err() != nil {
 				if r.Context().Err() == nil {
