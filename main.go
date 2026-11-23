@@ -1757,13 +1757,18 @@ const transcriptsBodyLimit = 64 << 10
 
 // readCappedBody reads r's body up to limit bytes (an empty body is nil).  A
 // longer body is answered 413 as JSON and reported as not ok: it is refused,
-// never truncated.
+// never truncated.  A body that cannot be read is a 400.
 func readCappedBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, bool) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil || int64(len(body)) > limit {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusRequestEntityTooLarge)
-		json.NewEncoder(w).Encode(map[string]string{"error": "request body too large"})
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+		} else {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			json.NewEncoder(w).Encode(map[string]string{"error": "request body too large"})
+		}
 		return nil, false
 	}
 	if len(body) == 0 {

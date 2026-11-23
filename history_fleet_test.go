@@ -490,3 +490,25 @@ func TestMergedTranscriptSearchDoesNotWaitForAHungLocalLookup(t *testing.T) {
 		t.Errorf("log %q does not record the local timeout", logs.String())
 	}
 }
+
+// A body that cannot be read is a bad request; only a body over the cap is
+// too large.  (TestTranscriptsRefuseAnOversizedBody covers the 413.)
+func TestTranscriptsAnUnreadableBodyIsABadRequest(t *testing.T) {
+	var calls atomic.Int32
+	loaded := false
+	load := func(context.Context, int) ([]transcriptInfo, error) { loaded = true; return nil, nil }
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Write([]byte(`[]`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	rec := httptest.NewRecorder()
+	newTranscriptsHandler(load).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/transcripts?fleet=1", failingReader{}))
+	if rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != `{"error":"invalid request body"}` {
+		t.Fatalf("status %d body %s, want 400 and the JSON error", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 0 || loaded {
+		t.Fatalf("peer calls %d, local lookup ran %v", calls.Load(), loaded)
+	}
+}
