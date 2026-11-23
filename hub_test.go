@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -736,13 +738,31 @@ func TestFleetRouteForwardsALimitSizedBodyNamingAMachineInJSON(t *testing.T) {
 	}
 }
 
+// lockedBuffer is a log sink the handler goroutine writes and the test reads.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
 func TestFleetRouteAbortsWhenThePeerCutsTheBody(t *testing.T) {
-	var logs bytes.Buffer
+	var logs lockedBuffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	reached := false
+	var reached atomic.Bool
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reached = true
+		reached.Store(true)
 		conn, buf, err := w.(http.Hijacker).Hijack()
 		if err != nil {
 			t.Error(err)
@@ -767,8 +787,12 @@ func TestFleetRouteAbortsWhenThePeerCutsTheBody(t *testing.T) {
 	}
 	// A client-side failure alone proves nothing: the peer must have been
 	// reached and the hub must have logged the cut relay.
-	if !reached {
+	if !reached.Load() {
 		t.Error("the peer was never reached")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(logs.String(), "relay:") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
 	}
 	if !strings.Contains(logs.String(), "relay:") {
 		t.Errorf("log %q does not mention the relay failure", logs.String())
