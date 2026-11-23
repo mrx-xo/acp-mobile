@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,7 +68,7 @@ func TestMergedTranscriptsTagAndSortByTimestamp(t *testing.T) {
 		if r.Header.Get(peerHeader) != "1" || r.Method != http.MethodPost {
 			t.Errorf("peer got %s with header %q", r.Method, r.Header.Get(peerHeader))
 		}
-		w.Write([]byte(`[{"sessionId":"p1","timestamp":"2026-11-02-10-00-00"},{"sessionId":"p2","timestamp":"2026-11-04-10-00-00"}]`))
+		w.Write([]byte(`[{"file":"/p/p1.md","sessionId":"p1","timestamp":"2026-11-02-10-00-00"},{"file":"/p/p2.md","sessionId":"p2","timestamp":"2026-11-04-10-00-00"}]`))
 	}))
 	defer peer.Close()
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
@@ -137,7 +138,7 @@ func TestMergedTranscriptsSurviveALocalFailure(t *testing.T) {
 	logs := captureLog(t)
 	load := func(context.Context, int) ([]transcriptInfo, error) { return nil, errors.New("emacs down") }
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`[{"sessionId":"p1","timestamp":"2026-11-02-10-00-00"}]`))
+		w.Write([]byte(`[{"file":"/p/p1.md","sessionId":"p1","timestamp":"2026-11-02-10-00-00"}]`))
 	}))
 	defer peer.Close()
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
@@ -166,7 +167,7 @@ func TestTranscriptsServeLocalOnlyToPeers(t *testing.T) {
 	var calls atomic.Int32
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		w.Write([]byte(`[{"sessionId":"p1"}]`))
+		w.Write([]byte(`[{"file":"/p/p1.md","sessionId":"p1"}]`))
 	}))
 	defer peer.Close()
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
@@ -182,7 +183,7 @@ func TestTranscriptsWithoutFleetFlagStayLocal(t *testing.T) {
 	var calls atomic.Int32
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		w.Write([]byte(`[{"sessionId":"p1"}]`))
+		w.Write([]byte(`[{"file":"/p/p1.md","sessionId":"p1"}]`))
 	}))
 	defer peer.Close()
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
@@ -204,25 +205,29 @@ func TestTranscriptSearchFansOutTheSameQuery(t *testing.T) {
 		local = append(local, transcriptInfo{SessionID: "h" + string(rune('a'+i%26)) + string(rune('a'+i/26)), Timestamp: "2026-10-01-10-00-00", Preview: "body of chat"})
 	}
 	load := historyHome(t, local...)
-	var gotBody atomic.Value
+	var gotBody, gotQuery atomic.Value
 	var peerResults []string
 	for i := 0; i < 20; i++ {
-		peerResults = append(peerResults, `{"sessionId":"p`+string(rune('a'+i))+`","timestamp":"2026-11-01-10-00-00","matchCount":5,"matchField":"body","snippet":"s"}`)
+		peerResults = append(peerResults, `{"file":"/p/`+string(rune('a'+i))+`.md","sessionId":"p`+string(rune('a'+i))+`","timestamp":"2026-11-`+fmt.Sprintf("%02d", 1+i)+`-10-00-00","matchCount":5,"matchField":"body","snippet":"s"}`)
 	}
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody.Store(string(b))
+		gotQuery.Store(r.URL.RawQuery)
 		w.Write([]byte(`{"query":"body","truncated":false,"results":[` + strings.Join(peerResults, ",") + `]}`))
 	}))
 	defer peer.Close()
 	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
 	const sent = `{"query":"body",  "tags":[]}`
-	rec := postHistory(newTranscriptSearchHandler(load), "/api/transcript-search?fleet=1", sent)
+	rec := postHistory(newTranscriptSearchHandler(load), "/api/transcript-search?fleet=1&scope=all", sent)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
 	if gotBody.Load() != sent {
 		t.Fatalf("peer body = %q, want the hub's %q", gotBody.Load(), sent)
+	}
+	if gotQuery.Load() != "scope=all" {
+		t.Fatalf("peer query = %q, want only scope=all", gotQuery.Load())
 	}
 	var reply struct {
 		Results   []transcriptSearchResult `json:"results"`
@@ -238,6 +243,11 @@ func TestTranscriptSearchFansOutTheSameQuery(t *testing.T) {
 	for i, r := range reply.Results[:20] {
 		if r.Machine != "vengeance" || r.MatchCount != 5 {
 			t.Fatalf("result %d = %s %d, want the peer's high-count entries first", i, r.Machine, r.MatchCount)
+		}
+	}
+	for i := 1; i < 20; i++ {
+		if reply.Results[i-1].Timestamp < reply.Results[i].Timestamp {
+			t.Fatalf("equal counts not newest first: %s before %s", reply.Results[i-1].Timestamp, reply.Results[i].Timestamp)
 		}
 	}
 	for _, r := range reply.Results[20:] {
@@ -290,5 +300,107 @@ func TestWantsFleet(t *testing.T) {
 				t.Fatalf("wantsFleet = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+func TestMergedTranscriptSearchSurvivesALocalFailure(t *testing.T) {
+	logs := captureLog(t)
+	load := func(context.Context, int) ([]transcriptInfo, error) { return nil, errors.New("emacs down") }
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"results":[{"file":"/p/p1.md","sessionId":"p1","timestamp":"2026-11-02-10-00-00","matchCount":1}],"truncated":false}`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	rec := postHistory(newTranscriptSearchHandler(load), "/api/transcript-search?fleet=1", `{"query":"body"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"vengeance"`) {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(logs.String(), "transcripts: emacs down; using other machines") {
+		t.Fatalf("log %q lacks the underlying local error", logs.String())
+	}
+}
+
+func TestMergedTranscriptsPassBodyAndQueryToPeers(t *testing.T) {
+	load := historyHome(t, transcriptInfo{SessionID: "h1", Timestamp: "2026-11-01-10-00-00"})
+	var gotBody, gotQuery atomic.Value
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody.Store(string(b))
+		gotQuery.Store(r.URL.RawQuery)
+		w.Write([]byte(`[]`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	postHistory(newTranscriptsHandler(load), "/api/transcripts?fleet=1&limit=5", `{"x":1}`)
+	if gotQuery.Load() != "limit=5" || gotBody.Load() != `{"x":1}` {
+		t.Fatalf("peer saw query %q body %q", gotQuery.Load(), gotBody.Load())
+	}
+}
+
+func TestMergedTranscriptsRejectAPeerReplyWithoutTheList(t *testing.T) {
+	for name, reply := range map[string]string{"error object": `{"error":"unavailable"}`, "null": `null`} {
+		t.Run(name, func(t *testing.T) {
+			logs := captureLog(t)
+			load := historyHome(t, transcriptInfo{SessionID: "h1", Timestamp: "2026-11-01-10-00-00"})
+			peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(reply)) }))
+			defer peer.Close()
+			withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+			got := joinKeys(transcriptKeys(t, postHistory(newTranscriptsHandler(load), "/api/transcripts?fleet=1", `{}`)))
+			if got != "mrx:h1" || !strings.Contains(logs.String(), "fleet: /api/transcripts on vengeance: ") {
+				t.Fatalf("got %q, log %q", got, logs.String())
+			}
+		})
+	}
+}
+
+func TestMergedTranscriptsDropEntriesWithoutAFile(t *testing.T) {
+	logs := captureLog(t)
+	load := historyHome(t, transcriptInfo{SessionID: "h1", Timestamp: "2026-11-01-10-00-00"})
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[null,{"file":"/p/p1.md","sessionId":"p1","timestamp":"2026-11-02-10-00-00"}]`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	got := joinKeys(transcriptKeys(t, postHistory(newTranscriptsHandler(load), "/api/transcripts?fleet=1", `{}`)))
+	if got != "vengeance:p1 mrx:h1" || !strings.Contains(logs.String(), "fleet: /api/transcripts on vengeance: dropped 1 entries without a file") {
+		t.Fatalf("got %q, log %q", got, logs.String())
+	}
+}
+
+func TestMergedTranscriptSearchRejectsAReplyWithoutResults(t *testing.T) {
+	logs := captureLog(t)
+	load := historyHome(t, transcriptInfo{SessionID: "h1", Timestamp: "2026-11-01-10-00-00", Preview: "body of chat"})
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"error":"unavailable"}`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	rec := postHistory(newTranscriptSearchHandler(load), "/api/transcript-search?fleet=1", `{"query":"body"}`)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"vengeance"`) || !strings.Contains(rec.Body.String(), `"mrx"`) {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(logs.String(), "fleet: /api/transcript-search on vengeance: reply has no results list") {
+		t.Fatalf("log %q", logs.String())
+	}
+}
+
+func TestMergedTranscriptSearchDropsResultsWithoutAFile(t *testing.T) {
+	logs := captureLog(t)
+	load := historyHome(t, transcriptInfo{SessionID: "h1", Timestamp: "2026-11-01-10-00-00", Preview: "body of chat"})
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"results":[null,{"file":"/p/p1.md","sessionId":"p1","timestamp":"2026-11-02-10-00-00","matchCount":9}],"truncated":false}`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	rec := postHistory(newTranscriptSearchHandler(load), "/api/transcript-search?fleet=1", `{"query":"body"}`)
+	var reply struct {
+		Results []transcriptSearchResult `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if len(reply.Results) != 2 || reply.Results[0].SessionID != "p1" || reply.Results[0].Machine != "vengeance" ||
+		!strings.Contains(logs.String(), "dropped 1 results without a file") {
+		t.Fatalf("body %s log %q", rec.Body.String(), logs.String())
 	}
 }

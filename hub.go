@@ -566,3 +566,15 @@ func thisMachineID() string {
 	defer fleet.mu.RUnlock()
 	return fleet.self
 }
+
+// fanOutPath is r's path with its query minus the routing parameters (fleet,
+// machine), so a peer answers locally and still sees every other parameter.
+func fanOutPath(r *http.Request) string {
+	q := r.URL.Query()
+	q.Del("fleet")
+	q.Del("machine")
+	if len(q) == 0 {
+		return r.URL.Path
+	}
+	return r.URL.Path + "?" + q.Encode()
+}
