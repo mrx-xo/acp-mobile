@@ -1673,3 +1673,29 @@ test('diff review keeps the reader on a failed refresh and marks unavailable tur
   assert.match(elements.get('dr-notice').textContent, /boom|Refresh failed/);
   assert.equal(context.diffReview.results.repository.files.length, 4);
 });
+
+// isRemoteSession and isRemoteChat share one definition of "same machine".
+test('isRemoteSession and isRemoteChat agree with sameMachine', () => {
+  const html = fs.readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const start = html.indexOf('function isRemoteSession(');
+  const end = html.indexOf('function withMachine(', start);
+  assert.notEqual(start, -1);
+  const context = {HUB_MACHINE: 'mrx', currentSockMachine: null};
+  vm.createContext(context);
+  vm.runInContext(html.slice(start, end), context, {filename: 'index.html#remote'});
+  const cases = [
+    // [hub, machine, remote]
+    ['mrx', 'mrx', false], ['mrx', 'vengeance', true], ['mrx', '', false],
+    ['mrx', undefined, false], ['mrx', null, false],
+    ['', 'mrx', false], ['', 'vengeance', false], ['', '', false], ['', undefined, false],
+  ];
+  for (const [hub, machine, remote] of cases) {
+    context.HUB_MACHINE = hub;
+    context.currentSockMachine = machine;
+    assert.equal(context.isRemoteChat(), remote, `chat hub=${hub} machine=${machine}`);
+    assert.equal(context.isRemoteSession({machine}), remote, `session hub=${hub} machine=${machine}`);
+  }
+  context.HUB_MACHINE = 'mrx';
+  assert.equal(context.isRemoteSession(null), false);
+  assert.equal(context.isRemoteSession(undefined), false);
+});

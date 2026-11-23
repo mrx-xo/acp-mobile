@@ -225,7 +225,7 @@ func newFleetFixture(t *testing.T, machinesJSON string) *fleetFixture {
 		"/api/spawn":       `{"ok":true,"bufferName":"Claude Agent @ shared<3>"}`,
 		"/api/models":      `{"current":"m0","models":[{"id":"m1","name":"M1"}]}`,
 		"/api/model":       `{"ok":true,"current":"m1"}`,
-		"/api/catalogue":   `{"sessionId":"x","catalogued":"","note":"","tags":[],"allTags":[]}`,
+		"/api/catalogue":   `{"sessionId":"sess-same","catalogued":"yes","note":"saved","tags":[],"allTags":[]}`,
 		"/api/preview":     `{"messages":[]}`,
 		"/api/git-status":  `{"branch":"main","staged":0,"unstaged":0,"untracked":0}`,
 		"/api/diff-review": `{"available":true,"files":[]}`,
@@ -235,6 +235,7 @@ func newFleetFixture(t *testing.T, machinesJSON string) *fleetFixture {
 	}
 	for p, reply := range replies {
 		mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) {
+			reply := reply // request-local: handlers run concurrently
 			f.mu.Lock()
 			spawn, status, cat := f.spawn, f.status, f.catalog[r.URL.Query().Get("machine")]
 			f.mu.Unlock()
@@ -535,7 +536,7 @@ func TestFleetGapTitleDoesNotLeakBetweenMachines(t *testing.T) {
 		`{"pid":3,"machine":"mrx2","bufferName":"Claude Agent @ c"}`
 	page := openChromePage(t, f.srv.URL)
 	page.waitFor(t, `document.querySelectorAll('.session-card').length === 3`)
-	page.eval(t, `document.getElementById('files-btn').title = 'Browse files'; 0`)
+	page.eval(t, `setControlState(document.getElementById('files-btn'), {title: 'Browse files'}); 0`)
 	read := `(async () => { await new Promise(r => setTimeout(r, 100));
 		const b = document.getElementById('files-btn'); return b.disabled + '|' + b.title; })()`
 	for _, step := range []struct{ machine, want string }{
@@ -568,7 +569,36 @@ func TestFleetCatalogueStateIsPerMachine(t *testing.T) {
 		const remote = catalogueStates.get(catalogueKey('vengeance', 'sess-same'));
 		return hub.note + '|' + remote.note + '|' + catalogueStates.size;
 	})()`).(string)
-	if got != "hub note|remote note|2" {
+	if got != "hub note|saved|2" {
 		t.Fatalf("catalogue states = %q, want hub and remote kept apart", got)
+	}
+}
+
+// A gap hands a control back exactly as its own writers left it: still
+// disabled if it was, and showing a title written while the gap held it.
+func TestFleetGapRestoresTheControlsOwnState(t *testing.T) {
+	f := newFleetFixture(t, `[{"id":"mrx","name":"POLLUX","state":"awake","gaps":[]},`+
+		`{"id":"vengeance","name":"NEMESIS","state":"awake","gaps":["files","diff-review"]}]`)
+	page := openChromePage(t, f.srv.URL)
+	page.waitFor(t, `document.querySelectorAll('.session-card').length === 2`)
+	page.eval(t, `fetchGitStatus = async () => {};
+		setControlState(document.getElementById('files-btn'), {disabled: true});
+		setControlState(document.getElementById('hs-git'), {title: 'Clean tree'}); 0`)
+	page.eval(t, `selectSession(lastSessions.find(s => s.machine === 'vengeance')); 0`)
+	page.eval(t, `new Promise(r => setTimeout(r, 100))`)
+	if got, _ := page.eval(t, `document.getElementById('hs-git').title`).(string); got != "NEMESIS cannot review diffs" {
+		t.Fatalf("gapped git title = %q, want the reason", got)
+	}
+	// A writer changes the git title while the gap holds the control.
+	page.eval(t, `setControlState(document.getElementById('hs-git'), {title: '2 unstaged'}); 0`)
+	if got, _ := page.eval(t, `document.getElementById('hs-git').title`).(string); got != "NEMESIS cannot review diffs" {
+		t.Fatalf("a write during the gap leaked to the DOM: %q", got)
+	}
+	page.eval(t, `selectSession(lastSessions.find(s => s.machine === 'mrx')); 0`)
+	got, _ := page.eval(t, `(async () => { await new Promise(r => setTimeout(r, 100));
+		const f = document.getElementById('files-btn'), g = document.getElementById('hs-git');
+		return f.disabled + '|' + f.title + '|' + g.title; })()`).(string)
+	if got != "true||2 unstaged" {
+		t.Fatalf("after the gap: %q, want a still-disabled files control and the git title written during the gap", got)
 	}
 }

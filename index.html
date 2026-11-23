@@ -2027,20 +2027,40 @@ function setBell(on) {
   bellBtn.classList.toggle('on', !!on);
   bellBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
 }
+// Controls a declared gap can disable keep one state holder: the control's
+// own (non-gap) title and disabled state, plus the gap reason holding it.
+// Every writer of such a control's title or disabled goes through
+// setControlState, which always records the value and shows it only when no
+// gap holds the control.  When a gap holds it the DOM shows disabled plus
+// the reason; when the gap lifts the DOM gets exactly the recorded values.
+const controlStates = new Map();
+function controlStateOf(el) {
+  let st = controlStates.get(el);
+  if (!st) {
+    st = {title: el.title, disabled: el.disabled, aria: el.getAttribute('aria-label') || '', gap: ''};
+    controlStates.set(el, st);
+  }
+  return st;
+}
+function paintControl(el) {
+  const st = controlStateOf(el);
+  el.disabled = st.gap ? true : st.disabled;
+  el.title = st.gap || st.title;
+  if (st.aria) el.setAttribute('aria-label', st.gap ? st.aria + ': ' + st.gap : st.aria);
+}
+function setControlState(el, patch) {
+  const st = controlStateOf(el);
+  if ('title' in patch) st.title = patch.title;
+  if ('disabled' in patch) st.disabled = patch.disabled;
+  paintControl(el);
+}
 // A remote chat's bell stays visible but off until fleet step 4; the hub's
-// own bell is off only when the hub declares the push gap.
+// own bell is off only when the hub declares the push gap (applyGapControls).
 function paintBell() {
   bellBtn.classList.toggle('visible', !!currentBufferName);
-  if (isRemoteChat()) {
-    bellBtn.disabled = true;
-    bellBtn.title = PUSH_REMOTE_TITLE;
-    bellBtn.setAttribute('aria-label', 'Phone push');
-    return;
-  }
-  const gap = machineGap('', 'push');
-  bellBtn.disabled = !!gap;
-  bellBtn.title = gap || 'Phone push for this chat';
-  bellBtn.setAttribute('aria-label', gap ? 'Phone push: ' + gap : 'Phone push');
+  if (isRemoteChat()) setControlState(bellBtn, {disabled: true, title: PUSH_REMOTE_TITLE});
+  else setControlState(bellBtn, {disabled: false, title: 'Phone push for this chat'});
+  applyGapControls();
 }
 const headerTitleMain = headerTitle.querySelector('.ht-main');
 const headerTitleOrd = headerTitle.querySelector('.ht-ord');
@@ -2127,8 +2147,7 @@ function renderHeaderSub() {
     const gitTitle = dirty
       ? headerGit.staged + ' staged, ' + headerGit.unstaged + ' changed, ' + headerGit.untracked + ' new'
       : 'Clean tree';
-    // A gap holds the title; the git text becomes what is restored.
-    if (hsGit.dataset.gapOn === '1') hsGit.dataset.gapTitle = gitTitle; else hsGit.title = gitTitle;
+    setControlState(hsGit, {title: gitTitle});
   }
   applyGapControls();
   const tb = document.getElementById('chat-toolbar');
@@ -5481,6 +5500,8 @@ function machineColor(id) {
 // Fleet: a peer machine's session is prefixed with its machine id so it
 // never collides with a same-named hub chat; the hub's own sessions (and
 // any response without machines) keep the bare key they always had.
+// A formatter for the persisted card key, not a comparison: its output
+// format is fixed, so it keeps its own test.
 function sKey(s) {
   const bare = s.bufferName || s.sessionId || ('pid:' + s.pid);
   if (!s.machine || !HUB_MACHINE || s.machine === HUB_MACHINE) return bare;
@@ -5491,11 +5512,12 @@ function sKey(s) {
 // so its requests stay byte-identical to a hub with no peers.  The one
 // holdout is the bell: phone push for a remote chat arrives with step 4.
 const PUSH_REMOTE_TITLE = 'Push for remote chats arrives with fleet step 4';
+// Nothing is remote until HUB_MACHINE is known.
 function isRemoteSession(s) {
-  return !!(s && s.machine && HUB_MACHINE && s.machine !== HUB_MACHINE);
+  return !!(s && s.machine && HUB_MACHINE && !sameMachine(s.machine, ''));
 }
 function isRemoteChat() {
-  return !!(currentSockMachine && HUB_MACHINE && currentSockMachine !== HUB_MACHINE);
+  return !!(currentSockMachine && HUB_MACHINE && !sameMachine(currentSockMachine, ''));
 }
 // The machine a request about the open chat names: '' for the hub.
 function chatMachine() { return isRemoteChat() ? currentSockMachine : ''; }
@@ -5534,34 +5556,21 @@ function machineGap(machine, gap) {
   if (!m || !Array.isArray(m.gaps) || m.gaps.indexOf(gap) < 0 || !GAP_REASONS[gap]) return '';
   return machineName(m.id) + ' ' + GAP_REASONS[gap];
 }
-// Controls a gap disables.  natural() is the control's own disabled state
-// when no gap applies; the base title and aria-label are kept to restore.
+// Controls a gap disables (see setControlState).  A remote chat's bell keeps
+// its own step 4 reason instead of the peer's push gap.
 const GAP_CONTROLS = [
-  {gap: 'diff-review', id: 'tb-git', natural: () => !(headerGit && headerGit.branch)},
-  {gap: 'diff-review', id: 'hs-git', natural: () => false},
-  {gap: 'files', id: 'files-btn', natural: () => false}
+  {gap: 'diff-review', id: 'tb-git'},
+  {gap: 'diff-review', id: 'hs-git'},
+  {gap: 'files', id: 'files-btn'},
+  {gap: 'push', id: 'bell-btn', skip: () => isRemoteChat()}
 ];
 function applyGapControls() {
   const machine = chatMachine();
   for (const c of GAP_CONTROLS) {
     const el = document.getElementById(c.id);
     if (!el) continue;
-    const reason = currentBufferName ? machineGap(machine, c.gap) : '';
-    const on = el.dataset.gapOn === '1';
-    if (reason) {
-      // The original is remembered once and kept while any gap holds the control.
-      if (!on) el.dataset.gapTitle = el.title;
-      if (!on) el.dataset.gapAria = el.getAttribute('aria-label') || '';
-      el.dataset.gapOn = '1';
-      el.disabled = true;
-      el.title = reason;
-      if (el.dataset.gapAria) el.setAttribute('aria-label', el.dataset.gapAria + ': ' + reason);
-    } else if (on) {
-      el.title = el.dataset.gapTitle || '';
-      if (el.dataset.gapAria) el.setAttribute('aria-label', el.dataset.gapAria);
-      delete el.dataset.gapOn; delete el.dataset.gapTitle; delete el.dataset.gapAria;
-      el.disabled = c.natural();
-    }
+    controlStateOf(el).gap = currentBufferName && !(c.skip && c.skip()) ? machineGap(machine, c.gap) : '';
+    paintControl(el);
   }
 }
 function getLastViewed(session) {
@@ -7549,7 +7558,7 @@ function setToolbarOpen(open) {
 }
 function renderToolbar() {
   const git = headerGit && headerGit.branch ? headerGit : null;
-  tbGit.disabled = !git;
+  setControlState(tbGit, {disabled: !git});
   setToolLabel(tbGit, git ? git.branch : 'git');
   tbGit.classList.toggle('dirty', !!git && (git.staged + git.unstaged + git.untracked) > 0);
   setToolLabel(tbModel, headerModel || 'model');
