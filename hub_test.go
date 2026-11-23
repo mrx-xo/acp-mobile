@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -735,6 +736,85 @@ func TestFleetRouteForwardsALimitSizedBodyNamingAMachineInJSON(t *testing.T) {
 		httptest.NewRequest("POST", "/api/label", strings.NewReader(body)))
 	if w.Code != http.StatusOK || ran || rec.hits != 1 || rec.body != body {
 		t.Fatalf("code %d ran %v hits %d peer body %d bytes, want 200 and %d bytes byte-equal", w.Code, ran, rec.hits, len(rec.body), len(body))
+	}
+}
+
+// routeSpy is a local handler that records whether it ran.
+type routeSpy struct {
+	ran  bool
+	body string
+}
+
+func (s *routeSpy) handler(w http.ResponseWriter, r *http.Request) {
+	s.ran = true
+	b, _ := io.ReadAll(r.Body)
+	s.body = string(b)
+}
+
+func assertInvalidBody(t *testing.T, w *httptest.ResponseRecorder, spy *routeSpy, rec *peerRecorder) {
+	t.Helper()
+	if w.Code != http.StatusBadRequest || strings.TrimSpace(w.Body.String()) != `{"error":"invalid request body"}` || spy.ran || rec.hits != 0 {
+		t.Fatalf("code %d body %q local ran %v peer hits %d, want 400, the JSON error, nothing run", w.Code, w.Body.String(), spy.ran, rec.hits)
+	}
+}
+
+func TestFleetRouteRejectsABodyWithTrailingData(t *testing.T) {
+	rec, peer := newPeerRecorder(t, http.StatusOK, `{}`)
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	spy := &routeSpy{}
+	w := httptest.NewRecorder()
+	fleetRoute(spy.handler)(w, httptest.NewRequest("POST", "/api/label",
+		strings.NewReader(`{"machine":"vengeance","bufferName":"shared","label":"x"} {}`)))
+	assertInvalidBody(t, w, spy, rec)
+}
+
+func TestFleetRouteRejectsANonJSONBody(t *testing.T) {
+	rec, peer := newPeerRecorder(t, http.StatusOK, `{}`)
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	for _, body := range []string{`not json`, `{"machine":"vengeance"`, `{"bufferName":"x"}garbage`} {
+		spy := &routeSpy{}
+		w := httptest.NewRecorder()
+		fleetRoute(spy.handler)(w, httptest.NewRequest("POST", "/api/label", strings.NewReader(body)))
+		assertInvalidBody(t, w, spy, rec)
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("connection reset") }
+
+func TestFleetRouteRejectsAnUnreadableBody(t *testing.T) {
+	rec, peer := newPeerRecorder(t, http.StatusOK, `{}`)
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	spy := &routeSpy{}
+	w := httptest.NewRecorder()
+	fleetRoute(spy.handler)(w, httptest.NewRequest("POST", "/api/label", failingReader{}))
+	assertInvalidBody(t, w, spy, rec)
+}
+
+func TestFleetRoutePassesAnEmptyBodyThrough(t *testing.T) {
+	rec, peer := newPeerRecorder(t, http.StatusOK, `{}`)
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	for _, body := range []string{``, "  \n"} {
+		spy := &routeSpy{}
+		w := httptest.NewRecorder()
+		fleetRoute(spy.handler)(w, httptest.NewRequest("POST", "/api/mode-words", strings.NewReader(body)))
+		if !spy.ran || rec.hits != 0 || spy.body != body {
+			t.Fatalf("body %q: local ran %v (saw %q) peer hits %d, want a local run", body, spy.ran, spy.body, rec.hits)
+		}
+	}
+}
+
+func TestFleetRoutePassesANonObjectJSONBodyAsLocal(t *testing.T) {
+	rec, peer := newPeerRecorder(t, http.StatusOK, `{}`)
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	for _, body := range []string{`[{"machine":"vengeance"}]`, `"vengeance"`, `42`, ` {"a":1}  `} {
+		spy := &routeSpy{}
+		w := httptest.NewRecorder()
+		fleetRoute(spy.handler)(w, httptest.NewRequest("POST", "/api/label", strings.NewReader(body)))
+		if !spy.ran || rec.hits != 0 || spy.body != body {
+			t.Fatalf("body %q: local ran %v (saw %q) peer hits %d, want a local run with the body intact", body, spy.ran, spy.body, rec.hits)
+		}
 	}
 }
 

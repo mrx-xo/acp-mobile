@@ -299,10 +299,14 @@ const remoteActionPeekLimit = 1 << 20
 
 // remoteTarget returns the machine r names (query or JSON body field
 // "machine") when it is not this one, else "".  The body is restored for
-// the handler.  tooLarge is true when the machine could only be named in
-// a body longer than remoteActionPeekLimit: the owner is then unknown and
-// the caller must refuse, not run the request locally.
-func remoteTarget(r *http.Request) (target string, tooLarge bool) {
+// the handler.  A non-zero status means the owner could not be determined
+// and the caller must answer it with msg instead of running or forwarding
+// the request: 413 for a body longer than remoteActionPeekLimit (the machine
+// could only be named inside it), 400 for a body that cannot be read or is
+// not exactly one JSON value.  A handler may parse a body more leniently
+// than this does (the first value of two), so an ambiguous body is never
+// handed to one.  With the machine in the query the body is not parsed.
+func remoteTarget(r *http.Request) (target string, status int, msg string) {
 	target = r.URL.Query().Get("machine")
 	if target == "" && r.Body != nil && r.Body != http.NoBody {
 		peek, err := io.ReadAll(io.LimitReader(r.Body, remoteActionPeekLimit+1))
@@ -310,28 +314,41 @@ func remoteTarget(r *http.Request) (target string, tooLarge bool) {
 			io.Reader
 			io.Closer
 		}{io.MultiReader(bytes.NewReader(peek), r.Body), r.Body}
-		if err == nil && len(peek) > remoteActionPeekLimit {
-			return "", true
+		if err != nil {
+			return "", http.StatusBadRequest, "invalid request body"
 		}
-		if err == nil {
-			var body struct {
-				Machine string `json:"machine"`
+		if len(peek) > remoteActionPeekLimit {
+			return "", http.StatusRequestEntityTooLarge, "request body too large"
+		}
+		if trimmed := bytes.TrimSpace(peek); len(trimmed) > 0 {
+			dec := json.NewDecoder(bytes.NewReader(trimmed))
+			var value json.RawMessage
+			if dec.Decode(&value) != nil {
+				return "", http.StatusBadRequest, "invalid request body"
 			}
-			if json.Unmarshal(peek, &body) == nil {
-				target = body.Machine
+			if _, err := dec.Token(); err != io.EOF {
+				return "", http.StatusBadRequest, "invalid request body"
+			}
+			if trimmed[0] == '{' {
+				var body struct {
+					Machine string `json:"machine"`
+				}
+				if json.Unmarshal(value, &body) == nil {
+					target = body.Machine
+				}
 			}
 		}
 	}
 	if target == "" {
-		return "", false
+		return "", 0, ""
 	}
 	fleet.mu.RLock()
 	self := fleet.self
 	fleet.mu.RUnlock()
 	if target == self {
-		return "", false
+		return "", 0, ""
 	}
-	return target, false
+	return target, 0, ""
 }
 
 // forwardTimeout is how long the hub waits for a peer to answer a
@@ -361,11 +378,11 @@ var peerActionHTTP = &http.Client{}
 // action between each other.
 func fleetRoute(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		target, tooLarge := remoteTarget(r)
-		if tooLarge {
+		target, status, msg := remoteTarget(r)
+		if status != 0 {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
-			json.NewEncoder(w).Encode(map[string]string{"error": "request body too large"})
+			w.WriteHeader(status)
+			json.NewEncoder(w).Encode(map[string]string{"error": msg})
 			return
 		}
 		if target == "" {
