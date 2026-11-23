@@ -177,7 +177,8 @@ func gapsOf(m machine) []string {
 
 // fanOutJSON POSTs body (may be nil) to path on every peer in parallel with
 // the peer header, each call bounded by budget.  skip, when non-nil, leaves
-// a machine out.  The result maps machine id to the raw reply body; a peer
+// a machine out.  It does not refresh a peer's tailnet IP; the sessions poll
+// owns that.  The result maps machine id to the raw reply body; a peer
 // that errors, times out or answers non-200 is absent.
 func fanOutJSON(ctx context.Context, path string, body []byte, budget time.Duration, skip func(machine) bool) map[string][]byte {
 	fleet.mu.RLock()

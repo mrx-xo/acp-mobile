@@ -136,3 +136,49 @@ func TestProjectsServeLocalOnlyToPeers(t *testing.T) {
 		t.Error("a peer's request fanned out")
 	}
 }
+
+func TestMergedProjectsSurviveALocalFailure(t *testing.T) {
+	installFakeEmacsclient(t, "nil")
+	previous := projectLiveCwds
+	projectLiveCwds = func() []string { return nil }
+	t.Cleanup(func() { projectLiveCwds = previous })
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"projects":[{"name":"dotfiles","path":"C:/d/dotfiles"}]}`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	rec := postJSON(t, handleProjects, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Projects []project `json:"projects"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Projects) != 1 || body.Projects[0].Machine != "vengeance" || body.Projects[0].Path != "C:/d/dotfiles" {
+		t.Fatalf("projects = %+v", body.Projects)
+	}
+}
+
+func TestMergedProjectsErrorWhenNoMachineHasAny(t *testing.T) {
+	for name, handler := range map[string]http.HandlerFunc{
+		"empty list": func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"projects":[]}`)) },
+		"500":        func(w http.ResponseWriter, r *http.Request) { http.Error(w, "boom", http.StatusInternalServerError) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			installFakeEmacsclient(t, "nil")
+			previous := projectLiveCwds
+			projectLiveCwds = func() []string { return nil }
+			t.Cleanup(func() { projectLiveCwds = previous })
+			peer := httptest.NewServer(handler)
+			defer peer.Close()
+			withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+			rec := postJSON(t, handleProjects, `{}`)
+			if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "no projects on the rig") {
+				t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}

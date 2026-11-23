@@ -76,11 +76,13 @@ const projectsFanOutBudget = 3 * time.Second
 
 // mergedProjects is this machine's projects followed by every awake peer's,
 // in registry order, each tagged with its machine.  A peer that fails is
-// left out.  A project on two machines appears twice.
+// left out.  The hub's own failure is an error only when no machine has any
+// project.  A project on two machines appears twice.
 func mergedProjects(r *http.Request) ([]project, error) {
-	local, err := localProjects(r)
-	if err != nil {
-		return nil, err
+	local, localErr := localProjects(r)
+	if localErr != nil {
+		// The hub's own list failing must not hide the other machines.
+		log.Printf("projects: %v; using other machines", localErr)
 	}
 	fleet.mu.RLock()
 	self := fleet.self
@@ -99,6 +101,9 @@ func mergedProjects(r *http.Request) ([]project, error) {
 			p.Machine = m.ID
 			out = append(out, p)
 		}
+	}
+	if localErr != nil && len(out) == 0 {
+		return nil, localErr
 	}
 	return out, nil
 }
