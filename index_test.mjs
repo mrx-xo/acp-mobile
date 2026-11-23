@@ -6,7 +6,7 @@ import vm from 'node:vm';
 // Fleet helpers the sliced page sections call.  A hub-only page: no machine.
 const FLEET_STUBS = {
   HUB_MACHINE: '', MACHINES: [], Map,
-  chatMachine: () => '', sessionMachine: () => '', machineGap: () => '',
+  sameMachine: (a, b) => (a || '') === (b || ''), chatMachine: () => '', sessionMachine: () => '', machineGap: () => '',
   withMachine: (url, machine) => machine ? url + (url.includes('?') ? '&' : '?') + 'machine=' + encodeURIComponent(machine) : url,
   machineBody: (obj, machine) => machine ? {...obj, machine} : obj,
 };

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // A remote session keeps every chat action: the card keeps its delete
@@ -178,6 +179,10 @@ type fleetFixture struct {
 	reqs     []fleetRequest
 	pinReply map[string]string
 	pinFail  map[string]bool
+	sessions string            // overrides the default session list
+	spawn    string            // overrides the /api/spawn reply
+	status   int               // overrides the /api/spawn status
+	catalog  map[string]string // /api/catalogue reply by machine query
 }
 
 func newFleetFixture(t *testing.T, machinesJSON string) *fleetFixture {
@@ -194,6 +199,13 @@ func newFleetFixture(t *testing.T, machinesJSON string) *fleetFixture {
 	})
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		f.mu.Lock()
+		custom := f.sessions
+		f.mu.Unlock()
+		if custom != "" {
+			_, _ = fmt.Fprint(w, `{"sessions":[`+custom+`],"machine":"mrx","machines":`+machinesJSON+`}`)
+			return
+		}
 		_, _ = fmt.Fprint(w, `{"sessions":[`+
 			`{"pid":1,"machine":"mrx","sessionId":"sess-hub","bufferName":"Claude Agent @ shared"},`+
 			`{"pid":40388,"machine":"vengeance","sessionId":"sess-remote","bufferName":"Claude Agent @ shared"}],`+
@@ -222,7 +234,28 @@ func newFleetFixture(t *testing.T, machinesJSON string) *fleetFixture {
 		"/api/push":        `{"ok":true,"push":true}`,
 	}
 	for p, reply := range replies {
-		mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) { record(w, r, reply) })
+		mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			spawn, status, cat := f.spawn, f.status, f.catalog[r.URL.Query().Get("machine")]
+			f.mu.Unlock()
+			if p == "/api/spawn" && spawn != "" {
+				reply = spawn
+				if status != 0 {
+					b, _ := io.ReadAll(r.Body)
+					f.mu.Lock()
+					f.reqs = append(f.reqs, fleetRequest{r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
+					f.mu.Unlock()
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(status)
+					_, _ = fmt.Fprint(w, reply)
+					return
+				}
+			}
+			if p == "/api/catalogue" && r.Method == http.MethodGet && cat != "" {
+				reply = cat
+			}
+			record(w, r, reply)
+		})
 	}
 	mux.HandleFunc("/api/pin", func(w http.ResponseWriter, r *http.Request) {
 		m := r.URL.Query().Get("machine")
@@ -429,4 +462,113 @@ func TestFleetPinsAreFetchedPerMachine(t *testing.T) {
 	f.mu.Unlock()
 	page.eval(t, `loadOrreryPins()`)
 	page.waitFor(t, `document.querySelectorAll('.sc-pin').length === 2`)
+}
+
+const fleetSharedSessions = `{"pid":1,"machine":"mrx","sessionId":"sess-same","bufferName":"Claude Agent @ shared","label":"hub label"},` +
+	`{"pid":40388,"machine":"vengeance","sessionId":"sess-same","bufferName":"Claude Agent @ shared","label":"remote label"}`
+
+// The header shows the label of the chat that is open, not of a
+// same-named chat on another machine.
+func TestFleetHeaderShowsTheRemoteChatsOwnLabel(t *testing.T) {
+	f := newFleetFixture(t, fleetTwoMachines)
+	f.sessions = fleetSharedSessions
+	page := openChromePage(t, f.srv.URL)
+	page.waitFor(t, `document.querySelectorAll('.session-card').length === 2`)
+	page.eval(t, `selectSession(lastSessions.find(s => s.machine === 'vengeance')); updateChatHeader(); 0`)
+	if got, _ := page.eval(t, `document.querySelector('#header-title .ht-main').textContent`).(string); got != "remote label" {
+		t.Fatalf("remote chat header = %q, want %q", got, "remote label")
+	}
+	page.eval(t, `selectSession(lastSessions.find(s => s.machine === 'mrx')); updateChatHeader(); 0`)
+	if got, _ := page.eval(t, `document.querySelector('#header-title .ht-main').textContent`).(string); got != "hub label" {
+		t.Fatalf("hub chat header = %q, want %q", got, "hub label")
+	}
+}
+
+// A hub clone is found on the hub, even when a remote chat already has the
+// name the clone came back with.
+func TestFleetCloneOpensTheHubCloneNotASameNamedRemoteChat(t *testing.T) {
+	f := newFleetFixture(t, fleetTwoMachines)
+	f.spawn = `{"ok":true,"bufferName":"Claude Agent @ shared<2>"}`
+	f.sessions = `{"pid":1,"machine":"mrx","bufferName":"Claude Agent @ shared"},` +
+		`{"pid":40388,"machine":"vengeance","bufferName":"Claude Agent @ shared"},` +
+		`{"pid":40389,"machine":"vengeance","bufferName":"Claude Agent @ shared<2>"}`
+	page := openChromePage(t, f.srv.URL)
+	page.waitFor(t, `document.querySelectorAll('.session-card').length === 3`)
+	page.eval(t, `SPAWN_POLL_MS = 5; window.alert = () => {};
+		selectSession(lastSessions.find(s => s.machine === 'mrx')); cloneSession(); 0`)
+	time.Sleep(400 * time.Millisecond)
+	got, _ := page.eval(t, `currentSockMachine + '|' + currentBufferName`).(string)
+	if got != "mrx|Claude Agent @ shared" {
+		t.Fatalf("after a hub clone the open chat is %q, want to stay on the hub chat (the clone is not listed yet)", got)
+	}
+}
+
+// A clone that was created but reported an error is looked for on the
+// machine the clone was asked of.
+func TestFleetCloneRecoveryKeepsItsMachine(t *testing.T) {
+	f := newFleetFixture(t, fleetTwoMachines)
+	f.spawn = `{"error":"settings failed","bufferName":"Claude Agent @ shared<2>"}`
+	f.status = http.StatusBadGateway
+	f.sessions = `{"pid":1,"machine":"mrx","bufferName":"Claude Agent @ shared"},` +
+		`{"pid":40388,"machine":"vengeance","bufferName":"Claude Agent @ shared"},` +
+		`{"pid":2,"machine":"mrx","bufferName":"Claude Agent @ shared<2>"},` +
+		`{"pid":40389,"machine":"vengeance","bufferName":"Claude Agent @ shared<2>"}`
+	page := openChromePage(t, f.srv.URL)
+	page.waitFor(t, `document.querySelectorAll('.session-card').length === 4`)
+	page.eval(t, `SPAWN_POLL_MS = 5; window.alert = () => {};
+		selectSession(lastSessions.find(s => s.machine === 'vengeance' && s.pid === 40388)); cloneSession(); 0`)
+	time.Sleep(500 * time.Millisecond)
+	got, _ := page.eval(t, `currentSockMachine + '|' + currentBufferName + '|' + cloneRecoveryMachine`).(string)
+	if got != "vengeance|Claude Agent @ shared<2>|vengeance" {
+		t.Fatalf("recovery opened %q, want the vengeance clone with its machine kept", got)
+	}
+}
+
+// A gap reason never becomes a control's original title when the open chat
+// moves between two machines that both declare it.
+func TestFleetGapTitleDoesNotLeakBetweenMachines(t *testing.T) {
+	f := newFleetFixture(t, `[{"id":"mrx","name":"POLLUX","state":"awake","gaps":[]},`+
+		`{"id":"vengeance","name":"NEMESIS","state":"awake","gaps":["files"]},`+
+		`{"id":"mrx2","name":"CASTOR","state":"awake","gaps":["files"]}]`)
+	f.sessions = `{"pid":1,"machine":"mrx","bufferName":"Claude Agent @ a"},` +
+		`{"pid":2,"machine":"vengeance","bufferName":"Claude Agent @ b"},` +
+		`{"pid":3,"machine":"mrx2","bufferName":"Claude Agent @ c"}`
+	page := openChromePage(t, f.srv.URL)
+	page.waitFor(t, `document.querySelectorAll('.session-card').length === 3`)
+	page.eval(t, `document.getElementById('files-btn').title = 'Browse files'; 0`)
+	read := `(async () => { await new Promise(r => setTimeout(r, 100));
+		const b = document.getElementById('files-btn'); return b.disabled + '|' + b.title; })()`
+	for _, step := range []struct{ machine, want string }{
+		{"vengeance", "true|NEMESIS cannot browse files"},
+		{"mrx2", "true|CASTOR cannot browse files"},
+		{"mrx", "false|Browse files"},
+	} {
+		page.eval(t, `selectSession(lastSessions.find(s => s.machine === '`+step.machine+`')); 0`)
+		if got, _ := page.eval(t, read).(string); got != step.want {
+			t.Fatalf("on %s the files control = %q, want %q", step.machine, got, step.want)
+		}
+	}
+}
+
+// The same session id on two machines keeps two catalogue records.
+func TestFleetCatalogueStateIsPerMachine(t *testing.T) {
+	f := newFleetFixture(t, fleetTwoMachines)
+	f.sessions = fleetSharedSessions
+	f.catalog = map[string]string{
+		"":          `{"sessionId":"sess-same","catalogued":"yes","note":"hub note","tags":["h"],"allTags":[]}`,
+		"vengeance": `{"sessionId":"sess-same","catalogued":"yes","note":"remote note","tags":["r"],"allTags":[]}`,
+	}
+	page := openChromePage(t, f.srv.URL)
+	page.waitFor(t, `document.querySelectorAll('.session-card').length === 2`)
+	got, _ := page.eval(t, `(async () => {
+		await fetchCatalogueState('sess-same', '');
+		await fetchCatalogueState('sess-same', 'vengeance');
+		await saveCatalogue('sess-same', 'remote edit', ['r'], 'vengeance');
+		const hub = catalogueStates.get(catalogueKey('', 'sess-same'));
+		const remote = catalogueStates.get(catalogueKey('vengeance', 'sess-same'));
+		return hub.note + '|' + remote.note + '|' + catalogueStates.size;
+	})()`).(string)
+	if got != "hub note|remote note|2" {
+		t.Fatalf("catalogue states = %q, want hub and remote kept apart", got)
+	}
 }

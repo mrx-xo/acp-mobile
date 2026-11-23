@@ -2090,7 +2090,7 @@ function parseBufferName(name) {
 }
 
 function updateChatHeader() {
-  const s = lastSessions.find(x => x.bufferName === currentBufferName) || {};
+  const s = currentSession() || {};
   const label = (s.label || '').trim();
   const parsed = parseBufferName(currentBufferName);
   const project = s.project || parsed.project;
@@ -2124,9 +2124,11 @@ function renderHeaderSub() {
     hsBranch.textContent = headerGit.branch;
     const dirty = (headerGit.staged || 0) + (headerGit.unstaged || 0) + (headerGit.untracked || 0) > 0;
     hsGit.classList.toggle('dirty', dirty);
-    hsGit.title = dirty
+    const gitTitle = dirty
       ? headerGit.staged + ' staged, ' + headerGit.unstaged + ' changed, ' + headerGit.untracked + ' new'
       : 'Clean tree';
+    // A gap holds the title; the git text becomes what is restored.
+    if (hsGit.dataset.gapOn === '1') hsGit.dataset.gapTitle = gitTitle; else hsGit.title = gitTitle;
   }
   applyGapControls();
   const tb = document.getElementById('chat-toolbar');
@@ -5497,6 +5499,12 @@ function isRemoteChat() {
 }
 // The machine a request about the open chat names: '' for the hub.
 function chatMachine() { return isRemoteChat() ? currentSockMachine : ''; }
+// Two machine ids name the same machine; '', null, undefined and the hub's
+// own id are all the hub.  Every comparison of machines goes through this.
+function sameMachine(a, b) {
+  const norm = x => (!x || x === HUB_MACHINE) ? '' : x;
+  return norm(a) === norm(b);
+}
 // The machine a request about a listed session names: '' for the hub.
 function sessionMachine(s) { return isRemoteSession(s) ? s.machine : ''; }
 function withMachine(url, machine) {
@@ -5507,7 +5515,7 @@ function machineBody(obj, machine) {
 }
 // The open chat's own entry in the list: buffer names repeat across machines.
 function currentSession() {
-  return lastSessions.find(s => s.bufferName === currentBufferName && sessionMachine(s) === chatMachine());
+  return lastSessions.find(s => s.bufferName === currentBufferName && sameMachine(s.machine, chatMachine()));
 }
 // Declared gaps: what a machine cannot do, as the phrase after its name.
 const GAP_REASONS = {
@@ -5541,8 +5549,8 @@ function applyGapControls() {
     const reason = currentBufferName ? machineGap(machine, c.gap) : '';
     const on = el.dataset.gapOn === '1';
     if (reason) {
-      // Another renderer may have rewritten the title since: that is the new base.
-      if (!on || el.title !== reason) el.dataset.gapTitle = el.title;
+      // The original is remembered once and kept while any gap holds the control.
+      if (!on) el.dataset.gapTitle = el.title;
       if (!on) el.dataset.gapAria = el.getAttribute('aria-label') || '';
       el.dataset.gapOn = '1';
       el.disabled = true;
@@ -5727,7 +5735,7 @@ const orreryPinNames = new Map(); // machine id ('' for the hub) -> buffer names
 // the toggle is stale by the time it lands and must not undo it.
 let orreryPinsGeneration = 0;
 function pinKey(machine, name) {
-  return machine && machine !== HUB_MACHINE ? machine + '/' + name : name;
+  return sameMachine(machine, '') ? name : machine + '/' + name;
 }
 // Asked with a card key: sKey(session) or pinKey(machine, name).
 function isChatPinned(key) { return !!key && orreryPins.has(key); }
@@ -5735,7 +5743,7 @@ function isChatPinned(key) { return !!key && orreryPins.has(key); }
 function sessionPinKey(s) { return s && s.bufferName ? pinKey(s.machine, s.bufferName) : ''; }
 function acceptOrreryPins(pins, generation = orreryPinsGeneration, machine = '') {
   if (generation !== orreryPinsGeneration) return;
-  orreryPinNames.set(machine === HUB_MACHINE ? '' : machine, Array.isArray(pins) ? pins : []);
+  orreryPinNames.set(sameMachine(machine, '') ? '' : machine, Array.isArray(pins) ? pins : []);
   const next = new Set();
   for (const [m, names] of orreryPinNames) for (const n of names) next.add(pinKey(m, n));
   const same = next.size === orreryPins.size && [...next].every(n => orreryPins.has(n));
@@ -6406,7 +6414,7 @@ spSheet.addEventListener('keydown',e=>{
 });
 let SPAWN_POLL_MS = 1000;
 async function waitForSpawn(bufferName, prevKeys=new Set(), machine='') {
-  for(let i=0;i<15;i++) { await new Promise(r=>setTimeout(r,SPAWN_POLL_MS));await loadSessions(true);const fresh=lastSessions.find(x=>bufferName ? x.bufferName===bufferName && (!machine || x.machine===machine) : !prevKeys.has(sKey(x)));if(fresh){selectSession(fresh);return true;} }
+  for(let i=0;i<15;i++) { await new Promise(r=>setTimeout(r,SPAWN_POLL_MS));await loadSessions(true);const fresh=lastSessions.find(x=>bufferName ? x.bufferName===bufferName && sameMachine(x.machine,machine) : !prevKeys.has(sKey(x)));if(fresh){selectSession(fresh);return true;} }
   return false;
 }
 async function spawnAndOpen(body) {
@@ -6464,17 +6472,20 @@ async function cloneSession() {
   }
   const btn = document.getElementById('tb-clone');
   if (btn.disabled) return;
+  // The machine this clone belongs to, fixed before anything can fail.
+  const cloneMachine = cloneRecoveryBuffer ? cloneRecoveryMachine : chatMachine();
   btn.disabled = true; setToolLabel(btn, 'Cloning\u2026');
   try {
     const opened = cloneRecoveryBuffer
-      ? await waitForSpawn(cloneRecoveryBuffer, new Set(), cloneRecoveryMachine)
-      : await spawnAndOpen(machineBody({ cloneOf: currentBufferName }, chatMachine()));
+      ? await waitForSpawn(cloneRecoveryBuffer, new Set(), cloneMachine)
+      : await spawnAndOpen(machineBody({ cloneOf: currentBufferName }, cloneMachine));
     if (opened) cloneRecoveryBuffer = '';
     else alert('Clone created; still waiting for it to appear. Use Open clone to check again without creating another.');
   } catch (err) {
     if (err.bufferName) {
       cloneRecoveryBuffer = err.bufferName;
-      if (await waitForSpawn(cloneRecoveryBuffer, new Set(), cloneRecoveryMachine).catch(() => false)) cloneRecoveryBuffer = '';
+      cloneRecoveryMachine = cloneMachine;
+      if (await waitForSpawn(cloneRecoveryBuffer, new Set(), cloneMachine).catch(() => false)) cloneRecoveryBuffer = '';
       alert('Clone created, but settings failed: ' + err.message);
     } else alert('Clone failed: ' + err.message);
   } finally {
@@ -6517,7 +6528,7 @@ async function forkSession() {
       await new Promise(r => setTimeout(r, SPAWN_POLL_MS));
       await loadSessions(true);
       const fork = lastSessions.find(x => x.bufferName === data.bufferName
-        && (machine ? x.machine === machine : !isRemoteSession(x)));
+        && sameMachine(x.machine, machine));
       if (fork) {
         selectSession(fork);
         opened = true;
@@ -6547,7 +6558,7 @@ async function refreshForkEntry(btn) {
   if (forkPending.has(key)) { btn.disabled = true; setToolLabel(btn, 'Forking\u2026'); return; }
   if (forkSupport.get(key)) { btn.disabled = false; setToolLabel(btn, 'Fork'); return; }
   btn.disabled = true; setToolLabel(btn, 'Fork');
-  const current = () => name === currentBufferName && machine === (isRemoteChat() ? currentSockMachine : '');
+  const current = () => name === currentBufferName && sameMachine(machine, chatMachine());
   try {
     const resp = await fetch(basePath + '/api/fork?bufferName=' + encodeURIComponent(name)
       + (machine ? '&machine=' + encodeURIComponent(machine) : ''));
@@ -7267,7 +7278,7 @@ headerTitle.addEventListener('click', async () => {
     });
     const data = await resp.json();
     if (data.error) { alert('Label failed: ' + data.error); return; }
-    const entry = lastSessions.find(s => s.bufferName === currentBufferName && sessionMachine(s) === machine);
+    const entry = lastSessions.find(s => s.bufferName === currentBufferName && sameMachine(s.machine, machine));
     if (entry) entry.label = label.trim();
     updateChatHeader();
   } catch (err) { alert('Label failed: ' + err.message); }
@@ -7568,7 +7579,7 @@ document.getElementById('tb-fork').addEventListener('click', () => { forkSession
 tbCatalogue.addEventListener('click', async () => {
   const id = currentSessionIdForCatalogue();
   if (!id) { alert('This chat has no session id yet.'); return; }
-  const state = catalogueStates.get(id);
+  const state = catalogueStates.get(catalogueKey(chatMachine(), id));
   if (state && state.catalogued) {
     catalogueMenuScrim.classList.add('visible');
     catalogueMenu.classList.add('visible');
@@ -7576,7 +7587,7 @@ tbCatalogue.addEventListener('click', async () => {
   }
   const chat = currentBufferName;
   const machine = chatMachine();
-  const stillHere = () => currentBufferName === chat && chatMachine() === machine && chatViewEl.classList.contains('visible');
+  const stillHere = () => currentBufferName === chat && sameMachine(chatMachine(), machine) && chatViewEl.classList.contains('visible');
   try {
     const next = await catalogueFlow(id, stillHere, machine);
     if (next && stillHere()) paintCatalogueEntry(next);
@@ -7613,7 +7624,7 @@ async function refreshCatalogueEntry() {
   const machine = chatMachine();
   tbCatalogue.disabled = !sessionIdNow;
   if (!sessionIdNow) { setToolLabel(tbCatalogue, 'Catalogue'); return; }
-  paintCatalogueEntry(catalogueStates.get(sessionIdNow));
+  paintCatalogueEntry(catalogueStates.get(catalogueKey(machine, sessionIdNow)));
   try {
     const state = await fetchCatalogueState(sessionIdNow, machine);
     if (serial !== toolbarCatalogueSerial) return;
@@ -7635,7 +7646,7 @@ document.getElementById('catalogue-edit').addEventListener('click', async () => 
   if (!id) return;
   const chat = currentBufferName;
   const machine = chatMachine();
-  const stillHere = () => currentBufferName === chat && chatMachine() === machine && chatViewEl.classList.contains('visible');
+  const stillHere = () => currentBufferName === chat && sameMachine(chatMachine(), machine) && chatViewEl.classList.contains('visible');
   try {
     const next = await catalogueFlow(id, stillHere, machine);
     if (next && stillHere()) paintCatalogueEntry(next);
@@ -7964,9 +7975,15 @@ const catalogueStates = new Map();
 // Per-session generation: a write bumps it, so a read that was in flight
 // before the write cannot land afterwards and overwrite the saved state.
 const catalogueGenerations = new Map();
-function catalogueGeneration(id) { return catalogueGenerations.get(id) || 0; }
-function rememberCatalogueState(state) {
-  if (state && state.sessionId) catalogueStates.set(state.sessionId, state);
+// Cache and generations are keyed like sKey: the hub keeps the bare session
+// id, another machine is "<machine>/<sessionId>", so equal ids never collide.
+function catalogueKey(machine, id) { return sameMachine(machine, '') ? id : machine + '/' + id; }
+function catalogueGeneration(key) { return catalogueGenerations.get(key) || 0; }
+function rememberCatalogueState(state, machine = '') {
+  if (state && state.sessionId) catalogueStates.set(catalogueKey(machine, state.sessionId), state);
+  // History gains machine identity in the History task; until then another
+  // machine's result must not patch its rows.
+  if (!sameMachine(machine, '')) return state;
   if (historyRootState.filter && historyRootState.filter.narrowed) historyRootState.stale = true;
   // History rows and the open transcript carry their own copy.
   const patch = t => {
@@ -7981,9 +7998,10 @@ function rememberCatalogueState(state) {
 }
 async function catalogueRequest(method, payload, query = '', machine = '') {
   const id = method === 'GET' ? decodeURIComponent(query.replace(/^\?sessionId=/, '')) : payload.sessionId;
+  const key = catalogueKey(machine, id);
   const generation = method === 'GET'
-    ? catalogueGeneration(id)
-    : (catalogueGenerations.set(id, catalogueGeneration(id) + 1), catalogueGeneration(id));
+    ? catalogueGeneration(key)
+    : (catalogueGenerations.set(key, catalogueGeneration(key) + 1), catalogueGeneration(key));
   const resp = await fetch(withMachine(basePath + '/api/catalogue' + query, method === 'GET' ? machine : ''), method === 'GET'
     ? { cache: 'no-store' }
     : { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(machineBody(payload, machine)) });
@@ -7991,8 +8009,8 @@ async function catalogueRequest(method, payload, query = '', machine = '') {
   let data = {};
   try { data = JSON.parse(text); } catch (_) { /* handled below */ }
   if (!resp.ok || data.error) throw new Error(data.error || text.trim() || ('HTTP ' + resp.status));
-  if (generation !== catalogueGeneration(id)) return data;
-  return rememberCatalogueState(data);
+  if (generation !== catalogueGeneration(key)) return data;
+  return rememberCatalogueState(data, machine);
 }
 // MACHINE is the owner of the chat the id belongs to ('' for the hub); the
 // History screen's own callers pass none.
@@ -8021,7 +8039,7 @@ function splitTags(text) {
 // started on a chat the user has since left neither prompts nor writes.
 // Resolves to the new state, or null when cancelled or no longer current.
 async function catalogueFlow(id, stillCurrent = () => true, machine = '') {
-  let state = catalogueStates.get(id) || null;
+  let state = catalogueStates.get(catalogueKey(machine, id)) || null;
   try { state = await fetchCatalogueState(id, machine); }
   catch (err) { if (!stillCurrent()) return null; if (!state) throw err; }
   if (!stillCurrent()) return null;
