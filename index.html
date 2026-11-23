@@ -6524,8 +6524,17 @@ let SPAWN_POLL_MS = 1000;
 function findSpawnedSession(bufferName, prevKeys, machine='') {
   return lastSessions.find(x=>bufferName ? x.bufferName===bufferName && sameMachine(x.machine,machine) : !prevKeys.has(sKey(x)));
 }
+// The one place a new chat is opened: when it is in the session list, run
+// beforeSelect (if any), select it and return it; otherwise do nothing and return null.
+function openSpawnedSession(bufferName, prevKeys, machine='', beforeSelect=null) {
+  const fresh=findSpawnedSession(bufferName,prevKeys,machine);
+  if(!fresh)return null;
+  if(beforeSelect)beforeSelect();
+  selectSession(fresh);
+  return fresh;
+}
 async function waitForSpawn(bufferName, prevKeys=new Set(), machine='') {
-  for(let i=0;i<15;i++) { await new Promise(r=>setTimeout(r,SPAWN_POLL_MS));await loadSessions(true);const fresh=findSpawnedSession(bufferName,prevKeys,machine);if(fresh){selectSession(fresh);return true;} }
+  for(let i=0;i<15;i++) { await new Promise(r=>setTimeout(r,SPAWN_POLL_MS));await loadSessions(true);if(openSpawnedSession(bufferName,prevKeys,machine))return true; }
   return false;
 }
 async function spawnAndOpen(body) {
@@ -8628,22 +8637,18 @@ async function resumeTranscript(t) {
     // needs a moment for acp-multiplex to publish its socket.  Buffer name is
     // the stable identity across provider-specific session-ID forks.
     // The same buffer name can exist on several machines: the entry's own wins.
-    // One matching rule (findSpawnedSession, shared with waitForSpawn); the
-    // loop stays here because it must not select once the user has left.
-    const findTarget = () => findSpawnedSession(data.bufferName, null, machine);
-    let target = findTarget();
-    for (let i = 0; !target && i < 20; i++) {
+    // Finding and opening the chat is openSpawnedSession (shared with
+    // waitForSpawn); the loop stays here because it must not open anything
+    // once the user has left, and History closes only when the chat is there.
+    let opened = current() ? openSpawnedSession(data.bufferName, null, machine, closeHistory) : null;
+    for (let i = 0; !opened && i < 20; i++) {
       await new Promise(resolve => setTimeout(resolve, 750));
       if (!current()) return;
       await loadSessions(true);
       if (!current()) return;
-      target = findTarget();
+      opened = openSpawnedSession(data.bufferName, null, machine, closeHistory);
     }
-    if (target && current()) {
-      closeHistory();
-      selectSession(target);
-      return;
-    }
+    if (opened) return;
     throw new Error('The restored session did not appear in Syzygy.');
   } catch (err) {
     if (current()) alert('Resume failed: ' + err.message);

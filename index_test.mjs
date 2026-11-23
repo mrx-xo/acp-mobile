@@ -1708,3 +1708,24 @@ test('isRemoteSession and isRemoteChat agree with sameMachine', () => {
   assert.equal(context.isRemoteSession(null), false);
   assert.equal(context.isRemoteSession(undefined), false);
 });
+
+test('openSpawnedSession opens only a chat on the named machine', () => {
+  const hub = {pid: 1, machine: 'mrx', bufferName: 'Claude Agent @ skate'};
+  const peer = {pid: 2, machine: 'vengeance', bufferName: 'Claude Agent @ skate'};
+  const selected = [];
+  let before = 0;
+  const {context} = loadHistoryClient({
+    HUB_MACHINE: 'mrx',
+    sameMachine: (a, b) => ((!a || a === 'mrx') ? '' : a) === ((!b || b === 'mrx') ? '' : b),
+    lastSessions: [hub, peer],
+    selectSession: session => selected.push(session),
+  });
+  const got = context.openSpawnedSession('Claude Agent @ skate', null, 'vengeance', () => { before += 1; });
+  assert.equal(got, peer);
+  assert.deepEqual(selected, [peer]);
+  assert.equal(before, 1);
+  const none = context.openSpawnedSession('Claude Agent @ absent', null, 'vengeance', () => { before += 1; });
+  assert.equal(none, null);
+  assert.deepEqual(selected, [peer]);
+  assert.equal(before, 1);
+});
