@@ -199,25 +199,12 @@ func fanOutJSON(ctx context.Context, path string, body []byte, budget time.Durat
 			if body != nil {
 				rd = bytes.NewReader(body)
 			}
-			req, err := http.NewRequestWithContext(cctx, http.MethodPost, "http://"+peerHostPort(m)+path, rd)
+			b, err := fanOutOne(cctx, m, path, rd, body != nil)
 			if err != nil {
+				log.Printf("fleet: %s on %s: %v", path, m.ID, err)
 				return
 			}
-			req.Header.Set(peerHeader, "1")
-			if body != nil {
-				req.Header.Set("Content-Type", "application/json")
-			}
-			resp, err := (&http.Client{}).Do(req)
-			if err != nil {
-				return
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				return
-			}
-			if b, err := io.ReadAll(resp.Body); err == nil {
-				replies[i] = b
-			}
+			replies[i] = b
 		}()
 	}
 	wg.Wait()
@@ -228,6 +215,27 @@ func fanOutJSON(ctx context.Context, path string, body []byte, budget time.Durat
 		}
 	}
 	return out
+}
+
+// fanOutOne is one peer's call for fanOutJSON.
+func fanOutOne(ctx context.Context, m machine, path string, body io.Reader, hasBody bool) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+peerHostPort(m)+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(peerHeader, "1")
+	if hasBody {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // mergedSessions returns this machine's sessions followed by every peer's,

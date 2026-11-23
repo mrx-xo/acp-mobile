@@ -94,7 +94,12 @@ func mergedProjects(r *http.Request) ([]project, error) {
 		var body struct {
 			Projects []project `json:"projects"`
 		}
-		if json.Unmarshal(replies[m.ID], &body) != nil {
+		raw, answered := replies[m.ID]
+		if !answered {
+			continue // fanOutJSON logged why
+		}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			log.Printf("fleet: /api/projects on %s: %v", m.ID, err)
 			continue
 		}
 		for _, p := range body.Projects {
@@ -140,7 +145,11 @@ func handleProjects(w http.ResponseWriter, r *http.Request) {
 	fleet.mu.RUnlock()
 	var projects []project
 	var err error
-	if isPeerRequest(r) || !hasPeers {
+	// The merged list is opt-in: a page that predates it sends no fleet flag
+	// and must not be handed another machine's projects.  Naming a machine
+	// (fleetRoute) always wins.
+	wantFleet := r.URL.Query().Get("fleet") == "1" && r.URL.Query().Get("machine") == ""
+	if isPeerRequest(r) || !hasPeers || !wantFleet {
 		projects, err = localProjects(r)
 	} else {
 		projects, err = mergedProjects(r)

@@ -870,6 +870,7 @@ func TestFanOutJSONCollectsEveryAnsweringPeer(t *testing.T) {
 }
 
 func TestFanOutJSONOmitsFailingAndSlowPeers(t *testing.T) {
+	captureLog(t)
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{}`) }))
 	defer ok.Close()
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -362,7 +362,7 @@ func main() {
 	mux.HandleFunc("/api/mode-words", fleetRoute(handleModeWords))
 	mux.HandleFunc("/api/launch-options", fleetRoute(handleLaunchOptions))
 	registerModelHandlers(mux)
-	mux.HandleFunc("/api/projects", handleProjects)
+	mux.HandleFunc("/api/projects", fleetRoute(handleProjects))
 	mux.HandleFunc("/api/mermaid-config", handleMermaidConfig)
 	mux.HandleFunc("/api/kill", fleetRoute(handleKill))
 	mux.HandleFunc("/api/label", fleetRoute(handleLabel))
