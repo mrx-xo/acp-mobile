@@ -61,31 +61,40 @@ call() {
   fi
 }
 
-# in_sessions BUFFER: sets $present to yes, no or unknown from a fresh
-# /api/sessions reply. "no" is only ever claimed from an HTTP 200 reply that
-# parses as JSON with a sessions array.
+# in_sessions BUFFER [MAX-TIME]: sets $present to present, absent or unknown
+# from a fresh /api/sessions reply. "absent" needs curl exit 0, HTTP 200, and a
+# jq program that exits 0 after checking .sessions is an array; every other
+# outcome, including any non-zero jq exit, is "unknown".
 in_sessions() {
-  QUIET=1 call POST /api/sessions '{}'
-  if [ "$status" != 200 ] || ! printf '%s' "$body" | jq -e '.sessions | type == "array"' >/dev/null 2>&1; then
-    present=unknown
-  elif printf '%s' "$body" | jq -e --arg b "$1" '[.sessions[] | select(.bufferName == $b)] | length > 0' >/dev/null 2>&1; then
-    present=yes
-  else
-    present=no
-  fi
+  local verdict
+  QUIET=1 call POST /api/sessions '{}' "${2:-20}"
+  present=unknown
+  [ "$status" = 200 ] || return 0
+  verdict="$(printf '%s' "$body" | jq -er --arg b "$1" '
+    if (.sessions | type) == "array"
+    then (if ([.sessions[] | select(.bufferName == $b)] | length) > 0 then "present" else "absent" end)
+    else error("sessions is not an array") end' 2>/dev/null)" || return 0
+  case "$verdict" in
+    present|absent) present="$verdict" ;;
+  esac
 }
 
-# confirm_gone BUFFER: retries up to 15 seconds; returns 0 only on a
-# confirmed "no".
+# confirm_gone BUFFER: wall-clock bounded to 15 seconds from the call; no
+# request starts after the deadline and each --max-time is the time left.
+# Returns 0 only on a positively confirmed "absent".
 confirm_gone() {
-  local i
-  for i in $(seq 1 15); do
-    in_sessions "$1"
+  local deadline left
+  deadline=$(( $(date +%s) + 15 ))
+  while :; do
+    left=$(( deadline - $(date +%s) ))
+    [ "$left" -ge 1 ] || return 1
+    in_sessions "$1" "$left"
     if [ -n "${SWEEP_FAKE_SESSIONS_FAIL:-}" ]; then present=unknown; fi
-    [ "$present" = no ] && return 0
+    [ "$present" = absent ] && return 0
+    left=$(( deadline - $(date +%s) ))
+    [ "$left" -ge 1 ] || return 1
     sleep 1
   done
-  return 1
 }
 
 # kill_buffer BUFFER: POST /api/kill, print its status, retry once on non-200.
@@ -101,14 +110,17 @@ kill_buffer() {
 
 on_exit() {
   local code=$?
-  trap - EXIT
+  trap - EXIT   # no re-entry
   if [ "$cleanup_done" = 0 ] && [ -n "$buf" ]; then
-    echo "exit before the kill was confirmed: killing $buf" | scrub
+    echo "exit before the kill was confirmed: one more kill attempt for $buf" | scrub
     kill_buffer "$buf"
-    if ! confirm_gone "$buf"; then
+    in_sessions "$buf" 5
+    if [ "$present" = absent ]; then
+      echo "after the extra kill: $buf confirmed gone" | scrub
+    else
       echo "UNCONFIRMED: $buf may still be running on $id" | scrub
-      code=1
     fi
+    [ "$code" -ne 0 ] || code=1
   fi
   rm -rf "$tmp"
   exit "$code"
@@ -208,7 +220,7 @@ echo "launched buffer: $buf" | scrub
 found=""
 for _ in $(seq 1 15); do
   in_sessions "$buf"
-  if [ "$present" = yes ]; then
+  if [ "$present" = present ]; then
     found="$(printf '%s' "$body" | jq -c --arg b "$buf" '[.sessions[] | select(.bufferName==$b)][0]')"
     break
   fi
@@ -224,11 +236,12 @@ else
 fi
 
 kill_buffer "$buf"
+confirm_start=$(date +%s)
 if confirm_gone "$buf"; then
-  echo "kill confirmed gone: yes ($buf)" | scrub
-else
-  echo "UNCONFIRMED: $buf may still be running on $id" | scrub
+  echo "kill confirmed gone: yes ($buf), confirmation took $(( $(date +%s) - confirm_start ))s" | scrub
   cleanup_done=1
-  exit 1
+else
+  echo "confirmation phase took $(( $(date +%s) - confirm_start ))s"
+  echo "UNCONFIRMED: $buf may still be running on $id" | scrub
+  exit 1   # cleanup_done stays 0, so the EXIT trap makes one more kill attempt
 fi
-cleanup_done=1
