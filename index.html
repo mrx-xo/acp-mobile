@@ -5492,7 +5492,8 @@ function machineName(id) {
   return (m && m.name) || String(id).toUpperCase();
 }
 function machineColor(id) {
-  return MACHINE_COLORS[id] || '#928374';
+  // Object.hasOwn: an id like 'constructor' must not find an inherited property.
+  return Object.hasOwn(MACHINE_COLORS, id) ? MACHINE_COLORS[id] : '#928374';
 }
 
 // Card identity: buffer name first — it's the only thing that survives
@@ -5837,7 +5838,7 @@ function renderSessions(sessions) {
     const addBtn = document.createElement('button');
     addBtn.className = 'ph-add';
     addBtn.textContent = '+';
-    addBtn.onclick = (e) => { e.stopPropagation(); spawnInProject(group[0].cwd, sessionMachine(group[0])); };
+    addBtn.onclick = (e) => { e.stopPropagation(); spawnInGroup(group, proj); };
     header.appendChild(addBtn);
     groupEl.appendChild(header);
 
@@ -6080,8 +6081,10 @@ function spToggleComboPin(c) {
 // spawnPresets and spCatalog are the chosen machine's; the caches keep every
 // machine already loaded, keyed by spKey ('' is the hub).
 let spawnPresets = [], spawnProjects = [], spCatalog = {agents:[], defaultAgent:''};
-const spPresetsBy = {}, spCatalogBy = {};
-let spawnPresetsLoad = {}, spCatalogLoad = {}, spawnProjectsLoad = 0;
+// Maps, not objects: a machine id such as 'constructor' must not find an inherited property.
+const spPresetsBy = new Map(), spCatalogBy = new Map();
+const spawnPresetsLoad = new Map(), spCatalogLoad = new Map();
+let spawnProjectsLoad = 0;
 let spView = 'home', spBusy = false, spReturnFocus = null, spPickerOrigin = null, spCustomizeOpen = false, spCustomizeTouched = false, spNameOpen = false;
 const spInertSiblings = new Map();
 // An accepted launch must never be posted again just because its socket is late.
@@ -6104,7 +6107,7 @@ function spAllPresets() { return [...spawnPresets, ...spCustom]; }
 function spSelectedPreset() { return spAllPresets().find(p => p.key === spDraft.preset); }
 function spComplete() { return ['agent','model','mode'].every(k => spChoices(k).some(c => c.id === spDraft.settings[k])) && (!spDraft.settings.effort || spChoices('effort').some(c => c.id === spDraft.settings.effort)); }
 // Labels reuse the header's words: canonicalModelName, modeShortName.
-function spAgentFor(settings, machine) { return (machine === undefined ? spCatalog : (spCatalogBy[spKey(machine)] || {agents:[]})).agents.find(a => a.id === settings.agent); }
+function spAgentFor(settings, machine) { return (machine === undefined ? spCatalog : (spCatalogBy.get(spKey(machine)) || {agents:[]})).agents.find(a => a.id === settings.agent); }
 function spMatchingPreset(settings) { return spAllPresets().find(p => spFields.every(k => (p[k] || '') === settings[k])); }
 function spProjectName(cwd, machine) { return spawnProjects.find(p => p.path === cwd && sameMachine(p.machine, machine))?.name || cwd.split('/').filter(Boolean).pop() || cwd; }
 function spModelName(settings, machine) { const a = spAgentFor(settings, machine); return canonicalModelName(settings.model, a?.models || [], (a?.name || '') + ' '); }
@@ -6202,11 +6205,11 @@ function spSetMachine(machine) {
   if (sameMachine(machine,spDraft.machine)) return;
   spDraft.machine=machine; spDraft.settings=spSettings({}); spDraft.preset='';
   spUseMachine(machine);
-  if (!spCatalogBy[machine]) loadSpawnCatalog(machine);
-  if (!spPresetsBy[machine]) loadSpawnPresets(machine);
+  if (!spCatalogBy.has(machine)) loadSpawnCatalog(machine);
+  if (!spPresetsBy.has(machine)) loadSpawnPresets(machine);
 }
 function spUseMachine(machine) {
-  spawnPresets=spPresetsBy[machine] || []; spCatalog=spCatalogBy[machine] || {agents:[], defaultAgent:''};
+  spawnPresets=spPresetsBy.get(machine) || []; spCatalog=spCatalogBy.get(machine) || {agents:[], defaultAgent:''};
   spDefaultAgent();
 }
 function spDefaultAgent() {
@@ -6310,15 +6313,15 @@ async function spFetch(endpoint, property, machine) {
 // lands after the user moved to another.
 async function loadSpawnPresets(machine=spDraft.machine) {
   machine=spKey(machine);
-  const token=spawnPresetsLoad[machine]=(spawnPresetsLoad[machine] || 0)+1;
-  try { const data=await spFetch('presets','presets',machine); if (token !== spawnPresetsLoad[machine]) return;
-    spPresetsBy[machine]=data.presets.filter(p => spValidPreset(p) && p.key.length === 1);
+  const token=(spawnPresetsLoad.get(machine) || 0)+1; spawnPresetsLoad.set(machine,token);
+  try { const data=await spFetch('presets','presets',machine); if (token !== spawnPresetsLoad.get(machine)) return;
+    spPresetsBy.set(machine,data.presets.filter(p => spValidPreset(p) && p.key.length === 1));
     if (!sameMachine(machine,spDraft.machine)) return;
-    spawnPresets=spPresetsBy[machine];
+    spawnPresets=spPresetsBy.get(machine);
     // Agent may have opened before presets arrived; follow the late match until the user toggles.
     if (spView === 'preset' && !spCustomizeTouched) spCustomizeOpen=!spMatchingPreset(spDraft.settings);
     renderSpawnStep();
-  } catch (_) { if (token === spawnPresetsLoad[machine] && sameMachine(machine,spDraft.machine) && !spawnPresets.length) spMessage('Presets unavailable. You can still choose settings individually.'); }
+  } catch (_) { if (token === spawnPresetsLoad.get(machine) && sameMachine(machine,spDraft.machine) && !spawnPresets.length) spMessage('Presets unavailable. You can still choose settings individually.'); }
 }
 async function loadSpawnProjects() {
   const token=++spawnProjectsLoad;
@@ -6328,12 +6331,13 @@ async function loadSpawnProjects() {
 }
 async function loadSpawnCatalog(machine=spDraft.machine) {
   machine=spKey(machine);
-  const token=spCatalogLoad[machine]=(spCatalogLoad[machine] || 0)+1, current=() => sameMachine(machine,spDraft.machine);
-  try { const data=await spFetch('launch-options','agents',machine); if (token !== spCatalogLoad[machine]) return;
+  const token=(spCatalogLoad.get(machine) || 0)+1, current=() => sameMachine(machine,spDraft.machine);
+  spCatalogLoad.set(machine,token);
+  try { const data=await spFetch('launch-options','agents',machine); if (token !== spCatalogLoad.get(machine)) return;
     const choices=xs => Array.isArray(xs) ? xs.filter(c => c && typeof c.id === 'string' && typeof c.name === 'string').map(c => ({id:c.id,name:c.name,description:typeof c.description === 'string' ? c.description:''})) : [];
-    spCatalogBy[machine]={defaultAgent:data.defaultAgent,agents:data.agents.filter(a => a && typeof a.id === 'string' && typeof a.name === 'string').map(a => ({...a,models:choices(a.models),modes:choices(a.modes),efforts:choices(a.efforts)}))};
+    spCatalogBy.set(machine,{defaultAgent:data.defaultAgent,agents:data.agents.filter(a => a && typeof a.id === 'string' && typeof a.name === 'string').map(a => ({...a,models:choices(a.models),modes:choices(a.modes),efforts:choices(a.efforts)}))});
     if (!current()) { if (spView === 'home') renderSpawnHome(); return; }
-    spCatalog=spCatalogBy[machine];
+    spCatalog=spCatalogBy.get(machine);
     spDefaultAgent();
     renderSpawnStep(); if (['agent','model','mode','effort'].includes(spView)) renderSpawnPicker();
     if (spResumeCheck && spView === 'prompt' && !spComplete()) {
@@ -6341,7 +6345,7 @@ async function loadSpawnCatalog(machine=spDraft.machine) {
       else openSpawnView('preset');
     }
     spResumeCheck=false;
-  } catch (_) { if (token === spCatalogLoad[machine] && current()) spMessage('Agent choices could not refresh. Reopen New chat to retry.'); }
+  } catch (_) { if (token === spCatalogLoad.get(machine) && current()) spMessage('Agent choices could not refresh. Reopen New chat to retry.'); }
 }
 // A typed path carries no machine, so it targets the hub ('').
 function pickSpawnProject(path, machine='') {
@@ -6431,14 +6435,18 @@ function spResumeStep() {
   if (s === 'project') return 'project';
   return spHomeEmpty() ? 'project' : 'home';
 }
-function openSpawnSheet(cwd, step='', machine='') {
+// query: ask which machine -- no project or machine chosen, the Project step opened
+// with its search prefilled.
+function openSpawnSheet(cwd, step='', machine='', query) {
   spReturnFocus=document.activeElement;
   spMessage('');
+  const asking=query !== undefined && !spRecoveryBuffer;
+  if (asking) { spDraft.cwd=''; spSetMachine(''); }
   if (cwd && !spRecoveryBuffer) { spDraft.cwd=cwd; spSetMachine(machine); }
   spUseMachine(spKey(spDraft.machine));
   // Judge the resume step before prefilling, so an empty project resumes on Project.
   const view=spRecoveryBuffer ? 'prompt' : step || spResumeStep();
-  if (!spDraft.cwd) {
+  if (!spDraft.cwd && !asking) {
     if (spRecent[0]) { const r=spKeyParts(spRecent[0]); spDraft.cwd=r.path; spSetMachine(r.machine); }
     else { const s=lastSessions.find(s=>s.cwd); if (s) { spDraft.cwd=s.cwd; spSetMachine(sessionMachine(s)); } }
   }
@@ -6447,6 +6455,7 @@ function openSpawnSheet(cwd, step='', machine='') {
   spScrim.classList.add('visible');spSheet.classList.add('visible');
   spResumeCheck=view === 'prompt' && !spRecoveryBuffer && !step;
   openSpawnView(view);
+  if(asking){spEl('search').value=query;renderSpawnPicker();}
   if(spRecoveryBuffer)spMessage('A chat was already created. Use the arrow below to open it; it will not start another chat.');
   persistSpawnDraft();loadSpawnPresets();loadSpawnProjects();loadSpawnCatalog();syncHistoryDock();
 }
@@ -6676,6 +6685,12 @@ async function refreshForkEntry(btn) {
 
 function spawnAgent() { openSpawnSheet(null); }
 function spawnInProject(cwd, machine) { openSpawnSheet(cwd, 'preset', machine); }
+// The + on a project group: the group's one machine, or ask when it mixes machines.
+function spawnInGroup(group, name) {
+  const machine = sessionMachine(group[0]);
+  if (group.every(s => sameMachine(sessionMachine(s), machine))) return spawnInProject(group[0].cwd, machine);
+  openSpawnSheet(null, 'project', '', name);
+}
 // --- Spawn sheet: end ---
 
 // --- Model picker ---

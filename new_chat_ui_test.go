@@ -670,6 +670,21 @@ type fleetChat struct {
 	hold      chan struct{} // when set, the peer's options and presets wait for it to close
 }
 
+// holdPeer makes the peer's options and presets wait until the returned release
+// runs.  The release is idempotent and registered as a cleanup, which runs before
+// the server's own Close (registered earlier), so a failed test cannot hang on it.
+func (f *fleetChat) holdPeer(t *testing.T) (release func()) {
+	t.Helper()
+	hold := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(hold) }) }
+	f.mu.Lock()
+	f.hold = hold
+	f.mu.Unlock()
+	t.Cleanup(release)
+	return release
+}
+
 func (f *fleetChat) count(prefix string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -704,7 +719,7 @@ const fleetPeerCatalog = `{"defaultAgent":"gemini","agents":[{"id":"gemini","nam
 // newFleetChatPage serves the hub's catalog, presets and projects and the
 // peer's, selected by ?machine=. peerState is the peer's registry state;
 // failSpawn makes a spawn naming the peer answer 502.
-func newFleetChatPage(t *testing.T, peerState string, failSpawn bool, seed string) (*chromePage, *fleetChat) {
+func newFleetChatPage(t *testing.T, peerState string, failSpawn bool, seed string, sessions ...string) (*chromePage, *fleetChat) {
 	t.Helper()
 	f := &fleetChat{}
 	record := func(r *http.Request) string {
@@ -720,7 +735,10 @@ func newFleetChatPage(t *testing.T, peerState string, failSpawn bool, seed strin
 		hold := f.hold
 		f.mu.Unlock()
 		if m == "vengeance" && hold != nil {
-			<-hold
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+			}
 		}
 		return m
 	}
@@ -771,11 +789,14 @@ func newFleetChatPage(t *testing.T, peerState string, failSpawn bool, seed strin
 		f.mu.Lock()
 		spawned := f.spawned
 		f.mu.Unlock()
-		sessions := `[]`
-		if spawned {
-			sessions = `[{"pid":1,"sessionId":"hub","bufferName":"new chat","machine":"mrx"},{"pid":2,"sessionId":"peer","bufferName":"new chat","machine":"vengeance"}]`
+		listed := `[]`
+		if len(sessions) > 0 {
+			listed = sessions[0]
 		}
-		fmt.Fprintf(w, `{"sessions":%s,"machine":"mrx","machines":[{"id":"mrx","name":"POLLUX","state":"awake"},{"id":"vengeance","name":"NEMESIS","state":%q}]}`, sessions, peerState)
+		if spawned {
+			listed = `[{"pid":1,"sessionId":"hub","bufferName":"new chat","machine":"mrx"},{"pid":2,"sessionId":"peer","bufferName":"new chat","machine":"vengeance"}]`
+		}
+		fmt.Fprintf(w, `{"sessions":%s,"machine":"mrx","machines":[{"id":"mrx","name":"POLLUX","state":"awake"},{"id":"vengeance","name":"NEMESIS","state":%q}]}`, listed, peerState)
 	})
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -794,6 +815,11 @@ func newFleetChatPage(t *testing.T, peerState string, failSpawn bool, seed strin
 		page.waitFor(t, `typeof openSpawnSheet === 'function' && HUB_MACHINE === 'mrx'`)
 	}
 	page.eval(t, `openSpawnSheet()`)
+	if len(sessions) > 0 {
+		// The sheet may prefill a listed chat's machine, so the hub's choices need not load.
+		page.waitFor(t, `spawnProjects.length === 3`)
+		return page, f
+	}
 	page.waitFor(t, `spawnProjects.length === 3 && spawnPresets.length === 1 && spCatalog.agents.length === 3`)
 	return page, f
 }
@@ -917,12 +943,16 @@ func TestSpawnToAsleepMachineKeepsDraft(t *testing.T) {
 
 const comboSeed = `JSON.stringify({pins:[],recent:[
  {cwd:'/src/dotfiles',preset:'s',settings:{agent:'codex',model:'sol',mode:'full',effort:'high'}},
- {cwd:'/src/ghost',preset:'',machine:'ghost',settings:{agent:'codex',model:'sol',mode:'full',effort:'high'}}]})`
+ {cwd:'/src/ghost',preset:'',machine:'ghost',settings:{agent:'codex',model:'sol',mode:'full',effort:'high'}},
+ {cwd:'/src/c1',preset:'',machine:'constructor',settings:{agent:'codex',model:'sol',mode:'full',effort:'high'}},
+ {cwd:'/src/c2',preset:'',machine:'__proto__',settings:{agent:'codex',model:'sol',mode:'full',effort:'high'}},
+ {cwd:'/src/c3',preset:'',machine:'toString',settings:{agent:'codex',model:'sol',mode:'full',effort:'high'}}]})`
 
 func TestCombosWithoutMachineAreHubCombos(t *testing.T) {
 	page, f := newFleetChatPage(t, "awake", false, comboSeed)
 	state := page.evalObject(t, `(async()=>{
-  openSpawnView('home');
+  let error='';
+  try{openSpawnView('home');}catch(e){error=String(e);}
   const rows=[...document.querySelectorAll('#sp-home-list .sp-combo')];
   const info=rows.map(r=>({cls:r.className,title:r.title,aria:r.getAttribute('aria-disabled'),text:r.textContent}));
   rows[1].click();
@@ -931,7 +961,7 @@ func TestCombosWithoutMachineAreHubCombos(t *testing.T) {
   SPAWN_POLL_MS=5;selectSession=()=>{};
   const view=spView;
   spGo.click();
-  return {info,afterGhost,view};
+  return {info,afterGhost,view,error};
  })()`)
 	info := state["info"].([]interface{})
 	hub, ghost := info[0].(map[string]interface{}), info[1].(map[string]interface{})
@@ -940,6 +970,15 @@ func TestCombosWithoutMachineAreHubCombos(t *testing.T) {
 	}
 	if !strings.Contains(ghost["cls"].(string), "asleep") || ghost["title"] != "ghost is not in the fleet" || ghost["aria"] != "true" {
 		t.Fatalf("a combo for a machine outside the fleet is disabled: %#v", ghost)
+	}
+	if state["error"] != "" || len(info) != 5 {
+		t.Fatalf("odd machine ids must not break the sheet: %#v", state)
+	}
+	for i, id := range []string{"constructor", "__proto__", "toString"} {
+		odd := info[2+i].(map[string]interface{})
+		if !strings.Contains(odd["cls"].(string), "asleep") || odd["title"] != id+" is not in the fleet" || odd["aria"] != "true" {
+			t.Fatalf("%s is not in the fleet: %#v", id, odd)
+		}
 	}
 	if state["view"] != "prompt" || state["afterGhost"].(map[string]interface{})["view"] != "home" {
 		t.Fatalf("tapping the ghost does nothing, the hub combo opens Prompt: %#v", state)
@@ -1029,10 +1068,7 @@ func TestNewChatTypedPathTargetsTheHub(t *testing.T) {
 // the peer then uses that cache (a late reply is kept, no refetch is needed).
 func TestNewChatSlowOptionsForAnotherMachineAreDropped(t *testing.T) {
 	page, f := newFleetChatPage(t, "awake", false, "")
-	hold := make(chan struct{})
-	f.mu.Lock()
-	f.hold = hold
-	f.mu.Unlock()
+	release := f.holdPeer(t)
 	state := page.evalObject(t, `(async()=>{
   `+clickRow+`
   pick('dotfiles',1).click();
@@ -1044,7 +1080,7 @@ func TestNewChatSlowOptionsForAnotherMachineAreDropped(t *testing.T) {
 	if fmt.Sprint(state["agents"]) != "[codex claude opencode]" || fmt.Sprint(state["presets"]) != "[s]" || state["machine"] != "" {
 		t.Fatalf("hub choices before release: %#v", state)
 	}
-	close(hold)
+	release()
 	state = page.evalObject(t, `(async()=>{
   await new Promise(r=>setTimeout(r,400));
   const hub={agents:spCatalog.agents.map(a=>a.id),presets:[...document.querySelectorAll('#sp-preset-list .sp-row')].map(b=>b.textContent),machine:spDraft.machine,settings:spDraft.settings.agent};
@@ -1060,5 +1096,39 @@ func TestNewChatSlowOptionsForAnotherMachineAreDropped(t *testing.T) {
 	peer := state["peer"].(map[string]interface{})
 	if fmt.Sprint(peer["agents"]) != "[gemini]" || !strings.Contains(fmt.Sprint(peer["presets"]), "Gemini Pro") {
 		t.Fatalf("going back to the peer shows its choices: %#v", peer)
+	}
+}
+
+func fleetDotfilesSession(pid int, machine string) string {
+	return fmt.Sprintf(`{"pid":%d,"sessionId":"s%d","bufferName":"dotfiles %d","project":"dotfiles","cwd":"/src/dotfiles","machine":%q}`, pid, pid, pid, machine)
+}
+
+// plusOnDotfilesGroup presses the + of the dotfiles group in the session list.
+const plusOnDotfilesGroup = `(async()=>{
+  hideSpawnSheet();
+  for(let i=0;i<100&&!document.querySelector('.project-header .ph-add');i++)await new Promise(r=>setTimeout(r,20));
+  document.querySelector('.project-header .ph-add').click();
+  await new Promise(r=>setTimeout(r,200));
+  return {view:spView,cwd:spDraft.cwd,machine:spDraft.machine,search:spEl('search').value,
+    rows:[...document.querySelectorAll('#sp-picker-list .sp-row')].filter(b=>b.textContent.includes('dotfiles')).length,
+    selected:document.querySelectorAll('#sp-picker-list .sp-row.sel').length};
+ })()`
+
+func TestGroupPlusUsesTheGroupsOnlyMachine(t *testing.T) {
+	page, _ := newFleetChatPage(t, "awake", false, "", "["+fleetDotfilesSession(2, "vengeance")+","+fleetDotfilesSession(3, "vengeance")+"]")
+	state := page.evalObject(t, plusOnDotfilesGroup)
+	if state["view"] != "preset" || state["cwd"] != "/src/dotfiles" || state["machine"] != "vengeance" {
+		t.Fatalf("a group on one machine starts a chat there: %#v", state)
+	}
+}
+
+func TestGroupPlusAsksWhenAGroupMixesMachines(t *testing.T) {
+	hub, peer := fleetDotfilesSession(1, "mrx"), fleetDotfilesSession(2, "vengeance")
+	for _, order := range []string{"[" + hub + "," + peer + "]", "[" + peer + "," + hub + "]"} {
+		page, _ := newFleetChatPage(t, "awake", false, "", order)
+		state := page.evalObject(t, plusOnDotfilesGroup)
+		if state["view"] != "project" || state["cwd"] != "" || state["machine"] != "" || state["rows"] != float64(2) || state["selected"] != float64(0) || state["search"] != "dotfiles" {
+			t.Fatalf("a mixed group asks which machine, in order %s: %#v", order, state)
+		}
 	}
 }
