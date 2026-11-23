@@ -7,41 +7,113 @@
 #                                               probe it, then kill it
 #
 # The node address is read from ~/fleet/syzygy.json at run time and is never
-# printed. Run from the hub machine.
+# printed: every printed body or curl error is scrubbed first, then cut to
+# 80 bytes. Run from the hub machine.
+#
+# Test hook, only for exercising the cleanup path: SWEEP_FAKE_SESSIONS_FAIL=1
+# makes the post-kill confirmation treat every /api/sessions reply as failed.
 set -u
 
-id="${1:?usage: fleet-node-sweep.sh <machine-id> [--launch]}"
+usage() { echo "usage: fleet-node-sweep.sh <machine-id> [--launch]" >&2; exit 2; }
+
+[ $# -ge 1 ] && [ $# -le 2 ] || usage
+id="$1"
 mode="${2:-}"
+if [ -n "$mode" ] && [ "$mode" != "--launch" ]; then usage; fi
+
 reg="$HOME/fleet/syzygy.json"
-ip="$(jq -r --arg id "$id" '.machines[] | select(.id==$id) | .ip' "$reg")"
-if [ -z "$ip" ] || [ "$ip" = "null" ]; then
-  echo "no ip for machine $id in registry" >&2
+ip="$(jq -r --arg id "$id" '.machines[] | select(.id==$id) | .ip // empty' "$reg" 2>/dev/null)"
+if [ -z "$ip" ]; then
+  echo "unknown machine $id" >&2
   exit 2
 fi
 base="http://$ip:8090"
+ipre="${ip//./\\.}"
+
+tmp="$(mktemp -d)"
+buf=""            # buffer name of the chat this script launched
+cleanup_done=1    # 0 while a launched chat still needs its kill confirmed
 
 # scrub replaces the node address with <node> in anything we print.
-scrub() { sed "s/$ip/<node>/g"; }
+scrub() { sed "s/$ipre/<node>/g"; }
 
-# call METHOD PATH [JSON-BODY] [MAX-TIME]; sets $status and $body, prints a line.
+# call METHOD PATH [JSON-BODY] [MAX-TIME]
+# Sets $status and $body (full, internal use only) and prints one line unless
+# QUIET=1. A LABEL=... prefix replaces the printed route.
 call() {
-  local method="$1" path="$2" data="${3:-}" max="${4:-20}" out
-  local args=(-sS --max-time "$max" -X "$method" -H 'X-Acp-Peer: 1' -o - -w '\n%{http_code}')
+  local method="$1" path="$2" data="${3:-}" max="${4:-20}" rc shown
+  local args=(-sS --max-time "$max" -X "$method" -H 'X-Acp-Peer: 1' -o "$tmp/body" -w '%{http_code}')
   if [ -n "$data" ]; then
     args+=(-H 'Content-Type: application/json' --data "$data")
   fi
-  out="$(curl "${args[@]}" "$base$path" 2>&1)"
+  rm -f "$tmp/body"
+  status="$(curl "${args[@]}" "$base$path" 2>"$tmp/err")"
   rc=$?
+  body="$(cat "$tmp/body" 2>/dev/null)"
+  shown="$body"
   if [ $rc -ne 0 ]; then
     status="curl-$rc"
-    body="$(printf '%s' "$out" | scrub)"
-  else
-    status="${out##*$'\n'}"
-    body="${out%$'\n'*}"
+    shown="$(cat "$tmp/err")"
   fi
-  printf '%s %s %s\n' "$method $path" "$status" \
-    "$(printf '%s' "$body" | tr '\n\r' '  ' | cut -c1-80 | scrub)"
+  if [ "${QUIET:-0}" != 1 ]; then
+    printf '%s %s %s\n' "${LABEL:-$method $path}" "$status" \
+      "$(printf '%s' "$shown" | tr '\n\r' '  ' | scrub | head -c 80)"
+  fi
 }
+
+# in_sessions BUFFER: sets $present to yes, no or unknown from a fresh
+# /api/sessions reply. "no" is only ever claimed from an HTTP 200 reply that
+# parses as JSON with a sessions array.
+in_sessions() {
+  QUIET=1 call POST /api/sessions '{}'
+  if [ "$status" != 200 ] || ! printf '%s' "$body" | jq -e '.sessions | type == "array"' >/dev/null 2>&1; then
+    present=unknown
+  elif printf '%s' "$body" | jq -e --arg b "$1" '[.sessions[] | select(.bufferName == $b)] | length > 0' >/dev/null 2>&1; then
+    present=yes
+  else
+    present=no
+  fi
+}
+
+# confirm_gone BUFFER: retries up to 15 seconds; returns 0 only on a
+# confirmed "no".
+confirm_gone() {
+  local i
+  for i in $(seq 1 15); do
+    in_sessions "$1"
+    if [ -n "${SWEEP_FAKE_SESSIONS_FAIL:-}" ]; then present=unknown; fi
+    [ "$present" = no ] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# kill_buffer BUFFER: POST /api/kill, print its status, retry once on non-200.
+kill_buffer() {
+  local b="$1" payload
+  payload="$(jq -nc --arg b "$b" '{bufferName:$b}')"
+  call POST /api/kill "$payload"
+  if [ "$status" != 200 ]; then
+    sleep 2
+    LABEL='POST /api/kill (retry)' call POST /api/kill "$payload"
+  fi
+}
+
+on_exit() {
+  local code=$?
+  trap - EXIT
+  if [ "$cleanup_done" = 0 ] && [ -n "$buf" ]; then
+    echo "exit before the kill was confirmed: killing $buf" | scrub
+    kill_buffer "$buf"
+    if ! confirm_gone "$buf"; then
+      echo "UNCONFIRMED: $buf may still be running on $id" | scrub
+      code=1
+    fi
+  fi
+  rm -rf "$tmp"
+  exit "$code"
+}
+trap on_exit EXIT
 
 call POST /api/sessions '{}'
 if [ "$status" != 200 ]; then
@@ -60,17 +132,28 @@ call POST /api/transcripts '{}'
 call POST /api/transcript-search '{"query":"the"}'
 call GET /api/pin
 
-# probe_chat BUFFER PID CWD: the five calls that need a live chat.
+# probe_chat BUFFER PID CWD: the five calls that need a live chat. With no cwd
+# the chat's own directory is unknown; say so, then probe the first project
+# path under its own label so the two facts stay separate.
 probe_chat() {
-  local buf="$1" pid="$2" cwd="$3" enc
-  # A chat with no cwd of its own falls back to the node's first project.
-  [ -n "$cwd" ] || cwd="$(printf '%s' "$projects" | jq -r '.projects[0].path // "."')"
+  local buf="$1" pid="$2" cwd="$3" enc ppath
   enc="$(jq -rn --arg b "$buf" '$b|@uri')"
   call POST /api/models "$(jq -nc --arg b "$buf" '{bufferName:$b}')"
   call GET "/api/preview?pid=$pid"
   call GET "/api/git-status?pid=$pid"
   call GET "/api/fork?bufferName=$enc"
-  call POST /files/list "$(jq -nc --arg p "$cwd" '{path:$p}')"
+  if [ -n "$cwd" ]; then
+    call POST /files/list "$(jq -nc --arg p "$cwd" '{path:$p}')"
+  else
+    echo "POST /files/list skipped (session reports no cwd)"
+    ppath="$(printf '%s' "$projects" | jq -r '.projects[0].path // empty' 2>/dev/null)"
+    if [ -n "$ppath" ]; then
+      LABEL='POST /files/list (first project path, not the chat cwd)' \
+        call POST /files/list "$(jq -nc --arg p "$ppath" '{path:$p}')"
+    else
+      echo "POST /files/list (first project path, not the chat cwd) skipped (no project)"
+    fi
+  fi
 }
 
 first="$(printf '%s' "$sessions" | jq -c '[.sessions[]? | select(.bufferName and .pid)][0] // empty' 2>/dev/null)"
@@ -86,13 +169,14 @@ fi
 [ "$mode" = "--launch" ] || exit 0
 
 # --- launch mode: one idle chat, probe it, kill it -------------------------
-cwd="$(printf '%s' "$projects" | jq -r '.projects[0].path // empty')"
+cwd="$(printf '%s' "$projects" | jq -r '.projects[0].path // empty' 2>/dev/null)"
 # A node whose emacsclient mangles long replies answers /api/launch-options with
 # a 500 whose error text still carries the base64 payload split by a protocol
-# error line. Recover it so the launch can still be built from the node's own data.
+# error line. Recover it so the launch can still be built from the node's own
+# data. (Temporary: remove once the nodes run a fixed binary.)
 if ! printf '%s' "$launch_opts" | jq -e '.agents' >/dev/null 2>&1; then
-  call POST /api/launch-options '{}' >/dev/null
-  launch_opts="$(printf '%s' "$body" | jq -r '.error? // empty' \
+  QUIET=1 call POST /api/launch-options '{}'
+  launch_opts="$(printf '%s' "$body" | jq -r '.error? // empty' 2>/dev/null \
     | sed 's/\*ERROR\*: Unknown message: //; s/&n$//' | tr -d '"\n' | base64 -d 2>/dev/null)"
   echo "launch-options recovered from the error text: $(printf '%s' "$launch_opts" | jq -e '.agents' >/dev/null 2>&1 && echo yes || echo no)"
 fi
@@ -103,7 +187,7 @@ settings="$(printf '%s' "$launch_opts" | jq -c '
      mode:  (if ($a.defaults.mode  // "") != "" then $a.defaults.mode  else $a.modes[0].id  end)}
   + (if ($a.efforts | length) > 0
      then {effort: (if ($a.defaults.effort // "") != "" then $a.defaults.effort else $a.efforts[0].id end)}
-     else {} end)')"
+     else {} end)' 2>/dev/null)"
 if [ -z "$cwd" ] || [ -z "$settings" ]; then
   echo "launch: cannot build spawn body (cwd or settings missing)"
   exit 4
@@ -112,18 +196,22 @@ echo "launch settings: $settings"
 start=$(date +%s)
 call POST /api/spawn "$(jq -nc --arg c "$cwd" --argjson s "$settings" '{cwd:$c,settings:$s}')" 200
 echo "launch took $(( $(date +%s) - start ))s"
-buf="$(printf '%s' "$body" | jq -r '.bufferName // empty' 2>/dev/null)"
+# Even an error reply can name a buffer; from here on it must be cleaned up.
+buf="$(printf '%s' "$body" | jq -r '.bufferName? // empty' 2>/dev/null)"
 if [ -z "$buf" ]; then
   echo "launch: no bufferName returned, nothing to kill"
   exit 5
 fi
-echo "launched buffer: $buf"
+cleanup_done=0
+echo "launched buffer: $buf" | scrub
 
 found=""
 for _ in $(seq 1 15); do
-  call POST /api/sessions '{}' >/dev/null
-  entry="$(printf '%s' "$body" | jq -c --arg b "$buf" '[.sessions[]? | select(.bufferName==$b)][0] // empty')"
-  if [ -n "$entry" ]; then found="$entry"; break; fi
+  in_sessions "$buf"
+  if [ "$present" = yes ]; then
+    found="$(printf '%s' "$body" | jq -c --arg b "$buf" '[.sessions[] | select(.bufferName==$b)][0]')"
+    break
+  fi
   sleep 2
 done
 if [ -n "$found" ]; then
@@ -135,13 +223,12 @@ else
   echo "chat did NOT appear in /api/sessions within 30s"
 fi
 
-call POST /api/kill "$(jq -nc --arg b "$buf" '{bufferName:$b}')"
-gone=no
-for _ in $(seq 1 10); do
-  call POST /api/sessions '{}' >/dev/null
-  if [ -z "$(printf '%s' "$body" | jq -c --arg b "$buf" '[.sessions[]? | select(.bufferName==$b)][0] // empty')" ]; then
-    gone=yes; break
-  fi
-  sleep 2
-done
-echo "kill confirmed gone: $gone ($buf)"
+kill_buffer "$buf"
+if confirm_gone "$buf"; then
+  echo "kill confirmed gone: yes ($buf)" | scrub
+else
+  echo "UNCONFIRMED: $buf may still be running on $id" | scrub
+  cleanup_done=1
+  exit 1
+fi
+cleanup_done=1
