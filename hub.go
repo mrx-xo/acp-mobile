@@ -310,9 +310,13 @@ func forwardToMachine(w http.ResponseWriter, r *http.Request, target string) {
 		jsonError(http.StatusNotFound, "unknown machine "+target)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, remoteActionPeekLimit))
+	body, err := io.ReadAll(io.LimitReader(r.Body, remoteActionPeekLimit+1))
 	if err != nil {
 		jsonError(http.StatusBadRequest, "unreadable request body")
+		return
+	}
+	if len(body) > remoteActionPeekLimit {
+		jsonError(http.StatusRequestEntityTooLarge, "request body too large")
 		return
 	}
 	// Keep the caller's query (a GET probe names its chat there) and make
@@ -346,7 +350,12 @@ func forwardToMachine(w http.ResponseWriter, r *http.Request, target string) {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		// The status is already sent; drop the connection so the client
+		// sees a failed transfer, not a clean short body.
+		log.Printf("forward %s to %s: relay: %v", r.URL.Path, m.ID, err)
+		panic(http.ErrAbortHandler)
+	}
 }
 
 // The phone polls /api/statuses every 3s, so a peer gets one second to

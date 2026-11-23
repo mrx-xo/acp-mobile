@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -651,6 +653,9 @@ func TestFleetRouteDoesNotForwardAPeersCall(t *testing.T) {
 }
 
 func TestFleetRouteUnknownOrSilentMachineAnswersJSON(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	deadURL := dead.URL
 	dead.Close()
@@ -670,6 +675,64 @@ func TestFleetRouteUnknownOrSilentMachineAnswersJSON(t *testing.T) {
 		if w.Code != tc.code || json.Unmarshal(w.Body.Bytes(), &reply) != nil || reply.Error != tc.want {
 			t.Errorf("machine %s: %d %q, want %d and error %q", tc.machine, w.Code, w.Body.String(), tc.code, tc.want)
 		}
+	}
+	if !strings.Contains(logs.String(), "forward /api/label to vengeance") {
+		t.Errorf("log %q does not record the failed forward", logs.String())
+	}
+}
+
+func TestFleetRouteForwardsABodyAtTheLimitWhole(t *testing.T) {
+	rec, peer := newPeerRecorder(t, http.StatusOK, `{}`)
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	body := strings.Repeat("a", remoteActionPeekLimit)
+	w := httptest.NewRecorder()
+	fleetRoute(handleLabel)(w, httptest.NewRequest("POST", "/api/label?machine=vengeance", strings.NewReader(body)))
+	if w.Code != http.StatusOK || rec.hits != 1 || rec.body != body {
+		t.Fatalf("code %d hits %d peer body %d bytes, want 200 and %d bytes byte-equal", w.Code, rec.hits, len(rec.body), len(body))
+	}
+}
+
+func TestFleetRouteRefusesAnOversizedBody(t *testing.T) {
+	rec, peer := newPeerRecorder(t, http.StatusOK, `{}`)
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	w := httptest.NewRecorder()
+	fleetRoute(handleLabel)(w, httptest.NewRequest("POST", "/api/label?machine=vengeance",
+		strings.NewReader(strings.Repeat("a", remoteActionPeekLimit+1))))
+	if w.Code != http.StatusRequestEntityTooLarge || strings.TrimSpace(w.Body.String()) != `{"error":"request body too large"}` || rec.hits != 0 {
+		t.Fatalf("code %d body %q hits %d, want 413, the JSON error, no peer call", w.Code, w.Body.String(), rec.hits)
+	}
+}
+
+func TestFleetRouteAbortsWhenThePeerCutsTheBody(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n0123456789")
+		buf.Flush()
+		conn.Close()
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	hub := httptest.NewServer(fleetRoute(handleFileRead))
+	defer hub.Close()
+
+	resp, err := http.Get(hub.URL + "/files/read?machine=vengeance&path=x")
+	if err != nil {
+		return // the connection dropped before the headers: also a failed transfer
+	}
+	defer resp.Body.Close()
+	got, err := io.ReadAll(resp.Body)
+	if err == nil {
+		t.Fatalf("read %d bytes cleanly, want a failed transfer", len(got))
+	}
+	if !strings.Contains(logs.String(), "relay:") {
+		t.Errorf("log %q does not mention the relay failure", logs.String())
 	}
 }
 
