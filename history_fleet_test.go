@@ -404,3 +404,39 @@ func TestMergedTranscriptSearchDropsResultsWithoutAFile(t *testing.T) {
 		t.Fatalf("body %s log %q", rec.Body.String(), logs.String())
 	}
 }
+
+func TestTranscriptsRefuseAnOversizedBody(t *testing.T) {
+	var calls atomic.Int32
+	loaded := false
+	load := func(context.Context, int) ([]transcriptInfo, error) { loaded = true; return nil, nil }
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Write([]byte(`[]`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	rec := postHistory(newTranscriptsHandler(load), "/api/transcripts?fleet=1", strings.Repeat("a", transcriptsBodyLimit+1))
+	if rec.Code != http.StatusRequestEntityTooLarge || strings.TrimSpace(rec.Body.String()) != `{"error":"request body too large"}` {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 0 || loaded {
+		t.Fatalf("peer calls %d, local lookup ran %v", calls.Load(), loaded)
+	}
+}
+
+func TestTranscriptsFanOutABodyAtTheCapWhole(t *testing.T) {
+	load := historyHome(t, transcriptInfo{SessionID: "h1", Timestamp: "2026-11-01-10-00-00"})
+	sent := strings.Repeat("a", transcriptsBodyLimit)
+	var got atomic.Value
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got.Store(string(b))
+		w.Write([]byte(`[]`))
+	}))
+	defer peer.Close()
+	withFleetFixture(t, "mrx", peerAt(t, "vengeance", "NEMESIS", peer.URL))
+	rec := postHistory(newTranscriptsHandler(load), "/api/transcripts?fleet=1", sent)
+	if rec.Code != http.StatusOK || got.Load() != sent {
+		t.Fatalf("status %d, peer got %d bytes, want %d", rec.Code, len(got.Load().(string)), len(sent))
+	}
+}

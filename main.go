@@ -1735,6 +1735,26 @@ func handleTranscriptSearch(w http.ResponseWriter, r *http.Request) {
 	newTranscriptSearchHandler(loadTranscriptIndex).ServeHTTP(w, r)
 }
 
+// transcriptsBodyLimit caps a list request body that is fanned out.
+const transcriptsBodyLimit = 64 << 10
+
+// readCappedBody reads r's body up to limit bytes (an empty body is nil).  A
+// longer body is answered 413 as JSON and reported as not ok: it is refused,
+// never truncated.
+func readCappedBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, bool) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil || int64(len(body)) > limit {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		json.NewEncoder(w).Encode(map[string]string{"error": "request body too large"})
+		return nil, false
+	}
+	if len(body) == 0 {
+		return nil, true
+	}
+	return body, true
+}
+
 // transcriptsFanOutBudget bounds each peer's /api/transcripts answer.
 const transcriptsFanOutBudget = 4 * time.Second
 
@@ -1824,9 +1844,9 @@ func newTranscriptsHandler(load transcriptIndexLoader) http.Handler {
 		if wantsFleet(r) {
 			// Peers get the request as received, minus the routing
 			// parameters; read the body once for them.
-			body, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
-			if len(body) == 0 {
-				body = nil
+			body, ok := readCappedBody(w, r, transcriptsBodyLimit)
+			if !ok {
+				return
 			}
 			transcripts, err = mergedTranscripts(r.Context(), load, fanOutPath(r), body)
 		} else {
