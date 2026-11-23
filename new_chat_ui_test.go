@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -654,5 +655,310 @@ func TestNewChatPhotosSendAsFirstPromptAndTouchStartLaunches(t *testing.T) {
 	left := state["left"].(map[string]interface{})
 	if left["images"] != float64(0) || left["task"] != "" || left["pending"] != nil || left["open"] != false {
 		t.Fatalf("draft cleared after delivery: %#v", left)
+	}
+}
+
+// fleetChat is a hub (mrx) with one peer (vengeance) behind the New chat sheet.
+// log records every API request as path?query, in order; spawns the /api/spawn
+// bodies; wsQueries the query of each /ws dial.
+type fleetChat struct {
+	mu        sync.Mutex
+	log       []string
+	spawns    []string
+	wsQueries []string
+	spawned   bool
+}
+
+func (f *fleetChat) count(prefix string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, l := range f.log {
+		if strings.HasPrefix(l, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+func (f *fleetChat) has(want string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, l := range f.log {
+		if l == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fleetChat) spawnBodies() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.spawns...)
+}
+
+const fleetPeerCatalog = `{"defaultAgent":"gemini","agents":[{"id":"gemini","name":"Gemini","models":[{"id":"pro","name":"Pro"}],"modes":[{"id":"auto","name":"Auto"}],"efforts":[],"defaults":{"model":"pro","mode":"auto","effort":""}}]}`
+
+// newFleetChatPage serves the hub's catalog, presets and projects and the
+// peer's, selected by ?machine=. peerState is the peer's registry state;
+// failSpawn makes a spawn naming the peer answer 502.
+func newFleetChatPage(t *testing.T, peerState string, failSpawn bool, seed string) (*chromePage, *fleetChat) {
+	t.Helper()
+	f := &fleetChat{}
+	record := func(r *http.Request) string {
+		key := r.URL.Path
+		if r.URL.RawQuery != "" {
+			key += "?" + r.URL.RawQuery
+		}
+		f.mu.Lock()
+		f.log = append(f.log, key)
+		f.mu.Unlock()
+		return r.URL.Query().Get("machine")
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(indexHTML)
+	})
+	mux.HandleFunc("/assets/", handleAsset)
+	mux.Handle("/fonts/", http.FileServerFS(fontsFS))
+	mux.HandleFunc("/api/launch-options", func(w http.ResponseWriter, r *http.Request) {
+		if record(r) == "vengeance" {
+			fmt.Fprint(w, fleetPeerCatalog)
+			return
+		}
+		fmt.Fprint(w, newChatCatalogFixture)
+	})
+	mux.HandleFunc("/api/presets", func(w http.ResponseWriter, r *http.Request) {
+		if record(r) == "vengeance" {
+			fmt.Fprint(w, `{"presets":[{"key":"g","label":"Gemini Pro","agent":"gemini","model":"pro","mode":"auto"}]}`)
+			return
+		}
+		fmt.Fprint(w, `{"presets":[{"key":"s","label":"Sol · Full","agent":"codex","model":"sol","mode":"full","effort":"high"}]}`)
+	})
+	mux.HandleFunc("/api/projects", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		fmt.Fprint(w, `{"projects":[{"name":"acp-mobile","path":"/src/acp-mobile","machine":"mrx"},{"name":"dotfiles","path":"/src/dotfiles","machine":"mrx"},{"name":"dotfiles","path":"/src/dotfiles","machine":"vengeance"}]}`)
+	})
+	mux.HandleFunc("/api/spawn", func(w http.ResponseWriter, r *http.Request) {
+		record(r)
+		body, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		f.spawns = append(f.spawns, string(body))
+		f.spawned = true
+		f.mu.Unlock()
+		if failSpawn && strings.Contains(string(body), `"machine":"vengeance"`) {
+			w.WriteHeader(http.StatusBadGateway)
+			fmt.Fprint(w, `{"error":"NEMESIS did not answer"}`)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true,"bufferName":"new chat"}`)
+	})
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		spawned := f.spawned
+		f.mu.Unlock()
+		sessions := `[]`
+		if spawned {
+			sessions = `[{"pid":1,"sessionId":"hub","bufferName":"new chat","machine":"mrx"},{"pid":2,"sessionId":"peer","bufferName":"new chat","machine":"vengeance"}]`
+		}
+		fmt.Fprintf(w, `{"sessions":%s,"machine":"mrx","machines":[{"id":"mrx","name":"POLLUX","state":"awake"},{"id":"vengeance","name":"NEMESIS","state":%q}]}`, sessions, peerState)
+	})
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.wsQueries = append(f.wsQueries, r.URL.RawQuery)
+		f.mu.Unlock()
+		http.Error(w, "test", http.StatusBadRequest)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	page := openChromePage(t, server.URL)
+	page.call(t, "Emulation.setDeviceMetricsOverride", map[string]interface{}{"width": 393, "height": 852, "deviceScaleFactor": 1, "mobile": true})
+	page.waitFor(t, `typeof openSpawnSheet === 'function' && HUB_MACHINE === 'mrx'`)
+	if seed != "" {
+		page.eval(t, `localStorage.setItem('syzygy.launch.combos', `+seed+`)`)
+		page.call(t, "Page.reload", map[string]interface{}{})
+		page.waitFor(t, `typeof openSpawnSheet === 'function' && HUB_MACHINE === 'mrx'`)
+	}
+	page.eval(t, `openSpawnSheet()`)
+	page.waitFor(t, `spawnProjects.length === 3 && spawnPresets.length === 1 && spCatalog.agents.length === 3`)
+	return page, f
+}
+
+const clickRow = `const pick=(text,nth)=>[...document.querySelectorAll('#sp-picker-list .sp-row')].filter(b=>b.textContent.includes(text))[nth||0];`
+
+func TestNewChatProjectStepBadgesMachines(t *testing.T) {
+	page, _ := newFleetChatPage(t, "awake", false, "")
+	state := page.evalObject(t, `(()=>{
+  const rows=[...document.querySelectorAll('#sp-picker-list .sp-row')].filter(b=>b.textContent.includes('dotfiles'));
+  return {rows:rows.length,badges:rows.map(r=>[...r.querySelectorAll('.machine-badge')].map(b=>b.textContent))};
+ })()`)
+	if state["rows"] != float64(2) || fmt.Sprint(state["badges"]) != "[[] [NEMESIS]]" {
+		t.Fatalf("two dotfiles rows, only the second badged NEMESIS: %#v", state)
+	}
+}
+
+func TestNewChatAgentsComeFromTheProjectsMachine(t *testing.T) {
+	page, f := newFleetChatPage(t, "awake", false, "")
+	state := page.evalObject(t, `(async()=>{
+  `+clickRow+`
+  pick('dotfiles',1).click();
+  for(let i=0;i<100&&!(spCatalog.agents.length===1&&spawnPresets.length===1&&spawnPresets[0].key==='g');i++)await new Promise(r=>setTimeout(r,20));
+  return {agents:spCatalog.agents.map(a=>a.id),machine:spDraft.machine,presets:[...document.querySelectorAll('#sp-preset-list .sp-row')].map(b=>b.textContent)};
+ })()`)
+	if fmt.Sprint(state["agents"]) != "[gemini]" || state["machine"] != "vengeance" || len(state["presets"].([]interface{})) != 1 || !strings.Contains(fmt.Sprint(state["presets"]), "Gemini Pro") {
+		t.Fatalf("the Agent step must list the peer's choices: %#v", state)
+	}
+	if !f.has("/api/launch-options?machine=vengeance") || !f.has("/api/presets?machine=vengeance") {
+		t.Fatalf("options and presets must name the machine: %v", f.log)
+	}
+	before := f.count("/api/launch-options") + f.count("/api/presets")
+	state = page.evalObject(t, `(async()=>{
+  `+clickRow+`
+  openSpawnView('project');pick('dotfiles',0).click();
+  await new Promise(r=>setTimeout(r,300));
+  return {agents:spCatalog.agents.length,machine:spDraft.machine,presets:[...document.querySelectorAll('#sp-preset-list .sp-row')].map(b=>b.textContent)};
+ })()`)
+	if state["agents"] != float64(3) || state["machine"] != "" || !strings.Contains(fmt.Sprint(state["presets"]), "Sol · Full") {
+		t.Fatalf("back on the hub its own choices return: %#v", state)
+	}
+	if after := f.count("/api/launch-options") + f.count("/api/presets"); after != before {
+		t.Fatalf("a machine already loaded must not be fetched again: %d -> %d", before, after)
+	}
+}
+
+// launchOnPeer walks Project -> Agent -> Prompt on the peer's dotfiles and
+// presses Start, with selection stubbed to record the chat it opens.
+const launchOnPeer = `(async()=>{
+  const row=[...document.querySelectorAll('#sp-picker-list .sp-row')].filter(b=>b.textContent.includes('dotfiles'))[1];
+  row.click();
+  for(let i=0;i<100&&!spawnPresets.length;i++)await new Promise(r=>setTimeout(r,20));
+  document.querySelector('#sp-preset-list .sp-row').click();
+  spTask.value='keep me';spTask.dispatchEvent(new Event('input'));
+  return true;
+ })()`
+
+func TestNewChatSpawnNamesTheMachine(t *testing.T) {
+	page, f := newFleetChatPage(t, "awake", false, "")
+	page.eval(t, `(async()=>{await `+launchOnPeer+`;
+  SPAWN_POLL_MS=5;window.__sel=null;const real=selectSession;selectSession=s=>{window.__sel=s.sessionId+'/'+s.machine;real(s)};
+  spGo.click();return true})()`)
+	page.waitFor(t, `window.__sel === 'peer/vengeance'`)
+	bodies := f.spawnBodies()
+	if len(bodies) != 1 || !strings.Contains(bodies[0], `"machine":"vengeance"`) || !strings.Contains(bodies[0], `"cwd":"/src/dotfiles"`) {
+		t.Fatalf("spawn must name the machine: %v", bodies)
+	}
+	dialed := func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for _, q := range f.wsQueries {
+			if strings.Contains(q, "sock=2") && strings.Contains(q, "machine=vengeance") {
+				return true
+			}
+		}
+		return false
+	}
+	for i := 0; i < 100 && !dialed(); i++ {
+		page.eval(t, `new Promise(r=>setTimeout(r,20))`)
+	}
+	if !dialed() {
+		t.Fatalf("the page must dial the new chat on its machine: %v", f.wsQueries)
+	}
+}
+
+func TestNewChatFirstPromptWaitsForTheDraftsMachine(t *testing.T) {
+	page, _ := newFleetChatPage(t, "awake", false, "")
+	state := page.evalObject(t, `(async()=>{await `+launchOnPeer+`;
+  spImages=[{data:'photo',mimeType:'image/jpeg',thumb:''}];
+  SPAWN_POLL_MS=5;const sent=[];
+  // The hub's chat of the same name is open first; only the peer's may get the message.
+  selectSession=s=>{currentBufferName=s.bufferName;currentSockMachine=s.machine;sessionId=s.sessionId;replayMode=false;processing=false;ws={readyState:1,send:raw=>sent.push(raw)};};
+  currentBufferName='new chat';currentSockMachine='mrx';sessionId='hub';replayMode=false;processing=false;ws={readyState:1,send:raw=>sent.push('WRONG')};
+  spGo.click();
+  for(let i=0;i<100&&!sent.length;i++)await new Promise(r=>setTimeout(r,20));
+  return {sent:sent.length,wrong:sent.includes('WRONG'),machine:currentSockMachine};
+ })()`)
+	if state["wrong"] != false || state["sent"] != float64(1) || state["machine"] != "vengeance" {
+		t.Fatalf("first message goes only to the chat on the draft's machine: %#v", state)
+	}
+}
+
+func TestSpawnToAsleepMachineKeepsDraft(t *testing.T) {
+	page, f := newFleetChatPage(t, "awake", true, "")
+	state := page.evalObject(t, `(async()=>{await `+launchOnPeer+`;
+  spImages=[{data:'photo',mimeType:'image/jpeg',thumb:''}];
+  await spStart();
+  return {message:spEl('message').textContent,open:spSheet.classList.contains('visible'),task:spDraft.task,cwd:spDraft.cwd,machine:spDraft.machine,
+    settings:{...spDraft.settings},images:spImages.length,stored:JSON.parse(localStorage.getItem('syzygy.launch.draft')),busy:spBusy,recovery:spRecoveryBuffer};
+ })()`)
+	stored := state["stored"].(map[string]interface{})
+	settings := state["settings"].(map[string]interface{})
+	if state["message"] != "NEMESIS did not answer" || state["open"] != true || state["task"] != "keep me" || state["cwd"] != "/src/dotfiles" || state["machine"] != "vengeance" ||
+		settings["agent"] != "gemini" || state["images"] != float64(1) || stored["machine"] != "vengeance" || stored["task"] != "keep me" || state["busy"] != false || state["recovery"] != "" {
+		t.Fatalf("a failed spawn must keep the whole draft and show the server's text: %#v", state)
+	}
+	if len(f.spawnBodies()) != 1 {
+		t.Fatalf("one attempt: %v", f.spawnBodies())
+	}
+}
+
+const comboSeed = `JSON.stringify({pins:[],recent:[
+ {cwd:'/src/dotfiles',preset:'s',settings:{agent:'codex',model:'sol',mode:'full',effort:'high'}},
+ {cwd:'/src/ghost',preset:'',machine:'ghost',settings:{agent:'codex',model:'sol',mode:'full',effort:'high'}}]})`
+
+func TestCombosWithoutMachineAreHubCombos(t *testing.T) {
+	page, f := newFleetChatPage(t, "awake", false, comboSeed)
+	state := page.evalObject(t, `(async()=>{
+  openSpawnView('home');
+  const rows=[...document.querySelectorAll('#sp-home-list .sp-combo')];
+  const info=rows.map(r=>({cls:r.className,title:r.title,aria:r.getAttribute('aria-disabled'),text:r.textContent}));
+  rows[1].click();
+  const afterGhost={view:spView,cwd:spDraft.cwd};
+  rows[0].click();
+  SPAWN_POLL_MS=5;selectSession=()=>{};
+  const view=spView;
+  spGo.click();
+  return {info,afterGhost,view};
+ })()`)
+	info := state["info"].([]interface{})
+	hub, ghost := info[0].(map[string]interface{}), info[1].(map[string]interface{})
+	if strings.Contains(hub["cls"].(string), "asleep") || hub["aria"] != nil {
+		t.Fatalf("a combo without machine is a hub combo: %#v", hub)
+	}
+	if !strings.Contains(ghost["cls"].(string), "asleep") || ghost["title"] != "ghost is not in the fleet" || ghost["aria"] != "true" {
+		t.Fatalf("a combo for a machine outside the fleet is disabled: %#v", ghost)
+	}
+	if state["view"] != "prompt" || state["afterGhost"].(map[string]interface{})["view"] != "home" {
+		t.Fatalf("tapping the ghost does nothing, the hub combo opens Prompt: %#v", state)
+	}
+	for i := 0; i < 100 && len(f.spawnBodies()) == 0; i++ {
+		page.eval(t, `new Promise(r=>setTimeout(r,20))`)
+	}
+	bodies := f.spawnBodies()
+	if len(bodies) != 1 || strings.Contains(bodies[0], "machine") {
+		t.Fatalf("a hub launch sends no machine field: %v", bodies)
+	}
+}
+
+func TestComboForAsleepMachineSaysWakeFirst(t *testing.T) {
+	seed := `JSON.stringify({pins:[],recent:[{cwd:'/src/dotfiles',preset:'g',machine:'vengeance',settings:{agent:'gemini',model:'pro',mode:'auto',effort:''}}]})`
+	page, f := newFleetChatPage(t, "asleep", false, seed)
+	state := page.evalObject(t, `(async()=>{
+  openSpawnView('home');
+  const r=document.querySelector('#sp-home-list .sp-combo');
+  r.click();
+  await new Promise(r=>setTimeout(r,100));
+  return {cls:r.className,aria:r.getAttribute('aria-disabled'),text:r.textContent,view:spView};
+ })()`)
+	if !strings.Contains(state["cls"].(string), "asleep") || state["aria"] != "true" || !strings.Contains(state["text"].(string), "wake first") || state["view"] != "home" {
+		t.Fatalf("an asleep machine's combo is dimmed and inert: %#v", state)
+	}
+	if len(f.spawnBodies()) != 0 {
+		t.Fatalf("must not launch: %v", f.spawnBodies())
 	}
 }

@@ -1489,6 +1489,8 @@ input, textarea, #fbv-content, .msg, .msg *,
 #sp-step { font-size:11px; font-weight:400; color:var(--fg-mute); letter-spacing:.5px; }
 .sp-group-label { margin-top:18px; }
 .sp-group-label:first-child { margin-top:0; }
+.sp-combo.asleep { opacity:.5; }
+.sp-wake { margin-left:6px; color:var(--orange); }
 .sp-combo .provider-icon { width:18px; height:18px; flex:0 0 18px; }
 .sp-mode-word { font-weight:600; margin-right:8px; }
 #sp-customize img, #sp-name-toggle img { transition:transform .15s; }
@@ -5646,6 +5648,7 @@ async function loadSessions(silent) {
     }
     MACHINES = data.machines || [];
     HUB_MACHINE = data.machine || (MACHINES[0] && MACHINES[0].id) || '';
+    spMachinesChanged();
     if (!silent) loadOrreryPins();
     applyGapControls();
     paintBell();
@@ -5834,7 +5837,7 @@ function renderSessions(sessions) {
     const addBtn = document.createElement('button');
     addBtn.className = 'ph-add';
     addBtn.textContent = '+';
-    addBtn.onclick = (e) => { e.stopPropagation(); spawnInProject(group[0].cwd); };
+    addBtn.onclick = (e) => { e.stopPropagation(); spawnInProject(group[0].cwd, sessionMachine(group[0])); };
     header.appendChild(addBtn);
     groupEl.appendChild(header);
 
@@ -6026,8 +6029,9 @@ function spWrite(key, value) { try { localStorage.setItem('syzygy.launch.' + key
 function spSettings(value) { return Object.fromEntries(spFields.map(k => [k, typeof value?.[k] === 'string' ? value[k] : ''])); }
 function spValidPreset(p) { return p && typeof p.key === 'string' && typeof p.label === 'string' && ['agent','model','mode'].every(k => typeof p[k] === 'string' && p[k]) && (!p.effort || typeof p.effort === 'string'); }
 const spStoredDraft = spRead('draft', {});
-let spDraft = {cwd: '', name: '', task: '', preset: '', step: '', settings: spSettings(spStoredDraft.settings)};
-for (const k of ['cwd','name','task','preset','step']) if (typeof spStoredDraft[k] === 'string') spDraft[k] = spStoredDraft[k];
+// machine: '' is the hub; otherwise the id of the machine the project lives on.
+let spDraft = {cwd: '', name: '', task: '', preset: '', step: '', machine: '', settings: spSettings(spStoredDraft.settings)};
+for (const k of ['cwd','name','task','preset','step','machine']) if (typeof spStoredDraft[k] === 'string') spDraft[k] = spStoredDraft[k];
 let spCustom = spRead('presets', []);
 spCustom = Array.isArray(spCustom) ? spCustom.filter(spValidPreset) : [];
 let spPins = spRead('pins', []), spRecent = spRead('recent', []);
@@ -6036,8 +6040,20 @@ spRecent = Array.isArray(spRecent) ? spRecent.filter(p => typeof p === 'string')
 // Launch combos: a project plus the four settings, remembered on this device.
 // The preset key is informational; identity is cwd plus settings.
 function spComboValid(c) { return !!c && typeof c.cwd === 'string' && !!c.cwd && !!c.settings && ['agent','model','mode'].every(k => typeof c.settings[k] === 'string' && c.settings[k]) && (c.settings.effort === undefined || typeof c.settings.effort === 'string'); }
-function spCombo(c) { return {cwd:c.cwd, preset:typeof c.preset === 'string' ? c.preset : '', settings:spSettings(c.settings)}; }
-function spComboSame(a, b) { return a.cwd === b.cwd && spFields.every(k => a.settings[k] === b.settings[k]); }
+// machine is absent for a hub combo, so a combo stored before the fleet loads as the hub.
+function spCombo(c) { const o = {cwd:c.cwd, preset:typeof c.preset === 'string' ? c.preset : '', settings:spSettings(c.settings)}; if (typeof c.machine === 'string' && c.machine) o.machine = c.machine; return o; }
+function spComboSame(a, b) { return a.cwd === b.cwd && sameMachine(a.machine, b.machine) && spFields.every(k => a.settings[k] === b.settings[k]); }
+// '' for the hub; the machine's id otherwise.  The one spelling of a draft or cache machine.
+function spKey(machine) { return sameMachine(machine, '') ? '' : machine; }
+// Why a combo cannot start: its machine is asleep, or not in the fleet at all.
+// The hub's own combos are always fine; MACHINES empty means no peer is known.
+function spComboBlock(c) {
+  const id = spKey(c.machine);
+  if (!id) return null;
+  const m = MACHINES.find(x => x.id === id);
+  if (!m) return {text:'', title:id + ' is not in the fleet'};
+  return m.state === 'asleep' ? {text:'wake first', title:machineName(id) + ' is asleep'} : null;
+}
 let spCombos = spRead('combos', {});
 spCombos = {pins:Array.isArray(spCombos.pins) ? spCombos.pins.filter(spComboValid).map(spCombo) : [], recent:Array.isArray(spCombos.recent) ? spCombos.recent.filter(spComboValid).map(spCombo) : []};
 function spComboPinned(c) { return spCombos.pins.some(p => spComboSame(p, c)); }
@@ -6052,8 +6068,11 @@ function spToggleComboPin(c) {
   else { spCombos.recent = spCombos.recent.filter(r => !spComboSame(r, c)); spCombos.pins = [...spCombos.pins, c]; }
   spWrite('combos', spCombos);
 }
+// spawnPresets and spCatalog are the chosen machine's; the caches keep every
+// machine already loaded, keyed by spKey ('' is the hub).
 let spawnPresets = [], spawnProjects = [], spCatalog = {agents:[], defaultAgent:''};
-let spawnPresetsLoad = 0, spawnProjectsLoad = 0, spCatalogLoad = 0;
+const spPresetsBy = {}, spCatalogBy = {};
+let spawnPresetsLoad = {}, spCatalogLoad = {}, spawnProjectsLoad = 0;
 let spView = 'home', spBusy = false, spReturnFocus = null, spPickerOrigin = null, spCustomizeOpen = false, spCustomizeTouched = false, spNameOpen = false;
 const spInertSiblings = new Map();
 // An accepted launch must never be posted again just because its socket is late.
@@ -6076,12 +6095,12 @@ function spAllPresets() { return [...spawnPresets, ...spCustom]; }
 function spSelectedPreset() { return spAllPresets().find(p => p.key === spDraft.preset); }
 function spComplete() { return ['agent','model','mode'].every(k => spChoices(k).some(c => c.id === spDraft.settings[k])) && (!spDraft.settings.effort || spChoices('effort').some(c => c.id === spDraft.settings.effort)); }
 // Labels reuse the header's words: canonicalModelName, modeShortName.
-function spAgentFor(settings) { return spCatalog.agents.find(a => a.id === settings.agent); }
+function spAgentFor(settings, machine) { return (machine === undefined ? spCatalog : (spCatalogBy[spKey(machine)] || {agents:[]})).agents.find(a => a.id === settings.agent); }
 function spMatchingPreset(settings) { return spAllPresets().find(p => spFields.every(k => (p[k] || '') === settings[k])); }
-function spProjectName(cwd) { return spawnProjects.find(p => p.path === cwd)?.name || cwd.split('/').filter(Boolean).pop() || cwd; }
-function spModelName(settings) { const a = spAgentFor(settings); return canonicalModelName(settings.model, a?.models || [], (a?.name || '') + ' '); }
+function spProjectName(cwd, machine) { return spawnProjects.find(p => p.path === cwd && sameMachine(p.machine, machine))?.name || cwd.split('/').filter(Boolean).pop() || cwd; }
+function spModelName(settings, machine) { const a = spAgentFor(settings, machine); return canonicalModelName(settings.model, a?.models || [], (a?.name || '') + ' '); }
 function spModeWord(settings) { return modeShortName(settings.mode); }
-function spComboTitle(c) { return spModelName(c.settings) + ' in ' + spProjectName(c.cwd); }
+function spComboTitle(c) { return spModelName(c.settings, c.machine || '') + ' in ' + spProjectName(c.cwd, c.machine); }
 function spSummaryLabel(settings) { const p = spMatchingPreset(settings); return p ? p.label : (spAgentFor(settings)?.name || settings.agent || 'Agent') + ' / Custom'; }
 function spPresetDetail(p) { return [spAgentFor(p)?.name || p.agent, spModelName(p), spModeWord(p), p.effort || 'Agent default'].join(' / '); }
 
@@ -6113,6 +6132,16 @@ const SP_TITLES = {home:'New chat', project:'Project', preset:'Agent', prompt:'P
 const SP_PICKERS = ['project','agent','model','mode','effort'];
 const SP_SUBVIEWS = ['agent','model','mode','effort','save'];
 const SP_PIN_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>';
+// A machine going to sleep or waking changes which combos can start.
+var spMachinesSig = ''; // var: loadSessions can run before this section's lets are initialised
+function spMachinesChanged() {
+  const sig = HUB_MACHINE + JSON.stringify(MACHINES.map(m => [m.id, m.state]));
+  if (sig === spMachinesSig) return;
+  spMachinesSig = sig;
+  if (!document.getElementById('spawn-sheet').classList.contains('visible')) return;
+  if (spView === 'home') renderSpawnHome();
+  if (spView === 'project') renderSpawnPicker();
+}
 function spHomeEmpty() { return !spCombos.pins.length && !spCombos.recent.length; }
 function spBackOf(view) { return {path:'project', save:'preset', agent:'preset', model:'preset', mode:'preset', effort:'preset', prompt:'preset', preset:'project', project:spHomeEmpty() ? '' : 'home'}[view] || ''; }
 function spPinButton(label, pinned, toggle) {
@@ -6139,16 +6168,47 @@ function renderSpawnHome() {
       const d=document.createElement('span'); d.className='sp-row-detail';
       const mode=document.createElement('span'); mode.className='sp-mode-word'; mode.textContent=word; mode.style.color=modeColor(c.settings.mode); d.appendChild(mode);
       const path=document.createElement('span'); path.textContent=shortPath(c.cwd); d.appendChild(path);
+      const block=spComboBlock(c), machine=spKey(c.machine);
+      if (machine) { const badge=spMachineBadge(machine); badge.style.marginLeft='6px'; d.appendChild(badge); }
+      if (block) {
+        row.classList.add('asleep'); row.setAttribute('aria-disabled','true');
+        if (block.title) row.title=block.title;
+        if (block.text) { const wake=document.createElement('span'); wake.className='sp-wake'; wake.textContent=block.text; d.appendChild(wake); }
+      }
       copy.appendChild(d); row.appendChild(copy);
-      row.setAttribute('aria-label',title+', '+word+', '+shortPath(c.cwd));
-      onTapPick(row,()=>pickSpawnCombo(c)); item.appendChild(row);
+      row.setAttribute('aria-label',title+', '+word+', '+shortPath(c.cwd)+(machine ? ', '+machineName(machine) : '')+(block ? ', '+(block.text || block.title) : ''));
+      onTapPick(row,()=>{if(!spComboBlock(c))pickSpawnCombo(c);}); item.appendChild(row);
       item.appendChild(spPinButton(title,name === 'Pinned',()=>{spToggleComboPin(c);renderSpawnHome();}));
       list.appendChild(item);
     }
   }
 }
+function spMachineBadge(id) {
+  const badge=document.createElement('span'); badge.className='machine-badge'; badge.style.color=machineColor(id); badge.textContent=machineName(id); return badge;
+}
+// Choose the machine a chat starts on.  A different machine means different
+// agents, models and presets, so the old choices go and that machine's load.
+function spSetMachine(machine) {
+  machine=spKey(machine);
+  if (sameMachine(machine,spDraft.machine)) return;
+  spDraft.machine=machine; spDraft.settings=spSettings({}); spDraft.preset='';
+  spUseMachine(machine);
+  if (!spCatalogBy[machine]) loadSpawnCatalog(machine);
+  if (!spPresetsBy[machine]) loadSpawnPresets(machine);
+}
+function spUseMachine(machine) {
+  spawnPresets=spPresetsBy[machine] || []; spCatalog=spCatalogBy[machine] || {agents:[], defaultAgent:''};
+  spDefaultAgent();
+}
+function spDefaultAgent() {
+  if (spDraft.settings.agent || !spCatalog.agents.length) return;
+  const a=spCatalog.agents.find(a => a.id === spCatalog.defaultAgent) || spCatalog.agents[0];
+  if (a) spDraft.settings=spSettings({...a.defaults,agent:a.id}); persistSpawnDraft();
+}
 function pickSpawnCombo(c) {
   spResumeCheck=false;
+  const machine=spKey(c.machine);
+  spSetMachine(machine);
   spDraft.cwd=c.cwd; spDraft.settings=spSettings(c.settings); spDraft.preset=spMatchingPreset(spDraft.settings)?.key || '';
   spDir.value=c.cwd; persistSpawnDraft(); spMessage(''); openSpawnView('prompt');
 }
@@ -6181,7 +6241,7 @@ function renderSpawnPrompt() {
   const locked=spBusy || !!spRecoveryBuffer;
   // A stale combo reads Custom even when its ids still match a preset.
   const label=!spCatalog.agents.length ? 'Loading agents…' : spComplete() ? spSummaryLabel(spDraft.settings) : (spAgentFor(spDraft.settings)?.name || spDraft.settings.agent || 'Agent')+' / Custom';
-  spRowContent(spEl('summary'),label,spDraft.cwd ? spProjectName(spDraft.cwd)+'  '+shortPath(spDraft.cwd) : 'Choose a project','chevron');
+  spRowContent(spEl('summary'),label,spDraft.cwd ? spProjectName(spDraft.cwd,spDraft.machine)+'  '+shortPath(spDraft.cwd) : 'Choose a project','chevron');
   spEl('summary').disabled=locked; spTask.disabled=locked;
   const invalid=spFields.find(field => (field !== 'effort' || spDraft.settings.effort) &&
     !spChoices(field).some(choice => choice.id === spDraft.settings[field]));
@@ -6231,60 +6291,75 @@ function applySpawnPreset(key) {
   const p=spAllPresets().find(p => p.key === key); if (!p) return;
   spDraft.preset=key; spDraft.settings=spSettings(p); persistSpawnDraft(); spMessage(''); renderSpawnStep();
 }
-async function spFetch(endpoint, property) {
-  const resp=await fetch(basePath+'/api/'+endpoint,{method:'POST'});
+async function spFetch(endpoint, property, machine) {
+  const resp=await fetch(withMachine(basePath+'/api/'+endpoint,machine),{method:'POST'});
   if (resp.ok === false) throw new Error(endpoint+': '+resp.status);
   const data=await resp.json(); if (!Array.isArray(data[property])) throw new Error(endpoint+': invalid reply'); return data;
 }
-async function loadSpawnPresets() {
-  const token=++spawnPresetsLoad;
-  try { const data=await spFetch('presets','presets'); if (token !== spawnPresetsLoad) return;
-    spawnPresets=data.presets.filter(p => spValidPreset(p) && p.key.length === 1);
+// A reply is cached for the machine that sent it, and reaches the sheet only
+// while that machine is still the draft's: a slow answer for one machine never
+// lands after the user moved to another.
+async function loadSpawnPresets(machine=spDraft.machine) {
+  machine=spKey(machine);
+  const token=spawnPresetsLoad[machine]=(spawnPresetsLoad[machine] || 0)+1;
+  try { const data=await spFetch('presets','presets',machine); if (token !== spawnPresetsLoad[machine]) return;
+    spPresetsBy[machine]=data.presets.filter(p => spValidPreset(p) && p.key.length === 1);
+    if (!sameMachine(machine,spDraft.machine)) return;
+    spawnPresets=spPresetsBy[machine];
     // Agent may have opened before presets arrived; follow the late match until the user toggles.
     if (spView === 'preset' && !spCustomizeTouched) spCustomizeOpen=!spMatchingPreset(spDraft.settings);
     renderSpawnStep();
-  } catch (_) { if (token === spawnPresetsLoad && !spawnPresets.length) spMessage('Presets unavailable. You can still choose settings individually.'); }
+  } catch (_) { if (token === spawnPresetsLoad[machine] && sameMachine(machine,spDraft.machine) && !spawnPresets.length) spMessage('Presets unavailable. You can still choose settings individually.'); }
 }
 async function loadSpawnProjects() {
   const token=++spawnProjectsLoad;
-  try { const data=await spFetch('projects','projects'); if (token !== spawnProjectsLoad) return;
+  try { const data=await spFetch('projects?fleet=1','projects'); if (token !== spawnProjectsLoad) return;
     spawnProjects=data.projects.filter(p => p && typeof p.name === 'string' && typeof p.path === 'string'); renderSpawnStep(); if(spView === 'project') renderSpawnPicker();
   } catch (_) { if (token === spawnProjectsLoad && !spawnProjects.length) spMessage('Projects unavailable. Use the folder icon to enter a path.'); }
 }
-async function loadSpawnCatalog() {
-  const token=++spCatalogLoad;
-  try { const data=await spFetch('launch-options','agents'); if (token !== spCatalogLoad) return;
+async function loadSpawnCatalog(machine=spDraft.machine) {
+  machine=spKey(machine);
+  const token=spCatalogLoad[machine]=(spCatalogLoad[machine] || 0)+1, current=() => sameMachine(machine,spDraft.machine);
+  try { const data=await spFetch('launch-options','agents',machine); if (token !== spCatalogLoad[machine]) return;
     const choices=xs => Array.isArray(xs) ? xs.filter(c => c && typeof c.id === 'string' && typeof c.name === 'string').map(c => ({id:c.id,name:c.name,description:typeof c.description === 'string' ? c.description:''})) : [];
-    spCatalog={defaultAgent:data.defaultAgent,agents:data.agents.filter(a => a && typeof a.id === 'string' && typeof a.name === 'string').map(a => ({...a,models:choices(a.models),modes:choices(a.modes),efforts:choices(a.efforts)}))};
-    if (!spDraft.settings.agent) {
-      const a=spCatalog.agents.find(a => a.id === spCatalog.defaultAgent) || spCatalog.agents[0];
-      if (a) spDraft.settings=spSettings({...a.defaults,agent:a.id}); persistSpawnDraft();
-    }
+    spCatalogBy[machine]={defaultAgent:data.defaultAgent,agents:data.agents.filter(a => a && typeof a.id === 'string' && typeof a.name === 'string').map(a => ({...a,models:choices(a.models),modes:choices(a.modes),efforts:choices(a.efforts)}))};
+    if (!current()) { if (spView === 'home') renderSpawnHome(); return; }
+    spCatalog=spCatalogBy[machine];
+    spDefaultAgent();
     renderSpawnStep(); if (['agent','model','mode','effort'].includes(spView)) renderSpawnPicker();
     if (spResumeCheck && spView === 'prompt' && !spComplete()) {
       if (document.activeElement === spTask) spMessage('These settings are no longer available. Tap the summary to choose new ones.');
       else openSpawnView('preset');
     }
     spResumeCheck=false;
-  } catch (_) { if (token === spCatalogLoad) spMessage('Agent choices could not refresh. Reopen New chat to retry.'); }
+  } catch (_) { if (token === spCatalogLoad[machine] && current()) spMessage('Agent choices could not refresh. Reopen New chat to retry.'); }
 }
-function pickSpawnProject(path) { spDraft.cwd=path; spDir.value=path; persistSpawnDraft(); openSpawnView('preset'); }
-function projectMatches(p, needle) { return !needle || (p.name+' '+p.path+' '+shortPath(p.path)).toLowerCase().includes(needle); }
+// machine undefined keeps the draft's machine (a typed path); '' is the hub.
+function pickSpawnProject(path, machine) {
+  spDraft.cwd=path; spDir.value=path;
+  spSetMachine(machine === undefined ? spDraft.machine : machine);
+  persistSpawnDraft(); openSpawnView('preset');
+}
+function projectMatches(p, needle) { const m=spKey(p.machine); return !needle || (p.name+' '+p.path+' '+shortPath(p.path)+(m ? ' '+machineName(m) : '')).toLowerCase().includes(needle); }
 function renderSpawnPicker() {
   const list=spEl('picker-list'); list.replaceChildren();
   const query=spEl('search').value.trim().toLowerCase();
   function heading(text) { const el=document.createElement('div'); el.className='sp-label'; el.style.marginTop='18px'; el.textContent=text; list.appendChild(el); }
   function row(title,detail,selected,pick) { const b=document.createElement('button'); b.type='button'; b.className='sp-row'+(selected ? ' sel':''); b.setAttribute('aria-pressed',String(selected)); spRowContent(b,title,detail,selected?'confirm':null); onTapPick(b,pick); return b; }
   if (spView === 'project') {
-    const projects=new Map(spawnProjects.map(p => [p.path,p]));
-    for (const path of [...spPins,...spRecent,...lastSessions.map(s => s.cwd).filter(Boolean)]) if (!projects.has(path)) projects.set(path,{name:path.split('/').filter(Boolean).pop() || path,path});
+    // A project is its machine plus its path: two machines can share a path.
+    const pid=p => spKey(p.machine)+'\0'+p.path, projects=new Map(spawnProjects.map(p => [pid(p),p]));
+    const known=[...spPins,...spRecent].map(path => ({path,machine:''})).concat(lastSessions.filter(s => s.cwd).map(s => ({path:s.cwd,machine:sessionMachine(s)})));
+    for (const k of known) if (!projects.has(pid(k))) projects.set(pid(k),{name:k.path.split('/').filter(Boolean).pop() || k.path,path:k.path,machine:k.machine});
     const groups=[['Pinned',p=>spPins.includes(p.path)],['Recent',p=>!spPins.includes(p.path) && spRecent.includes(p.path)],['Projects',p=>!spPins.includes(p.path) && !spRecent.includes(p.path)]];
     for (const [name,filter] of groups) {
       const matches=[...projects.values()].filter(p => filter(p) && projectMatches(p,query)); if (!matches.length) continue; heading(name);
       for (const p of matches) {
         const item=document.createElement('div'); item.className='sp-project-item';
-        const count=lastSessions.filter(s => s.cwd === p.path).length;
-        item.appendChild(row(p.name,shortPath(p.path)+(count ? ' / '+count+' active':''),p.path===spDraft.cwd,()=>pickSpawnProject(p.path)));
+        const count=lastSessions.filter(s => s.cwd === p.path && sameMachine(s.machine,p.machine)).length, machine=spKey(p.machine);
+        const projectRow=row(p.name,shortPath(p.path)+(count ? ' / '+count+' active':''),p.path===spDraft.cwd && sameMachine(machine,spDraft.machine),()=>pickSpawnProject(p.path,machine));
+        if (machine) { const badge=spMachineBadge(machine); badge.style.marginLeft='8px'; projectRow.querySelector('.sp-row-title').appendChild(badge); }
+        item.appendChild(projectRow);
         item.appendChild(spPinButton(p.name,spPins.includes(p.path),()=>{spPins=spPins.includes(p.path)?spPins.filter(x=>x!==p.path):[...spPins,p.path];spWrite('pins',spPins);renderSpawnPicker();}));list.appendChild(item);
       }
     }
@@ -6346,10 +6421,11 @@ function spResumeStep() {
   if (s === 'project') return 'project';
   return spHomeEmpty() ? 'project' : 'home';
 }
-function openSpawnSheet(cwd, step='') {
+function openSpawnSheet(cwd, step='', machine='') {
   spReturnFocus=document.activeElement;
   spMessage('');
-  if (cwd && !spRecoveryBuffer) spDraft.cwd=cwd;
+  if (cwd && !spRecoveryBuffer) { spDraft.cwd=cwd; spSetMachine(machine); }
+  spUseMachine(spKey(spDraft.machine));
   // Judge the resume step before prefilling, so an empty project resumes on Project.
   const view=spRecoveryBuffer ? 'prompt' : step || spResumeStep();
   if (!spDraft.cwd) spDraft.cwd=spRecent[0] || lastSessions.find(s=>s.cwd)?.cwd || '';
@@ -6398,7 +6474,7 @@ function spDeliverFirstPrompt() {
   const first=spFirstPrompt; if(!first || !first.bufferName)return;
   clearTimeout(first.timer);
   const deadline=Date.now()+60000;
-  const here=()=>currentBufferName === first.bufferName;
+  const here=()=>currentBufferName === first.bufferName && sameMachine(currentSockMachine,first.machine);
   (function tick() {
     if(spFirstPrompt !== first)return;
     if(here() && sessionId && !replayMode && !processing && ws && ws.readyState === WebSocket.OPEN) {
@@ -6438,12 +6514,13 @@ async function spawnAndOpen(body) {
 async function spStart() {
   if(spBusy || spImagesLoading || spGo.disabled)return;
   spBusy=true;renderSpawnStep();spMessage(spRecoveryBuffer?'Finding your chat…':'Starting chat…');
-  if(!spRecoveryBuffer)spFirstPrompt=spImages.length ? {bufferName:'',text:spDraft.task,images:spImages.slice()} : null;
+  const machine=spKey(spDraft.machine);
+  if(!spRecoveryBuffer)spFirstPrompt=spImages.length ? {bufferName:'',text:spDraft.task,images:spImages.slice(),machine} : null;
   try {
-    const opened=spRecoveryBuffer ? await waitForSpawn(spRecoveryBuffer) : await spawnAndOpen({cwd:spDraft.cwd,name:spDraft.name.trim(),task:spFirstPrompt ? '' : spDraft.task,settings:{...spDraft.settings}});
+    const opened=spRecoveryBuffer ? await waitForSpawn(spRecoveryBuffer,new Set(),machine) : await spawnAndOpen(machineBody({cwd:spDraft.cwd,name:spDraft.name.trim(),task:spFirstPrompt ? '' : spDraft.task,settings:{...spDraft.settings}},machine));
     if(opened) {
-      spRecent=[spDraft.cwd,...spRecent.filter(p=>p!==spDraft.cwd)].slice(0,12);spWrite('recent',spRecent);
-      spRecordCombo({cwd:spDraft.cwd,preset:spDraft.preset,settings:spDraft.settings});
+      if(!machine){spRecent=[spDraft.cwd,...spRecent.filter(p=>p!==spDraft.cwd)].slice(0,12);spWrite('recent',spRecent);}
+      spRecordCombo({cwd:spDraft.cwd,preset:spDraft.preset,machine,settings:spDraft.settings});
       if(spRecoveryKeepsTask)spFirstPrompt=null; // Failed settings must never submit the held message.
       if(!spFirstPrompt) {
         spDraft.step=spRecoveryKeepsTask ? 'prompt' : '';spRecoveryBuffer='';
@@ -6585,7 +6662,7 @@ async function refreshForkEntry(btn) {
 }
 
 function spawnAgent() { openSpawnSheet(null); }
-function spawnInProject(cwd) { openSpawnSheet(cwd, 'preset'); }
+function spawnInProject(cwd, machine) { openSpawnSheet(cwd, 'preset', machine); }
 // --- Spawn sheet: end ---
 
 // --- Model picker ---
