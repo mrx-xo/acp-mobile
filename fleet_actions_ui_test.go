@@ -188,6 +188,9 @@ type fleetFixture struct {
 	// the requests waiting.
 	holdHubModels chan struct{}
 	modelsHeld    int
+	// holdHubDiff does the same for /api/diff-review; diffHeld counts them.
+	holdHubDiff chan struct{}
+	diffHeld    int
 }
 
 func newFleetFixture(t *testing.T, machinesJSON string) *fleetFixture {
@@ -244,7 +247,17 @@ func newFleetFixture(t *testing.T, machinesJSON string) *fleetFixture {
 			f.mu.Lock()
 			spawn, status, cat := f.spawn, f.status, f.catalog[r.URL.Query().Get("machine")]
 			hold := f.holdHubModels
+			holdDiff := f.holdHubDiff
 			f.mu.Unlock()
+			if p == "/api/diff-review" && holdDiff != nil && !strings.Contains(r.URL.RawQuery, "machine=") {
+				f.mu.Lock()
+				f.diffHeld++
+				f.mu.Unlock()
+				select {
+				case <-holdDiff:
+				case <-r.Context().Done():
+				}
+			}
 			if p == "/api/models" && hold != nil {
 				b, _ := io.ReadAll(r.Body)
 				r.Body = io.NopCloser(strings.NewReader(string(b)))
@@ -691,5 +704,108 @@ func TestFleetLateModelListForAnotherMachineIsDropped(t *testing.T) {
 	})()`)
 	if state["models"] != float64(0) || strings.Contains(fmt.Sprint(state["text"]), "M1") || state["visible"] != false {
 		t.Fatalf("the hub chat's late model list reached the NEMESIS chat: %#v", state)
+	}
+}
+
+// The bell awaits the phone's push subscription; a chat switched to while
+// it is slow must never be armed, repainted, or named in the request.
+func TestFleetBellDoesNotArmAChatSwitchedToMidSetup(t *testing.T) {
+	cases := []struct{ name, sessions, other string }{
+		{"two hub chats",
+			`{"pid":1,"machine":"mrx","bufferName":"Chat A"},{"pid":2,"machine":"mrx","bufferName":"Chat B"}`,
+			`s.bufferName === 'Chat B'`},
+		{"same name on another machine",
+			`{"pid":1,"machine":"mrx","bufferName":"Chat A"},{"pid":3,"machine":"vengeance","bufferName":"Chat A"}`,
+			`s.machine === 'vengeance'`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFleetFixture(t, fleetTwoMachines)
+			f.sessions = c.sessions
+			page := openChromePage(t, f.srv.URL)
+			page.waitFor(t, `document.querySelectorAll('.session-card').length === 2`)
+			page.eval(t, `window.alert = () => {};
+				window.__release = null;
+				ensurePushSubscription = () => new Promise(r => { window.__release = () => r({ok: true}); });
+				selectSession(lastSessions.find(s => s.bufferName === 'Chat A' && s.machine === 'mrx')); 0`)
+			page.waitFor(t, `currentBufferName === 'Chat A'`)
+			page.eval(t, `document.getElementById('bell-btn').click(); 0`)
+			page.waitFor(t, `window.__release !== null`)
+			before, _ := page.eval(t, `selectSession(lastSessions.find(s => `+c.other+`));
+				new Promise(r => setTimeout(() => r(document.getElementById('bell-btn').classList.contains('on') + '|' + document.getElementById('bell-btn').getAttribute('aria-pressed')), 100))`).(string)
+			after, _ := page.eval(t, `(async () => {
+				window.__release();
+				await new Promise(r => setTimeout(r, 300));
+				const b = document.getElementById('bell-btn');
+				return b.classList.contains('on') + '|' + b.getAttribute('aria-pressed') + '|' + b.classList.contains('pending');
+			})()`).(string)
+			if want := before + "|false"; after != want {
+				t.Fatalf("other chat's bell changed: before %s, after %s", before, after)
+			}
+			for _, r := range f.requests() {
+				if r.Path == "/api/push" {
+					var body map[string]any
+					_ = json.Unmarshal([]byte(r.Body), &body)
+					if body["bufferName"] != "Chat A" || r.carriesMachine() {
+						t.Fatalf("/api/push sent for the wrong chat: %+v", r)
+					}
+				}
+			}
+		})
+	}
+}
+
+// A diff-review reply held for one chat must not fill the view or the
+// cache of the chat the user switched to.
+func TestFleetLateDiffReviewForThePreviousChatIsDropped(t *testing.T) {
+	f := newFleetFixture(t, fleetTwoMachines)
+	hold := make(chan struct{})
+	f.holdHubDiff = hold
+	var once sync.Once
+	release := func() { once.Do(func() { close(hold) }) }
+	t.Cleanup(release)
+	page := openChromePage(t, f.srv.URL)
+	page.waitFor(t, `document.querySelectorAll('.session-card').length === 2`)
+	page.eval(t, `selectSession(lastSessions.find(s => s.machine === 'mrx')); 0`)
+	page.waitFor(t, `currentBufferName === 'Claude Agent @ shared'`)
+	page.eval(t, `window.__late = loadDiffReview('repository', {refresh: true}); 0`)
+	for i := 0; i < 100; i++ {
+		f.mu.Lock()
+		n := f.diffHeld
+		f.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	page.eval(t, `selectSession(lastSessions.find(s => s.machine === 'vengeance')); 0`)
+	release()
+	state := page.evalObject(t, `(async () => {
+		await window.__late;
+		await new Promise(r => setTimeout(r, 100));
+		return {repo: diffReview.results.repository, turn: diffReview.results.turn};
+	})()`)
+	if state["repo"] != nil || state["turn"] != nil {
+		t.Fatalf("the hub chat's late diff review reached the NEMESIS chat: %#v", state)
+	}
+}
+
+// Closing the file browser while its listing is still loading keeps it closed.
+func TestFleetClosedFileBrowserIsNotReopenedByAPendingOpen(t *testing.T) {
+	f := newFleetFixture(t, fleetTwoMachines)
+	page := openChromePage(t, f.srv.URL)
+	page.waitFor(t, `document.querySelectorAll('.session-card').length === 2`)
+	got, _ := page.eval(t, `(async () => {
+		let release;
+		fbNavigate = () => new Promise(r => { release = r; });
+		projectCwd = '/work';
+		const pending = openFileBrowser();
+		closeFileBrowser();
+		release();
+		await pending;
+		return fbEl.classList.contains('visible');
+	})()`).(bool)
+	if got {
+		t.Fatal("a pending openFileBrowser reopened the browser after closeFileBrowser")
 	}
 }

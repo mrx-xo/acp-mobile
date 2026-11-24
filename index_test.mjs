@@ -1541,6 +1541,7 @@ function loadDiffReview(overrides = {}) {
   };
   const stored = new Map(Object.entries(overrides.storage || {}));
   const context = {
+    currentBufferName: 'Chat',
     document: {
       getElementById: element,
       createElement: tag => { const el = new FakeElement(); el.tagName = tag.toUpperCase(); return el; },

@@ -2185,12 +2185,13 @@ let gitStatusToken = 0;
 async function fetchGitStatus() {
   const token = ++gitStatusToken;
   const pid = currentSockPid;
+  const machine = chatMachine();
   if (!pid) { headerGit = null; renderHeaderSub(); return; }
   try {
-    const resp = await fetch(withMachine(basePath + '/api/git-status?pid=' + encodeURIComponent(pid), chatMachine()), {cache: 'no-store'});
+    const resp = await fetch(withMachine(basePath + '/api/git-status?pid=' + encodeURIComponent(pid), machine), {cache: 'no-store'});
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const data = await resp.json();
-    if (token !== gitStatusToken || pid !== currentSockPid) return;
+    if (token !== gitStatusToken || pid !== currentSockPid || !sameMachine(machine, chatMachine())) return;
     headerGit = data && typeof data.branch === 'string' ? data : null;
   } catch (_) {
     if (token !== gitStatusToken) return;
@@ -5382,12 +5383,16 @@ function fbFormatSize(bytes) {
 async function openFileBrowser() {
   if (!projectCwd) return;
   const startPath = projectCwd;
+  const token = ++fbOpenToken;
   fbHistory = [];
   await fbNavigate(startPath);
+  if (token !== fbOpenToken) return;
   fbEl.classList.add('visible');
 }
 
+let fbOpenToken = 0; // closeFileBrowser advances it; a pending open then stays closed
 function closeFileBrowser() {
+  fbOpenToken++;
   fbEl.classList.remove('visible');
 }
 
@@ -7638,29 +7643,37 @@ bellBtn.addEventListener('click', async () => {
   if (!currentBufferName || isRemoteChat() || bellBtn.disabled || bellBtn.classList.contains('pending')) return;
   const entry = currentSession();
   const was = !!(entry && entry.push);
+  // The chat this tap was for; a chat switched to mid-setup is never armed or repainted.
+  const bufferName = currentBufferName;
+  const machine = chatMachine();
+  const stillHere = () => bufferName === currentBufferName && sameMachine(machine, chatMachine());
   setBell(!was);
   bellBtn.classList.add('pending');
   let warn = null;
-  if (!was) {
-    try {
-      const r = await ensurePushSubscription();
-      if (!r.ok) warn = r.reason;
-    } catch (err) { warn = 'Subscribing this phone failed: ' + err.message; }
-  }
   try {
-    const resp = await fetch(basePath + '/api/push', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ bufferName: currentBufferName, enabled: !was })
-    });
-    const data = await resp.json();
-    if (data.error) throw new Error(data.error);
-    if (entry) entry.push = !!data.push;
-    setBell(!!data.push);
-    if (warn && data.push) alert('Push armed on the rig, but this phone will not get it. ' + warn);
-  } catch (err) {
-    setBell(was);
-    alert('Phone push failed: ' + err.message);
+    if (!was) {
+      try {
+        const r = await ensurePushSubscription();
+        if (!r.ok) warn = r.reason;
+      } catch (err) { warn = 'Subscribing this phone failed: ' + err.message; }
+      if (!stillHere()) return;
+    }
+    try {
+      const resp = await fetch(basePath + '/api/push', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ bufferName, enabled: !was })
+      });
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+      if (entry) entry.push = !!data.push;
+      if (!stillHere()) return;
+      setBell(!!data.push);
+      if (warn && data.push) alert('Push armed on the rig, but this phone will not get it. ' + warn);
+    } catch (err) {
+      if (stillHere()) setBell(was);
+      alert('Phone push failed: ' + err.message);
+    }
   } finally {
     bellBtn.classList.remove('pending');
   }
@@ -8993,10 +9006,12 @@ async function loadDiffReview(scope, options = {}) {
     return previous;
   }
   const token = ++diffReview.loading;
+  const bufferName = currentBufferName, machine = chatMachine();
+  const current = () => token === diffReview.loading && bufferName === currentBufferName && sameMachine(machine, chatMachine());
   if (!options.poll) setDiffNotice(previous ? 'Refreshing…' : 'Loading…', '');
   try {
     const result = await fetchDiffReview(scope);
-    if (token !== diffReview.loading) return result;
+    if (!current()) return result;
     diffReview.results[scope] = result;
     if (diffReview.scope === scope) {
       renderDiffFileList(result);
@@ -9012,7 +9027,7 @@ async function loadDiffReview(scope, options = {}) {
     }
     return result;
   } catch (err) {
-    if (token !== diffReview.loading) return null;
+    if (!current()) return null;
     if (previous) {
       setDiffNotice('Refresh failed: ' + err.message, 'warn');
       if (diffReview.scope === scope) renderDiffFileList(previous);
@@ -9041,6 +9056,7 @@ function resetDiffReview() {
   diffReview.results = {turn: null, repository: null};
   diffReview.scroll = {};
   diffReview.listScroll = {};
+  diffReview.loading++;
   turnReviewPoll++;
 }
 function showDiffScope(scope) {
