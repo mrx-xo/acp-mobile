@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1452,11 +1453,26 @@ func compactTranscriptSnippet(s, query string) string {
 	return prefix + strings.TrimSpace(string(runes[start:end])) + suffix
 }
 
+// pathUnderDir reports whether path lies strictly inside dir, both already
+// cleaned and using sep.  fold compares without regard to case.
+func pathUnderDir(path, dir, sep string, fold bool) bool {
+	prefix := dir + sep
+	if len(path) <= len(prefix) {
+		return false
+	}
+	if fold {
+		return strings.EqualFold(path[:len(prefix)], prefix)
+	}
+	return strings.HasPrefix(path, prefix)
+}
+
 func allowedTranscriptPath(path, home string) bool {
 	clean := filepath.Clean(path)
 	sep := string(filepath.Separator)
+	// Windows paths are case-insensitive, and Emacs there reports a
+	// lower-case drive letter where os.UserHomeDir gives an upper-case one.
 	return filepath.IsAbs(clean) &&
-		strings.HasPrefix(clean, filepath.Clean(home)+sep) &&
+		pathUnderDir(clean, filepath.Clean(home), sep, runtime.GOOS == "windows") &&
 		strings.Contains(clean, sep+".agent-shell"+sep+"transcripts"+sep) &&
 		strings.HasSuffix(clean, ".md")
 }
